@@ -1,67 +1,70 @@
-# RustDesk Web — client web auto-hébergé
+# RustDesk Web — self-hosted web client
 
-Un client web RustDesk fonctionnel, servi par nginx, avec TLS automatique et sans
-dépendance à un tunnel ou à un service tiers. Souris, clavier, presse-papier,
-audio, résolution dynamique et décodage vidéo **matériel** via WebCodecs.
+*[Version française](README.fr.md)*
 
-> *Projet indépendant, non affilié au projet RustDesk ni à Purslane Ltd.*
+A working RustDesk web client, served by nginx, with automatic TLS and no
+dependency on a tunnel or third-party service. Mouse, keyboard, clipboard, audio,
+dynamic resolution, and **hardware** video decoding via WebCodecs.
 
-## Pourquoi ce dépôt existe
+> *Independent project, not affiliated with the RustDesk project or Purslane Ltd.*
 
-Le client web auto-hébergé est officiellement une fonction de RustDesk Server
-**Pro**. La version open source (V1) a été retirée du dépôt public entre juillet
-2025 et la version 1.4.4 : `flutter/web/` n'existe plus sur `master` ni sur aucun
-tag récent — l'interface Dart reste ouverte, la couche de connexion JS/WASM non.
+## Why this repository exists
 
-Il subsiste une image communautaire, [`pmietlicki/rustdesk-web-client`](https://hub.docker.com/r/pmietlicki/rustdesk-web-client),
-qui contient les fichiers compilés. Elle sert l'application Flutter avec un pont
-JavaScript qui n'expose que dix fonctions là où cette application en appelle
-plusieurs dizaines : la connexion échoue avant d'aboutir. Ce dépôt repart donc du
-**client V1 autonome** présent dans la même image — la partie qui est cohérente
-avec elle-même — corrige quatre défauts de son bundle, et **réimplémente tout ce
-qui manquait** : le client d'origine ne câble que l'affichage.
+The self-hosted web client is officially a **RustDesk Server Pro** feature. The
+open-source version (V1) was removed from the public repository between July 2025
+and release 1.4.4: `flutter/web/` no longer exists on `master` or on any recent
+tag — the Dart interface remains open, the JS/WASM connection layer does not.
 
-## Ce qui fonctionne
+A community image survives, [`pmietlicki/rustdesk-web-client`](https://hub.docker.com/r/pmietlicki/rustdesk-web-client),
+containing the compiled files. It serves the Flutter application alongside a
+JavaScript bridge that exposes ten functions where that application calls several
+dozen: the connection fails before it completes. This repository therefore starts
+from the **standalone V1 client** present in the same image — the part that is
+self-consistent — fixes four defects in its bundle, and **reimplements everything
+that was missing**: the original client wires up display and nothing else.
+
+## What works
 
 | | |
 |---|---|
-| Vidéo | H265 **matériel** des deux côtés via WebCodecs, repli VP9 puis logiciel |
-| Souris | déplacement, clics gauche/droit, molette, coordonnées mises à l'échelle |
-| Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
-| `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
-| Presse-papier | distant → navigateur, et navigateur → distant (texte) |
-| Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
-| Curseur | le vrai curseur distant, avec son point chaud |
-| Audio | Opus, avec réveil du contexte au premier geste |
-| Mesure | percentiles p50/p95/p99 de latence et de décodage, en surimpression |
-| Accès | authentification Basic + cookie de session de 90 jours |
+| Video | **hardware** H265 on both ends via WebCodecs, falling back to VP9 then software |
+| Mouse | movement, left/right click, wheel, correctly scaled coordinates |
+| Keyboard | text, accents, non-US layouts, dead keys, control keys |
+| `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
+| Clipboard | remote → browser, and browser → remote (text) |
+| Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
+| Cursor | the real remote cursor, with its hotspot |
+| Audio | Opus, with the audio context resumed on first gesture |
+| Metrics | p50/p95/p99 percentiles for latency and decode time, as an overlay |
+| Access | Basic authentication plus a 90-day session cookie |
 
-**Non supporté** : le transfert de fichiers. Il est absent du protocole de ce
-client — sa boucle de messages ne traite que onze types, aucun lié aux fichiers.
+**Not supported**: file transfer. It is absent from this client's protocol — its
+message loop handles eleven types, none of them file-related.
 
-## Prérequis
+## Requirements
 
-- `docker`, le plugin `docker compose` v2, `python3`, `curl`, `openssl`, `tar`
-- **Linux, macOS ou Windows.** Une seule valeur change selon la plateforme :
-  `RD_BACKEND_HOST`, l'adresse par laquelle le conteneur web joint hbbs/hbbr.
-  `setup.sh` détecte la plateforme et propose la bonne valeur.
+- `docker`, the `docker compose` v2 plugin, `python3`, `curl`, `openssl`, `tar`
+- **Linux, macOS, or Windows.** Exactly one value changes per platform:
+  `RD_BACKEND_HOST`, the address the web container uses to reach hbbs/hbbr.
+  `setup.sh` detects your platform and suggests the right value.
 
-  | Plateforme | Valeur | Vérifié |
+  | Platform | Value | Verified |
   |---|---|---|
-  | Linux, hbbs/hbbr en `network_mode: host` | `172.17.0.1` | oui |
-  | macOS (OrbStack, Docker Desktop) | `host.docker.internal` | oui, sur OrbStack |
-  | Windows (Docker Desktop) | `host.docker.internal` | par symétrie, non testé |
-  | serveur RustDesk sur une autre machine | son nom ou son IP | — |
+  | Linux, hbbs/hbbr in `network_mode: host` | `172.17.0.1` | yes |
+  | macOS (OrbStack, Docker Desktop) | `host.docker.internal` | yes, on OrbStack |
+  | Windows (Docker Desktop) | `host.docker.internal` | by symmetry, untested |
+  | RustDesk server on another machine | its hostname or IP | — |
 
-  Sur macOS, `172.17.0.1` **ne joint pas l'hôte** — il ne fonctionne qu'entre
-  conteneurs. `network_mode: host` pour Caddy fonctionne en revanche : OrbStack
-  et Docker Desktop reportent le port 443 sur la machine.
-- Un serveur RustDesk **OSS** (hbbs/hbbr) joignable, ports WebSocket 21118 et
-  21119 accessibles depuis le conteneur web
-- Un nom de domaine pointant en **A direct** vers cette machine, sans proxy
-- Le port **443** ouvert dans le pare-feu local **et** chez ton hébergeur
-  (security list OCI, security group AWS…). Le port 80 peut rester fermé :
-  le certificat s'obtient par TLS-ALPN-01, qui n'utilise que le 443.
+  On macOS, `172.17.0.1` **does not reach the host** — it only works between
+  containers. `network_mode: host` for Caddy does work: OrbStack and Docker
+  Desktop forward port 443 to the machine.
+
+- A reachable **RustDesk OSS** server (hbbs/hbbr), with WebSocket ports 21118 and
+  21119 accessible from the web container
+- A domain name with a **direct A record** to this machine, unproxied
+- Port **443** open in your local firewall **and** at your hosting provider
+  (OCI security list, AWS security group, and so on). Port 80 may stay closed:
+  the certificate is obtained through TLS-ALPN-01, which only uses 443.
 
 ## Installation
 
@@ -71,142 +74,139 @@ cd rustdesk-web-selfhosted
 ./setup.sh
 ```
 
-L'assistant demande le domaine, les identifiants d'accès, l'hôte de ton serveur
-RustDesk et sa clé publique, puis génère la configuration, extrait et corrige les
-assets, construit les images et vérifie que tout répond. Le relancer est sans
-danger : il reprend tes réponses précédentes.
+The wizard asks for your domain, access credentials, RustDesk server host and
+public key, then generates the configuration, extracts and patches the assets,
+builds the images, and verifies that everything responds. Re-running it is safe:
+it reuses your previous answers.
 
-### Configuration du serveur RustDesk
+### RustDesk server configuration
 
-Deux exigences côté hbbs, sans lesquelles le client web ne fonctionnera pas :
+Two requirements on the hbbs side, without which the web client will not work:
 
 ```yaml
-command: hbbs --mask 192.168.0.0/16 -k _   # PAS de -r / -R
+command: hbbs --mask 192.168.0.0/16 -k _   # NO -r / -R
 command: hbbr -k _
 ```
 
-- **Pas de `-r`/`-R`** : si hbbs impose un relais, le navigateur tentera un
-  `wss://` vers un hôte sans TLS et la session échouera. Sans ce drapeau, hbbs
-  renvoie un relais vide et le client retombe sur `/ws/relay` de la même origine.
-- **`-k _` est indispensable** : sans clé, `hbbr` est un **relais ouvert** que
-  n'importe qui sur Internet peut utiliser.
+- **No `-r`/`-R`**: if hbbs forces a relay, the browser will attempt a `wss://`
+  connection to a host without TLS and the session will fail. Without that flag,
+  hbbs returns an empty relay and the client falls back to same-origin `/ws/relay`.
+- **`-k _` is essential**: with no key, `hbbr` is an **open relay** that anyone on
+  the internet can use.
 
-Et sur le **poste contrôlé**, retirer tout `relay-server` explicite : il serait
-propagé au navigateur et provoquerait le même échec.
+On the **controlled machine**, remove any explicit `relay-server` setting: it
+would be propagated to the browser and cause the same failure.
 
 ## Architecture
 
 ```
-navigateur ──HTTPS 443──► Caddy ──► nginx ─┬── /            page + assets
-                          (TLS)             ├── /ws/id    ──► hbbs 21118
-                                            └── /ws/relay ──► hbbr 21119
+browser ──HTTPS 443──► Caddy ──► nginx ─┬── /            page + assets
+                       (TLS)             ├── /ws/id    ──► hbbs 21118
+                                         └── /ws/relay ──► hbbr 21119
 ```
 
-Deux conteneurs. Configuration et assets sont cuits dans les images ; seul le
-volume `caddy-data` persiste hors image, pour conserver les certificats entre
-redémarrages.
+Two containers. Configuration and assets are baked into the images; only the
+`caddy-data` volume persists outside them, to keep certificates across restarts.
 
-| Service | Base | Rôle |
+| Service | Base | Role |
 |---|---|---|
-| `web` | `nginx:alpine` | assets, authentification, proxy WebSocket |
-| `tls` | `caddy:2-alpine` | terminaison TLS 443, ACME automatique |
+| `web` | `nginx:alpine` | assets, authentication, WebSocket proxy |
+| `tls` | `caddy:2-alpine` | TLS termination on 443, automatic ACME |
 
-## Les quatre correctifs du bundle
+## The four bundle patches
 
-`scripts/patch-assets.sh` les réapplique de façon idempotente à partir de
-`html/js/dist/index.js.orig`. Sans eux, rien ne fonctionne :
+`scripts/patch-assets.sh` reapplies them idempotently from
+`html/js/dist/index.js.orig`. Without them, nothing works:
 
-1. **Routage WebSocket** — le client vise `wss://<hôte>:21118` et `:21119`, des
-   ports qu'aucun proxy HTTP standard ne relaie. Routé par chemin sur la même origine.
-2. **`get_conn_status`** — cas absent du pont ; il renvoyait `""`, et
-   `JSON.decode("")` levait une exception à chaque sondage, noyant la boucle
-   asynchrone et empêchant toute connexion d'aboutir.
-3. **`getByName`** — ne lève plus, conserve la sémantique `null → ""`.
-4. **Garde-fou de version** — hbbs OSS ne renseigne pas `RelayResponse.version` ;
-   le client refusait alors la session. Le champ n'est utilisé nulle part ailleurs.
+1. **WebSocket routing** — the client targets `wss://<host>:21118` and `:21119`,
+   ports no standard HTTP proxy relays. Rerouted by path on the same origin.
+2. **`get_conn_status`** — a case missing from the bridge; it returned `""`, and
+   `JSON.decode("")` threw on every poll, flooding the async loop and preventing
+   any connection from completing.
+3. **`getByName`** — no longer throws, and preserves the `null → ""` semantics.
+4. **Version guard** — hbbs OSS does not populate `RelayResponse.version`, so the
+   client refused the session. The field is used nowhere else.
 
-## Ce qui a été réimplémenté
+## What was reimplemented
 
-Le client V1 ne câble **que l'affichage**. Tout le reste vit dans
-`web/index.html.template`, via `window.curConn` et `setByName`, **sans jamais
-patcher le bundle** : les deux fonctions que le pont attend de l'hôte
-(`onGlobalEvent`, `onRgba`), la couche souris et clavier, le presse-papier
-sortant, la résolution, le curseur, et le décodeur WebCodecs.
+The V1 client wires up **display only**. Everything else lives in
+`web/index.html.template`, through `window.curConn` and `setByName`, **without
+ever patching the bundle**: the two functions the bridge expects from its host
+(`onGlobalEvent`, `onRgba`), the full mouse and keyboard layer, outbound
+clipboard, resolution control, remote cursor, and the WebCodecs decoder.
 
-### Trois pièges, si tu modifies ce code
+### Three traps, if you modify this code
 
-- **`jsonfyForDart` sérialise chaque valeur séparément.** Tout champ composite reçu
-  dans `onGlobalEvent` est une chaîne JSON à reparser, pas un objet.
-- **Le login envoie `video_ack_required: true`.** Toute substitution de
-  `handleVideoFrame` doit appeler `sendVideoReceived()`, sinon le flux se fige
-  après quelques trames.
-- **`curConn` est remplacé à chaque connexion**, et `reconnect()` réutilise
-  l'instance avec un `_ws` neuf. Les substitutions doivent être réappliquées.
+- **`jsonfyForDart` serialises each value separately.** Any composite field
+  received in `onGlobalEvent` is a JSON string to re-parse, not an object.
+- **Login sends `video_ack_required: true`.** Any replacement of
+  `handleVideoFrame` must call `sendVideoReceived()`, or the stream stalls after
+  a few frames.
+- **`curConn` is replaced on every connection**, and `reconnect()` reuses the
+  instance with a fresh `_ws`. Your overrides must be reapplied.
 
 ## Codec
 
-Le client d'origine ne déclare **aucune** capacité de décodage : le serveur
-retombe alors sur VP9 logiciel, y compris quand la machine contrôlée dispose d'un
-encodeur matériel. Ce dépôt déclare `supported_decoding{prefer:H265}` après
-`peer_info` et bascule le décodeur du navigateur sur WebCodecs.
+The original client declares **no** decoding capability, so the server falls back
+to software VP9 — even when the controlled machine has a hardware encoder. This
+repository declares `supported_decoding{prefer:H265}` after `peer_info` and
+switches the browser decoder to WebCodecs.
 
-Vérification côté machine contrôlée, pendant une session web :
+To verify, on the controlled machine during a web session:
 
 ```
 usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, …)
 ```
 
-> La négociation porte sur l'**intersection de toutes les connexions actives** :
-> une session native ouverte en parallèle peut faire retomber les deux en VP9.
-> Pour toute mesure, n'ouvrir qu'une session.
+> Negotiation is the **intersection of all active connections**: a native session
+> open in parallel can drop both back to VP9. Open only one session when measuring.
 
-Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logiciel.
+A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
 
-## Sécurité
+## Security
 
-- Authentification Basic sur la page et les assets, avec limitation de débit.
-- Cookie de session de 90 jours, `HttpOnly` + `Secure` + `SameSite=Lax`, posé
-  uniquement en réponse à une requête déjà authentifiée. **Changer le mot de passe
-  régénère le jeton**, ce qui déconnecte les navigateurs déjà autorisés.
-- L'image source n'est jamais exécutée ; seuls ses fichiers statiques sont servis.
-- Aucun secret dans le dépôt : `setup.sh` génère `.env` et `.htpasswd` localement,
-  tous deux ignorés par Git.
+- Basic authentication on the page and assets, with rate limiting.
+- 90-day session cookie, `HttpOnly` + `Secure` + `SameSite=Lax`, issued only in
+  response to an already-authenticated request. **Changing the password
+  regenerates the token**, which signs out previously authorised browsers.
+- The source image is never executed; only its static files are served.
+- No secrets in the repository: `setup.sh` generates `.env` and `.htpasswd`
+  locally, both git-ignored.
 
-> **Les routes `/ws/id` et `/ws/relay` ne sont pas derrière l'authentification.**
-> C'est nécessaire : le navigateur ne présente pas d'identifiants sur une poignée
-> de main WebSocket de façon fiable. Conséquence à mesurer : **ce proxy rend
-> hbbs et hbbr joignables publiquement même s'ils n'écoutent que sur une interface
-> privée.** Ce qui protège ton serveur est `-k _`, pas le mot de passe de la page —
-> et cela implique de traiter la **clé publique du serveur comme un secret**,
-> puisque quiconque la détient peut utiliser ton relais sans jamais voir la page.
+> **The `/ws/id` and `/ws/relay` routes are not behind authentication.** They have
+> to be: browsers do not reliably present credentials on a WebSocket handshake.
+> Weigh the consequence: **this proxy makes hbbs and hbbr publicly reachable even
+> if they only listen on a private interface.** What protects your server is
+> `-k _`, not the page password — which means the **server public key must be
+> treated as a secret**, since anyone holding it can use your relay without ever
+> seeing the page.
 
-Durcissements raisonnables non inclus : fail2ban sur les 401 de nginx, restriction
-du port 443 par IP si ton usage le permet.
+Reasonable hardening not included here: fail2ban on nginx 401s, restricting port
+443 by source IP if your usage allows it.
 
-## Licences
+## Licensing
 
-Le code de ce dépôt est sous **MIT**. Il ne redistribue aucun code tiers : les
-assets sont téléchargés à l'installation depuis un digest épinglé.
+The code in this repository is **MIT**. It redistributes no third-party code:
+assets are downloaded at install time from a pinned digest.
 
-Ce que ton navigateur exécute est en revanche un ouvrage dérivé du client RustDesk,
-sous **AGPL-3.0**. Son article 13 impose à l'**opérateur** d'un service accessible
-par le réseau d'en proposer les sources correspondantes : ce dépôt, avec le digest
-épinglé dans `scripts/extract-assets.sh` et les correctifs de `patch-assets.sh`,
-constitue cette source. Si tu exposes ce service publiquement, garde un lien vers
-ce dépôt accessible depuis ton déploiement.
+What your browser executes, however, is a derivative work of the RustDesk client,
+under **AGPL-3.0**. Its section 13 requires the **operator** of a network-accessible
+service to offer the corresponding source: this repository, together with the
+pinned digest in `scripts/extract-assets.sh` and the patches in
+`patch-assets.sh`, constitutes that source. If you expose this service publicly,
+keep a link to this repository reachable from your deployment.
 
-**Fragilité à connaître** : la reproductibilité dépend de la disponibilité de
-l'image source sur Docker Hub. Si elle disparaît, une nouvelle installation ne
-sera plus possible en l'état — pense à archiver `html/` si le service t'importe.
+**A fragility worth knowing**: reproducibility depends on the source image
+remaining available on Docker Hub. If it disappears, a fresh install will no
+longer be possible as-is — archive `html/` if this service matters to you.
 
-## Soutenir le projet
+## Support the project
 
-Ce dépôt est maintenu bénévolement. Si son contenu t'a fait gagner du temps :
+This repository is maintained on a voluntary basis. If it saved you time:
 
 ```
-ETH et chaînes compatibles EVM (Base, Arbitrum, Optimism, Polygon)
+ETH and EVM-compatible chains (Base, Arbitrum, Optimism, Polygon)
 0x8eb20ec53380F3C6F8A12dfa9A8459298d2759c4
 ```
 
-Vérifie la chaîne avant d'envoyer. Aucun don n'ouvre droit à un support ou à une
-priorité de traitement.
+Check the chain before sending. No donation grants support or priority.
