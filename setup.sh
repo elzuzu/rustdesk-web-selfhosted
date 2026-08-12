@@ -60,9 +60,20 @@ if [ ${#RD_WEB_PASSWORD} -lt 12 ]; then
 fi
 
 titre "Serveur RustDesk (hbbs / hbbr)"
-echo "  Hôte joignable depuis le conteneur web. Si hbbs/hbbr tournent sur cette"
-echo "  machine en network_mode host, utilise la passerelle Docker (172.17.0.1)."
-demander RD_BACKEND_HOST "Hôte du serveur RustDesk" "172.17.0.1"
+# Le moyen de joindre l'hôte depuis un conteneur diffère selon la plateforme :
+# sur macOS et Windows, la passerelle du pont ne route pas vers l'hôte.
+DEF_BACKEND="172.17.0.1"
+MOTEUR=$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || echo "")
+case "$(uname -s)$MOTEUR" in
+  Darwin*|*"Docker Desktop"*|*OrbStack*|*"Rancher Desktop"*)
+    DEF_BACKEND="host.docker.internal"
+    echo "  Plateforme détectée : $MOTEUR" ;;
+esac
+echo "  Hôte joignable depuis le conteneur web :"
+echo "    • Linux, hbbs/hbbr en network_mode host  → 172.17.0.1"
+echo "    • macOS ou Windows                       → host.docker.internal"
+echo "    • serveur RustDesk sur une autre machine → son nom ou son IP"
+demander RD_BACKEND_HOST "Hôte du serveur RustDesk" "$DEF_BACKEND"
 demander RD_PUBLIC_KEY "Clé publique du serveur (contenu de data/id_ed25519.pub)"
 [ -n "${RD_PUBLIC_KEY:-}" ] || { c_err "La clé publique est obligatoire."; exit 1; }
 demander RD_DEFAULT_PEER_ID "ID du poste distant à préremplir (facultatif)" ""

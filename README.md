@@ -41,9 +41,21 @@ client — sa boucle de messages ne traite que onze types, aucun lié aux fichie
 
 ## Prérequis
 
-- **Un serveur Linux.** `network_mode: host` et la passerelle `172.17.0.1` ne se
-  comportent pas de la même façon sous Docker Desktop pour macOS ou Windows.
 - `docker`, le plugin `docker compose` v2, `python3`, `curl`, `openssl`, `tar`
+- **Linux, macOS ou Windows.** Une seule valeur change selon la plateforme :
+  `RD_BACKEND_HOST`, l'adresse par laquelle le conteneur web joint hbbs/hbbr.
+  `setup.sh` détecte la plateforme et propose la bonne valeur.
+
+  | Plateforme | Valeur | Vérifié |
+  |---|---|---|
+  | Linux, hbbs/hbbr en `network_mode: host` | `172.17.0.1` | oui |
+  | macOS (OrbStack, Docker Desktop) | `host.docker.internal` | oui, sur OrbStack |
+  | Windows (Docker Desktop) | `host.docker.internal` | par symétrie, non testé |
+  | serveur RustDesk sur une autre machine | son nom ou son IP | — |
+
+  Sur macOS, `172.17.0.1` **ne joint pas l'hôte** — il ne fonctionne qu'entre
+  conteneurs. `network_mode: host` pour Caddy fonctionne en revanche : OrbStack
+  et Docker Desktop reportent le port 443 sur la machine.
 - Un serveur RustDesk **OSS** (hbbs/hbbr) joignable, ports WebSocket 21118 et
   21119 accessibles depuis le conteneur web
 - Un nom de domaine pointant en **A direct** vers cette machine, sans proxy
