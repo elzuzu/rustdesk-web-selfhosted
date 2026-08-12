@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RustDesk</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+
+<script>(function(){
+  var HOST="__RD_DOMAIN__";
+  var KEY="__RD_PUBLIC_KEY__";
+
+  // Le stockage ne doit jamais faire tomber une session : le quota est une
+  // limite du navigateur, pas une erreur applicative. En cas de debordement
+  // on elague le champ "info" (PeerInfo complet, binaire serialise) qui en
+  // est la cause, en conservant le mot de passe memorise.
+  var _si = Storage.prototype.setItem;
+  Storage.prototype.setItem = function(k, v){
+    try { _si.call(this, k, v); }
+    catch (e) {
+      console.warn("[stockage] ecriture ignoree:", k, "(" + e.name + ")");
+      if (k === "peers") {
+        try {
+          var P = JSON.parse(v), c = 0;
+          for (var id in P) { if (P[id] && P[id].info) { delete P[id].info; c++; } }
+          _si.call(this, "peers", JSON.stringify(P));
+          console.warn("[stockage] quota : " + c + " champ(s) info elague(s), reste conserve");
+        } catch(_) { try { _si.call(this, "peers", "{}"); } catch(__){} }
+      }
+    }
+  };
+
+  // Les pairs portent le mot de passe memorise : ne PAS les effacer.
+  (function(){
+    try{
+      var P=JSON.parse(localStorage.getItem("peers")||"{}"), n=0;
+      for(var id in P){ if(P[id]&&P[id].info){ delete P[id].info; n++; } }
+      localStorage.setItem("peers",JSON.stringify(P));
+      if(n) console.log("[pairs] "+n+" fiche(s) elaguee(s), mots de passe conserves");
+    }catch(e){ localStorage.setItem("peers","{}"); }
+  })();
+
+  localStorage.setItem("custom-rendezvous-server",HOST);
+  localStorage.setItem("rendezvous-server",HOST);
+  localStorage.setItem("key",KEY);
+  if(localStorage.getItem("id")===null)localStorage.setItem("id","__RD_DEFAULT_PEER_ID__");
+})();</script>
+
+<style>
+  html,body{height:100%}
+  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:0;
+       background:#0d0f12;color:#e6e8ec;overflow:hidden}
+
+  #app>#connect{padding:3rem 2rem}
+  #app input{padding:.45rem;border-radius:6px;border:1px solid #3a3f47;
+             background:#24272e;color:#e6e8ec;min-width:22rem}
+  #app>#connect button,#app>#password button{padding:.5rem 1.2rem;border-radius:6px;
+             border:0;background:#024eff;color:#fff;font-weight:600;cursor:pointer;margin-top:.6rem}
+  #app td{padding:.25rem .5rem}
+  #app>#password,#app>#status{padding:3rem 2rem}
+
+  #app>#canvas{position:fixed;inset:0;margin:0;padding:0;background:#000;
+               display:none;align-items:center;justify-content:center}
+  #app>#canvas[style*="block"]{display:flex!important}
+  #player,#rdcanvas{display:block;background:#000;max-width:100vw;max-height:100vh}
+  #rdcanvas{display:none}
+  #test-yuv-decoder-canvas{display:none}
+
+  #rdbar{position:fixed;top:0;right:0;z-index:10;display:none;align-items:center;
+         gap:.4rem;padding:.35rem .5rem;font-size:.8rem;
+         background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
+         border-bottom-left-radius:8px;border:1px solid rgba(255,255,255,.08);
+         border-top:0;border-right:0;opacity:.25;transition:opacity .18s}
+  #rdbar:hover,#rdbar:focus-within{opacity:1}
+  #rdbar select{padding:.2rem .35rem;font-size:.8rem;border-radius:5px;
+         border:1px solid #3a3f47;background:#24272e;color:#e6e8ec}
+  #rdbar button{padding:.2rem .6rem;font-size:.8rem;border-radius:5px;border:0;
+         background:#2a2f38;color:#e6e8ec;cursor:pointer;margin:0}
+  #rdbar button:hover{background:#3a4150}
+  #rdbar button.quit{background:#7a2130}
+  #rdbar button.quit:hover{background:#9c2a3c}
+
+  #rdhud{position:fixed;left:0;bottom:0;z-index:10;display:none;
+         padding:.3rem .55rem;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+         white-space:pre;color:#a8b0bd;
+         background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
+         border-top-right-radius:8px;border:1px solid rgba(255,255,255,.08);
+         border-bottom:0;border-left:0;opacity:.3;transition:opacity .18s}
+  #rdhud:hover{opacity:1}
+  #rdhud b{color:#e6e8ec;font-weight:600}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+// Chemin de rendu Flutter : inutilise ici, le client autonome dessine via
+// YUVCanvas. Le stub evite que chaque trame leve une ReferenceError.
+window.onRgba = function(){};
+
+// Le navigateur cree tout AudioContext en etat "suspended" tant qu'il n'y a
+// pas eu de geste utilisateur. On les recense pour les reveiller au 1er clic.
+window.__audioCtxs = [];
+(function(){
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  function Wrapped(opts){
+    var c = new AC(opts);
+    window.__audioCtxs.push(c);
+    console.log("[audio] contexte cree (" + c.state + ", " + c.sampleRate + " Hz)");
+    return c;
+  }
+  Wrapped.prototype = AC.prototype;
+  window.AudioContext = Wrapped;
+  window.webkitAudioContext = Wrapped;
+  function reveiller(){
+    window.__audioCtxs.forEach(function(c){
+      if (c.state !== "running") c.resume().then(function(){
+        console.log("[audio] contexte relance -> " + c.state);
+      }).catch(function(e){ console.warn("[audio]", e); });
+    });
+  }
+  ["click","keydown","touchstart"].forEach(function(ev){
+    document.addEventListener(ev, reveiller, true);
+  });
+})();
+
+// Etat partage entre les deux blocs de script.
+window.RD = {
+  ready:false,        // vrai apres peer_info : rien ne doit partir avant
+  res:[],             // modes supportes par l'ecran distant
+  orig:null,          // resolution d'origine
+  codec:null,         // "h265" | "vp9" | null (= logiciel ogv)
+  forced:"auto",      // choix utilisateur dans la barre
+  dec:null,           // VideoDecoder unique, reutilise entre connexions
+  wantKey:true,       // garde image-cle : jeter les deltas avant la 1ere cle
+  errors:0,           // echecs consecutifs avant repli
+  sawAnnexB:false,
+  W:0, H:0,           // dimensions de l'ecran distant
+  cursors:{},         // cache des curseurs distants, par id
+  cursorN:0,
+  // Une latence se lit en distribution, pas en moyenne : c'est la queue qui
+  // rend une session desagreable. On garde des fenetres glissantes.
+  stats:{ delay:[], decode:[], bitrate:0, frames:0, pend:[] }
+};
+
+// hbbs journalise l'objet TestDelay brut ; c'est la seule source de last_delay
+// accessible depuis la page, le traitement etant enferme dans le bundle.
+(function(){
+  var orig = console.log;
+  console.log = function(){
+    try{
+      var a = arguments[0];
+      if (a && typeof a === "object" && typeof a.last_delay === "number"){
+        var S = window.RD.stats;
+        S.delay.push(a.last_delay);
+        if (S.delay.length > 300) S.delay.shift();
+        if (typeof a.target_bitrate === "number") S.bitrate = a.target_bitrate;
+        return;                       // absorbe : ces lignes noyaient la console
+      }
+    }catch(_){}
+    return orig.apply(console, arguments);
+  };
+})();
+
+window.__rdPct = function(arr, p){
+  if (!arr.length) return null;
+  var s = arr.slice().sort(function(x,y){ return x-y; });
+  return s[Math.min(s.length-1, Math.floor(s.length*p))];
+};
+
+// Le curseur distant est transmis (cursor_data / cursor_id) mais le code qui
+// devait le dessiner est commente dans connection.ts. On le reimplemente :
+// bitmap RGBA -> canvas -> data URL -> propriete CSS cursor avec son point
+// chaud. Sans ca, on garde le pointeur local, qui ne reflete jamais l'etat
+// de macOS (redimensionnement, texte, main, attente...).
+window.__rdApplyCursor = function(css){
+  ["player","rdcanvas"].forEach(function(id){
+    var el = document.getElementById(id);
+    if (el) el.style.cursor = css;
+  });
+};
+window.__rdCursorFromData = function(cd, val){
+  try{
+    var w = parseInt(val(cd.width),10), h = parseInt(val(cd.height),10);
+    var hx = parseInt(val(cd.hotx),10)||0, hy = parseInt(val(cd.hoty),10)||0;
+    if (!(w>0 && h>0) || w>128 || h>128) return null;   // limite navigateur
+    var raw = cd.colors;
+    var arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!arr || arr.length < w*h*4) return null;
+    var cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    var ctx = cv.getContext("2d");
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(arr), w, h), 0, 0);
+    return "url(" + cv.toDataURL() + ") " + hx + " " + hy + ", auto";
+  }catch(e){ console.warn("[curseur]", e); return null; }
+};
+
+window.onGlobalEvent = function(payload){
+  var e;
+  try { e = JSON.parse(payload); } catch(_) { return; }
+
+  // jsonfyForDart serialise CHAQUE valeur : il faut les reparser une a une.
+  function val(x){ if (typeof x !== "string") return x;
+                   try { return JSON.parse(x); } catch(_) { return x; } }
+
+  try {
+    if (e.name === "peer_info") {
+      var r = val(e.resolutions);
+      if (r && r.resolutions) window.RD.res = r.resolutions;
+      var d = val(e.displays);
+      if (d && d.length) {
+        var cur = parseInt(val(e.current_display) || 0, 10) || 0;
+        if (d[cur]) {
+          if (d[cur].original_resolution) window.RD.orig = d[cur].original_resolution;
+          window.RD.W = d[cur].width|0; window.RD.H = d[cur].height|0;
+        }
+      }
+      window.RD.ready = true;
+      console.log("[session] prete — " + window.RD.res.length + " resolutions disponibles");
+      if (window.__rdMenu) window.__rdMenu();
+      if (window.__rdNegotiate) window.__rdNegotiate();
+    }
+    if (e.name === "switch_display") {
+      var r2 = val(e.resolutions);
+      if (r2 && r2.resolutions) { window.RD.res = r2.resolutions;
+        if (window.__rdMenu) window.__rdMenu(); }
+      var w = parseInt(val(e.width) || 0, 10), h = parseInt(val(e.height) || 0, 10);
+      if (w > 0 && h > 0) {
+        window.RD.W = w; window.RD.H = h;
+        // Redimensionner le canvas ACTIF, pas #player en dur.
+        var c = window.__rdActive ? window.__rdActive() : document.getElementById("player");
+        if (c) { c.width = w; c.height = h; console.log("[ecran] " + w + "x" + h); }
+        if (window.__rdFit) window.__rdFit();
+      }
+      // Nouveau flux : reinitialiser le decodeur et redemander une image-cle.
+      if (window.__rdResetDecoder) window.__rdResetDecoder();
+    }
+    if (e.name === "cursor_data") {
+      var cid = String(val(e.id));
+      var css = window.__rdCursorFromData(e, val);
+      if (css) {
+        // Cache borne : les curseurs systeme sont peu nombreux et recurrents.
+        if (window.RD.cursorN > 64) { window.RD.cursors = {}; window.RD.cursorN = 0; }
+        if (!window.RD.cursors[cid]) window.RD.cursorN++;
+        window.RD.cursors[cid] = css;
+        window.__rdApplyCursor(css);
+      }
+    }
+    if (e.name === "cursor_id") {
+      var known = window.RD.cursors[String(val(e.id))];
+      window.__rdApplyCursor(known || "default");
+    }
+  } catch(err) { console.warn("[onGlobalEvent]", err); }
+};
+</script>
+
+<script src="ogvjs-1.8.6/ogv.js"></script>
+<script src="yuv-canvas-1.2.6.js"></script>
+<script type="module" crossorigin src="js/dist/index.js"></script>
+
+<script>
+// Couche d'entree et chemin video WebCodecs.
+// ui.js ne cable que l'affichage : souris, clavier et codec sont ajoutes ici,
+// par substitution de methodes sur window.curConn. Aucun patch du bundle.
+(function(){
+  var RD = window.RD;
+
+  // ---------------------------------------------------------------- entrees
+  var CTRL={Enter:"Return",Backspace:"Backspace",Escape:"Escape",Tab:"Tab",
+    ArrowLeft:"LeftArrow",ArrowRight:"RightArrow",ArrowUp:"UpArrow",ArrowDown:"DownArrow",
+    Home:"Home",End:"End",Delete:"Delete",Insert:"Insert",PageUp:"PageUp",
+    PageDown:"PageDown"," ":"Space",CapsLock:"CapsLock",
+    Alt:"Alt",AltGraph:"Alt",Control:"Control",Shift:"Shift",Meta:"Meta"};
+  for(var i=1;i<=12;i++) CTRL["F"+i]="F"+i;
+  var MODK={Shift:1,Control:1,Alt:1,AltGraph:1,Meta:1};
+
+  function send(n,v){ try{ window.setByName(n, JSON.stringify(v)); }catch(e){ console.warn("[entree]",e); } }
+  function mods(e){ return {alt:String(e.altKey),ctrl:String(e.ctrlKey),
+                            shift:String(e.shiftKey),command:String(e.metaKey)}; }
+
+  // RustDesk transmet les modificateurs UN POUR UN : Ctrl+C arrive en Control+C
+  // sur le Mac, ou copier est Cmd+C. Seul le Terminal y reagit, parce que
+  // Control+C y est le vrai raccourci (SIGINT) — d'ou l'impression trompeuse
+  // que "ca marche par endroits". On permute donc ici, cote navigateur.
+  // Desactivable : dans un terminal distant, Control doit rester Control.
+  var swapCtrlCmd = localStorage.getItem("rd-swap-ctrl") !== "0";
+  function applySwap(m){
+    // N'inverse que si exactement l'un des deux est enfonce : Ctrl+Cmd+X
+    // reste tel quel, et une combinaison sans ni l'un ni l'autre est intacte.
+    if (swapCtrlCmd && (m.ctrl === "true") !== (m.command === "true")){
+      var t = m.ctrl; m.ctrl = m.command; m.command = t;
+    }
+    return m;
+  }
+  function merge(a,b){ for(var k in b) a[k]=b[k]; return a; }
+  function pos(c,e){ var r=c.getBoundingClientRect();
+    return {x:Math.round((e.clientX-r.left)*(c.width/r.width)),
+            y:Math.round((e.clientY-r.top)*(c.height/r.height))}; }
+  function btn(e){ return e.button===2?"right":e.button===1?"wheel":"left"; }
+
+  // Envoi direct d'un message protobuf via la connexion courante.
+  // curConn est expose globalement et ses proprietes survivent a la
+  // minification, donc aucun patch du bundle n'est necessaire.
+  function rdSend(msg){
+    try{
+      if(!RD.ready) return false;                     // jamais avant peer_info :
+      var c=window.curConn;                           // les compteurs secretbox
+      if(!c||!c._ws||!c._ws._websocket) return false; // seraient desynchronises
+      if(c._ws._websocket.readyState!==1) return false;
+      c._ws.sendMessage(msg);
+      return true;
+    }catch(e){ console.warn("[envoi]",e); return false; }
+  }
+  window.__rdSend = rdSend;
+
+  // ------------------------------------------------------------- canvas
+  function player(){ return document.getElementById("player"); }
+  function rdcanvas(){
+    var c = document.getElementById("rdcanvas");
+    if (c) return c;
+    var p = player(); if (!p) return null;
+    c = document.createElement("canvas");
+    c.id = "rdcanvas";
+    p.parentNode.insertBefore(c, p.nextSibling);
+    return c;
+  }
+  // Le canvas reellement affiche depend du chemin de decodage actif.
+  function active(){ return RD.codec ? rdcanvas() : player(); }
+  window.__rdActive = active;
+
+  function showActive(){
+    var p = player(), r = document.getElementById("rdcanvas");
+    if (!p) return;
+    if (RD.codec && r){ p.style.display="none"; r.style.display="block"; }
+    else { p.style.display="block"; if(r) r.style.display="none"; }
+  }
+
+  // Taille d'affichage calculee a la main : conserver le ratio exact evite
+  // les bandes noires DANS l'element, qui fausseraient les coordonnees souris.
+  function fitCanvas(){
+    var c = active(); if(!c || !c.width || !c.height) return;
+    var k = Math.min(window.innerWidth/c.width, window.innerHeight/c.height);
+    c.style.width  = Math.floor(c.width*k)+"px";
+    c.style.height = Math.floor(c.height*k)+"px";
+  }
+  window.__rdFit = fitCanvas;
+
+  // --------------------------------------------------------- sonde codec
+  var CODECS = {
+    // Niveaux volontairement hauts : L123 (4.1) et vp09 level 1.0 sont
+    // insuffisants pour un ecran Retina, et certains navigateurs refusent.
+    h265: "hev1.1.6.L153.b0",
+    vp9:  "vp09.00.50.08"
+  };
+  async function probeCodecs(){
+    if (typeof VideoDecoder === "undefined"){
+      console.log("[codec] WebCodecs indisponible — decodage logiciel");
+      return null;
+    }
+    var w = RD.W || 1920, h = RD.H || 1080;
+    for (var name of ["h265","vp9"]){
+      try{
+        var s = await VideoDecoder.isConfigSupported({
+          codec: CODECS[name], codedWidth: w, codedHeight: h,
+          hardwareAcceleration: "prefer-hardware", optimizeForLatency: true });
+        if (s && s.supported){ console.log("[codec] "+name+" accepte ("+CODECS[name]+")"); return name; }
+        console.log("[codec] "+name+" refuse");
+      }catch(e){ console.log("[codec] "+name+" refuse ("+e.name+")"); }
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------ decodeur unique
+  // Un seul VideoDecoder pour toute la vie de la page : conn.close() ne ferme
+  // que le decodeur ogv, le notre fuirait a chaque reconnexion.
+  function ensureDecoder(){
+    if (RD.dec && RD.dec.state !== "closed") return RD.dec;
+    var ctx = null;
+    RD.dec = new VideoDecoder({
+      output: function(frame){
+        try{
+          var c = rdcanvas();
+          if (c.width !== frame.displayWidth || c.height !== frame.displayHeight){
+            c.width = frame.displayWidth; c.height = frame.displayHeight;
+            ctx = null; fitCanvas();
+          }
+          if (!ctx) ctx = c.getContext("2d", {alpha:false, desynchronized:true});
+          ctx.drawImage(frame, 0, 0);
+          RD.errors = 0;
+          // Decodage + rendu, mesures bout a bout. L'ordre de sortie suit
+          // l'ordre d'entree pour ces codecs : une file suffit.
+          var S = RD.stats, t0 = S.pend.shift();
+          if (t0 !== undefined){
+            S.decode.push(performance.now() - t0);
+            if (S.decode.length > 300) S.decode.shift();
+          }
+          S.frames++;
+        } catch(e){ console.warn("[webcodecs] rendu", e); }
+        finally { frame.close(); }   // imperatif : sinon fuite du pool GPU
+      },
+      error: function(e){
+        console.warn("[webcodecs] erreur", e.message||e);
+        if (++RD.errors >= 3) fallbackToSoftware("erreurs de decodage repetees");
+      }
+    });
+    RD.dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920,
+                       codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware",
+                       optimizeForLatency: true });
+    RD.wantKey = true;
+    console.log("[webcodecs] configure en "+RD.codec);
+    return RD.dec;
+  }
+  function resetDecoder(){
+    if (!RD.dec || RD.dec.state === "closed") return;
+    try{ RD.dec.reset();
+         RD.dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920,
+                            codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware",
+                            optimizeForLatency: true });
+    }catch(e){ console.warn("[webcodecs] reset", e); }
+    RD.wantKey = true;
+    try{ window.curConn && window.curConn.refresh(); }catch(_){}
+  }
+  window.__rdResetDecoder = function(){ if (RD.codec) resetDecoder(); };
+
+  // ---------------------------------------------------- negociation codec
+  function negotiate(){
+    if (!RD.ready) return false;
+    var ab = RD.codec === "h265" ? {ability_h265:1, ability_vp9:1, prefer:3}
+           : RD.codec === "vp9"  ? {ability_h265:0, ability_vp9:1, prefer:1}
+           :                       {ability_h265:0, ability_vp9:1, prefer:1};
+    var ok = rdSend({misc:{option:{supported_decoding:ab}}});
+    if (ok){
+      console.log("[codec] declare : "+(RD.codec||"logiciel")+" (prefer="+ab.prefer+")");
+      try{ window.curConn.refresh(); }catch(_){}   // force une image-cle
+    }
+    return ok;
+  }
+  window.__rdNegotiate = function(){
+    if (RD.forced === "logiciel"){ RD.codec = null; showActive(); negotiate(); return; }
+    if (RD.forced === "h265" || RD.forced === "vp9"){ RD.codec = RD.forced; }
+    if (RD.codec) { ensureDecoder(); }
+    showActive(); fitCanvas(); negotiate();
+  };
+
+  // Repli : renegocier AVANT de restaurer, sinon le serveur continue d'emettre
+  // du H265 que la methode d'origine ne sait ni decoder ni acquitter -> freeze.
+  function fallbackToSoftware(raison){
+    if (!RD.codec) return;
+    console.warn("[codec] repli logiciel : "+raison);
+    RD.codec = null; RD.errors = 0;
+    negotiate();
+    var c = window.curConn;
+    if (c && c.__rdOrigHandle){ c.handleVideoFrame = c.__rdOrigHandle; }
+    if (c && c.__rdOrigDraw){ c.draw = c.__rdOrigDraw; }
+    showActive(); fitCanvas();
+  }
+
+  // ------------------------------------------- substitution sur curConn
+  function patchConn(c){
+    if (!c || !c._ws) return;
+    if (c.__rdPatchedWs === c._ws) return;    // reconnect() reutilise l'instance
+    c.__rdPatchedWs = c._ws;
+
+    if (!c.__rdOrigHandle) c.__rdOrigHandle = c.handleVideoFrame;
+    if (!c.__rdOrigDraw)   c.__rdOrigDraw   = c.draw;
+
+    c.handleVideoFrame = function(vf){
+      // Ce msgbox est ce qui rend div#canvas visible (ui.js, branche !type).
+      // L'omettre laisse la page bloquee sur "Connecting" — ecran noir.
+      if (!this._firstFrame){ this.msgbox("", "", ""); this._firstFrame = true; }
+
+      var evfs = RD.codec === "h265" ? vf.h265s
+               : RD.codec === "vp9"  ? vf.vp9s
+               : null;
+
+      if (!RD.codec || !evfs){
+        return this.__rdOrigHandle.call(this, vf);   // chemin ogv d'origine
+      }
+
+      var dec;
+      try { dec = ensureDecoder(); }
+      catch(e){ console.warn("[webcodecs] init", e); this.sendVideoReceived();
+                fallbackToSoftware("configuration impossible"); return; }
+
+      var frames = evfs.frames || [];
+      for (var i=0; i<frames.length; i++){
+        var f = frames[i];
+        if (RD.wantKey){
+          if (!f.key) continue;                       // garde image-cle
+          RD.wantKey = false;
+          if (!RD.sawAnnexB){
+            RD.sawAnnexB = true;
+            console.log("[flux] premiers octets de la cle : " +
+              Array.from(f.data.slice(0,5)).map(function(b){
+                return b.toString(16).padStart(2,"0"); }).join(" "));
+          }
+        }
+        try{
+          RD.stats.pend.push(performance.now());
+          if (RD.stats.pend.length > 60) RD.stats.pend.shift();
+          dec.decode(new EncodedVideoChunk({
+            type: f.key ? "key" : "delta",
+            timestamp: Number(f.pts||0) * 1000,
+            data: f.data }));
+        }catch(e){
+          RD.stats.pend.pop();
+          console.warn("[webcodecs] decode", e.name);
+          RD.wantKey = true;
+          if (++RD.errors >= 3) fallbackToSoftware("decode a echoue 3 fois");
+          break;
+        }
+      }
+      // ACK inconditionnel, une fois par VideoFrame recu, y compris pour les
+      // lots jetes : video_ack_required=true, un ACK manquant fige le flux.
+      this.sendVideoReceived();
+    };
+
+    // Supprime le SECOND globals.draw (un drawFrame + un readPixels+flip de
+    // 8,3 Mo en moins par trame). Le rendu visible reste dans _draw, dont la
+    // closure appartient au bundle. Sans effet aux niveaux 1 et 2, ou draw()
+    // n'est plus appele du tout.
+    c.draw = function(f){ if (this._draw) this._draw(f); };
+
+    console.log("[patch] connexion instrumentee");
+  }
+
+  // ---------------------------------------------------- cablage par canvas
+  function wireCanvas(c){
+    if(!c || c.dataset.wired) return; c.dataset.wired="1";
+    // Pas de curseur impose : c'est le curseur distant, recu par cursor_data,
+    // qui doit s'afficher pour refleter l'etat de macOS.
+    c.tabIndex=0; c.style.outline="none";
+    c.oncontextmenu=function(e){ e.preventDefault(); };
+
+    c.addEventListener("mousemove",function(e){ var p=pos(c,e);
+      send("send_mouse",merge({type:"",buttons:"",x:p.x,y:p.y},mods(e))); });
+    c.addEventListener("mousedown",function(e){ e.preventDefault(); c.focus(); var p=pos(c,e);
+      send("send_mouse",merge({type:"down",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
+    c.addEventListener("mouseup",function(e){ e.preventDefault(); var p=pos(c,e);
+      send("send_mouse",merge({type:"up",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
+    c.addEventListener("wheel",function(e){ e.preventDefault();
+      send("send_mouse",merge({type:"wheel",buttons:"",
+        x:e.deltaX>0?-1:e.deltaX<0?1:0, y:e.deltaY>0?-1:e.deltaY<0?1:0},mods(e)));
+    },{passive:false});
+
+    function key(e,down){
+      var k=e.key;
+      if(MODK[k]){ e.preventDefault(); return; }
+      var name=CTRL[k];
+      if(name){
+        e.preventDefault();
+        send("input_key",merge({name:name,down:String(down),press:"false"},applySwap(mods(e))));
+        return;
+      }
+      if(k.length!==1) return;
+      // Ctrl/Cmd+V : NE PAS intercepter, sinon le navigateur n'emet pas "paste".
+      if((e.ctrlKey||e.metaKey)&&!e.altKey&&k.toLowerCase()==="v") return;
+      if(e.ctrlKey||e.altKey||e.metaKey){
+        e.preventDefault();
+        var base=(k>="A"&&k<="Z")?k.toLowerCase():k;
+        send("input_key",merge({name:base,down:String(down),press:"false"},applySwap(mods(e))));
+        return;
+      }
+      // Texte simple : le navigateur a deja resolu la disposition (la disposition locale,
+      // accents, majuscules). On envoie le caractere final tel quel.
+      e.preventDefault();
+      if(down){ try{ window.setByName("input_string",k); }catch(x){ console.warn("[entree]",x); } }
+    }
+    c.addEventListener("keydown",function(e){ key(e,true); });
+    c.addEventListener("keyup",function(e){ key(e,false); });
+    c.focus();
+  }
+
+  // ------------------------------------------------- cablage global, 1 fois
+  var globalWired = false;
+  function wireGlobal(){
+    if (globalWired) return; globalWired = true;
+
+    // --- Presse-papier sortant : navigateur -> Mac ---
+    document.addEventListener("paste", function(ev){
+      var a = document.activeElement;
+      if (a !== player() && a !== document.getElementById("rdcanvas")) return;
+      ev.preventDefault();
+      var t="";
+      try{ t=(ev.clipboardData||window.clipboardData).getData("text/plain")||""; }catch(_){}
+      if(!t){ console.log("[presse-papier] ignore (contenu non textuel)"); return; }
+      if(t.length>1048576){ console.warn("[presse-papier] trop volumineux, ignore"); return; }
+      var bytes=new TextEncoder().encode(t);
+      if(rdSend({clipboard:{content:bytes,compress:false}})){
+        console.log("[presse-papier] "+bytes.length+" octets envoyes");
+        setTimeout(function(){
+          // Rejouer la frappe de collage sur le bon modificateur : Cmd+V si
+          // la permutation est active, Ctrl+V sinon (terminal distant).
+          var m={alt:"false",shift:"false",
+                 ctrl: swapCtrlCmd ? "false" : "true",
+                 command: swapCtrlCmd ? "true" : "false"};
+          send("input_key",merge({name:"v",down:"true",press:"false"},m));
+          send("input_key",merge({name:"v",down:"false",press:"false"},m));
+        },150);
+      }
+    });
+
+    // --- Barre flottante ---
+    var bar=document.createElement("div"); bar.id="rdbar";
+    var sel=document.createElement("select"); sel.title="Resolution de l'ecran distant";
+    var fit=document.createElement("button"); fit.textContent="Ajuster";
+    fit.title="Choisir la resolution la plus proche de la fenetre";
+    var qual=document.createElement("select"); qual.title="Qualite d'image";
+    [["balanced","Equilibre"],["best","Qualite"],["low","Fluidite"]].forEach(function(o){
+      var x=document.createElement("option"); x.value=o[0]; x.textContent=o[1]; qual.appendChild(x); });
+    qual.onchange=function(){
+      try{ window.setByName("image_quality",qual.value); console.log("[qualite] "+qual.value); }
+      catch(e){ console.warn(e); }
+      var c=active(); if(c) c.focus();
+    };
+    var fps=document.createElement("select"); fps.title="Images par seconde";
+    [30,15,10,60].forEach(function(v){ var x=document.createElement("option");
+      x.value=v; x.textContent=v+" i/s"; fps.appendChild(x); });
+    fps.onchange=function(){
+      if(rdSend({misc:{option:{custom_fps:+fps.value}}}))
+        console.log("[cadence] "+fps.value+" i/s");
+      var c=active(); if(c) c.focus();
+    };
+    var cod=document.createElement("select"); cod.title="Codec video";
+    [["auto","Codec auto"],["h265","H265"],["vp9","VP9"],["logiciel","Logiciel"]]
+      .forEach(function(o){ var x=document.createElement("option");
+        x.value=o[0]; x.textContent=o[1]; cod.appendChild(x); });
+    cod.onchange=function(){
+      RD.forced = cod.value;
+      if (RD.forced === "auto"){ probeCodecs().then(function(c){ RD.codec=c; window.__rdNegotiate(); }); }
+      else { window.__rdNegotiate(); }
+      var c=active(); if(c) c.focus();
+    };
+    // Permutation Ctrl/Cmd : indispensable hors terminal, nuisible dedans.
+    var swp=document.createElement("button");
+    function majSwap(){
+      swp.textContent = swapCtrlCmd ? "Ctrl→Cmd" : "Ctrl brut";
+      swp.title = swapCtrlCmd
+        ? "Ctrl est converti en Cmd (copier/coller macOS). Cliquer pour le mode terminal."
+        : "Ctrl est transmis tel quel (Ctrl+C = SIGINT). Cliquer pour le mode macOS.";
+      swp.style.background = swapCtrlCmd ? "#1f4d3a" : "#2a2f38";
+    }
+    swp.onclick=function(){
+      swapCtrlCmd = !swapCtrlCmd;
+      localStorage.setItem("rd-swap-ctrl", swapCtrlCmd ? "1" : "0");
+      majSwap();
+      console.log("[clavier] "+(swapCtrlCmd?"Ctrl converti en Cmd":"Ctrl transmis tel quel"));
+      var c=active(); if(c) c.focus();
+    };
+    majSwap();
+
+    var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
+    [sel,fit,qual,fps,cod,swp,quit].forEach(function(x){ bar.appendChild(x); });
+    document.body.appendChild(bar);
+
+    var orig=document.querySelector("#canvas > button");
+    if(orig) orig.style.display="none";
+    quit.onclick=function(){ if(orig) orig.click(); else if(window.cancel) window.cancel(); };
+
+    function apply(w,h){
+      if(rdSend({misc:{change_resolution:{width:w|0,height:h|0}}}))
+        console.log("[resolution] demande "+w+"x"+h);
+      var c=active(); if(c) c.focus();
+    }
+    window.__rdMenu=function(){
+      var r=RD.res||[]; sel.innerHTML="";
+      var o=document.createElement("option");
+      o.textContent=r.length?"Resolution":"(indisponible)"; o.value="";
+      sel.appendChild(o);
+      r.forEach(function(m){ var x=document.createElement("option");
+        x.value=m.width+"x"+m.height; x.textContent=m.width+"x"+m.height; sel.appendChild(x); });
+    };
+    sel.onchange=function(){ if(!sel.value) return; var v=sel.value.split("x"); apply(+v[0],+v[1]); };
+    fit.onclick=function(){
+      var r=RD.res||[]; if(!r.length){ console.warn("[resolution] aucune liste"); return; }
+      var vw=window.innerWidth, vh=window.innerHeight, best=null, score=Infinity;
+      r.forEach(function(m){
+        var d=Math.abs(m.width-vw)+Math.abs(m.height-vh);
+        if(Math.abs(m.width/m.height - vw/vh)<0.02) d*=0.5;
+        if(d<score){ score=d; best=m; }
+      });
+      if(best) apply(best.width,best.height);
+    };
+    window.__rdBar=bar;
+    window.__rdMenu();
+
+    // --- Affichage des percentiles ---
+    var hud=document.createElement("div"); hud.id="rdhud";
+    document.body.appendChild(hud);
+    window.__rdHud=hud;
+    var lastFrames=0, lastT=performance.now();
+
+    setInterval(function(){
+      var S=RD.stats, P=window.__rdPct;
+      var now=performance.now(), dt=(now-lastT)/1000;
+      var ips = dt>0 ? (S.frames-lastFrames)/dt : 0;
+      lastFrames=S.frames; lastT=now;
+
+      function fmt(a,u){
+        if(!a.length) return "—";
+        return P(a,.50).toFixed(0)+" / "+P(a,.95).toFixed(0)+" / "+P(a,.99).toFixed(0)+" "+u;
+      }
+      hud.textContent =
+        "aller-retour  p50/p95/p99   " + fmt(S.delay,"ms") + "\n" +
+        "decodage      p50/p95/p99   " + fmt(S.decode,"ms") + "\n" +
+        "cadence " + ips.toFixed(1) + " i/s    debit cible " + S.bitrate + " kbit/s" +
+        "    codec " + (RD.codec || "logiciel");
+    }, 1000);
+
+    window.addEventListener("resize", fitCanvas);
+
+    // Veilleur : taille, reglages initiaux, repatch apres reconnexion.
+    var last=0, tuned=false;
+    setInterval(function(){
+      var c = active();
+      if (c && c.width !== last){
+        last = c.width;
+        console.log("[ecran distant] "+c.width+"x"+c.height);
+        fitCanvas();
+      }
+      // Qualite rehaussee une fois la session prete : la contrainte n'est pas
+      // la bande passante (le relais plafonne 30x au-dessus du besoin).
+      if (RD.ready && !tuned){
+        tuned = rdSend({misc:{option:{custom_image_quality:150}}});
+        if (tuned) console.log("[qualite] ratio 1.5 applique");
+      }
+      // Memoriser le mot de passe du pair : ui.js ne l'active jamais.
+      try{ if(window.curConn && !window.curConn.getRemember()) window.curConn.setRemember(true); }catch(_){}
+      // Reappliquer les substitutions : curConn est remplace a chaque
+      // connexion, et reconnect() reutilise l'instance avec un _ws neuf.
+      try{ patchConn(window.curConn); }catch(_){}
+      var vu = (c && c.width>300) ? "block" : "none";
+      if (window.__rdBar) window.__rdBar.style.display = (vu==="block") ? "flex" : "none";
+      if (window.__rdHud) window.__rdHud.style.display = vu;
+    }, 800);
+  }
+
+  // ------------------------------------------------- preremplissage du formulaire
+  // ui.js remplit les champs dans document.body.onload, qui peut ne jamais se
+  // declencher (module differe). Et le gestionnaire de mots de passe du
+  // navigateur ecrase le champ ID en le prenant pour un identifiant de compte
+  // — il propose souvent l'identifiant du compte a la place de l'ID.
+  var DEFAUT_ID = "__RD_DEFAULT_PEER_ID__";
+  function prefillForm(){
+    var host=document.getElementById("host"),
+        id  =document.getElementById("id"),
+        key =document.getElementById("key");
+    if(!host||!id||!key) return false;
+    if(host.dataset.prefilled) return true;
+    host.dataset.prefilled="1";
+
+    [host,id,key].forEach(function(el){
+      el.setAttribute("autocomplete","off");
+      el.setAttribute("autocorrect","off");
+      el.setAttribute("spellcheck","false");
+      el.setAttribute("data-1p-ignore","");      // 1Password
+      el.setAttribute("data-lpignore","true");   // LastPass
+    });
+    id.setAttribute("inputmode","numeric");
+    id.setAttribute("name","rd-target-id");      // nom neutre : pas "user"/"login"
+
+    host.value = localStorage.getItem("custom-rendezvous-server") || "";
+    key.value  = localStorage.getItem("key") || "";
+    // L'ID reste modifiable : on ne le pose que s'il est vide ou si le
+    // gestionnaire de mots de passe l'a rempli avec autre chose qu'un ID.
+    var v = (id.value||"").trim();
+    if(!v || !/^[0-9 ]{6,}$/.test(v)) id.value = localStorage.getItem("id") || DEFAUT_ID;
+
+    // Corrige aussi un remplissage tardif par le navigateur.
+    setTimeout(function(){
+      var w=(id.value||"").trim();
+      if(!w || !/^[0-9 ]{6,}$/.test(w)) id.value = localStorage.getItem("id") || DEFAUT_ID;
+    }, 400);
+
+    console.log("[formulaire] prerempli — ID "+id.value+" (modifiable)");
+    return true;
+  }
+
+  // ---------------------------------------------------------- amorcage
+  probeCodecs().then(function(c){
+    RD.codec = c;
+    console.log("[codec] niveau retenu : " + (c ? c + " (WebCodecs)" : "logiciel (ogv.js)"));
+  });
+
+  setInterval(function(){
+    prefillForm();
+    var p = player();
+    if (!p) return;
+    wireGlobal();
+    wireCanvas(p);
+    var r = document.getElementById("rdcanvas");
+    if (RD.codec && !r) { r = rdcanvas(); }
+    if (r) wireCanvas(r);
+    showActive();
+  }, 400);
+})();
+</script>
+<link rel="modulepreload" href="js/dist/vendor.js">
+</body>
+</html>

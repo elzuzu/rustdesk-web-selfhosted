@@ -1,0 +1,25 @@
+services:
+  web:
+    build: .
+    image: rustdesk-web:1.0
+    container_name: rustdesk-web
+    ports:
+      - "127.0.0.1:8081:80"
+    mem_limit: 128m
+    cpus: 0.5
+    restart: unless-stopped
+
+  tls:
+    build:
+      context: .
+      dockerfile: Dockerfile.tls
+    image: rustdesk-tls:1.0
+    container_name: rustdesk-tls
+    network_mode: host          # doit joindre 127.0.0.1:8081 et ecouter sur 443
+    volumes:
+      - caddy-data:/data        # certificats : doivent survivre aux redemarrages
+    mem_limit: 128m
+    restart: unless-stopped
+
+volumes:
+  caddy-data:

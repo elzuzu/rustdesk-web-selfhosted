@@ -1,0 +1,97 @@
+map_hash_bucket_size 128;
+# Freine le forcage brutal de l'authentification Basic.
+limit_req_zone $binary_remote_addr zone=rdauth:10m rate=20r/m;   # le jeton de session fait 64 caracteres
+# Un cookie valide dispense de l'authentification Basic.
+# "off" desactive auth_basic ; toute autre valeur devient le realm.
+# Vraie IP du client : X-Real-IP pose par le proxy amont, sinon CF-Connecting-IP.
+map $http_x_real_ip $rd_client_ip {
+    ""      $http_cf_connecting_ip;
+    default $http_x_real_ip;
+}
+
+map $cookie_rdsession $rd_realm {
+    "__RD_SESSION_TOKEN__"  off;
+    default        "RustDesk";
+}
+
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/wasm application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    client_max_body_size 0;
+
+    # Le proxy amont (Caddy) est la seule source fiable de l'IP client.
+    set_real_ip_from 127.0.0.1;
+    set_real_ip_from ::1;
+    real_ip_header X-Real-IP;
+
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+
+    # Defense en profondeur : jamais de sauvegarde ni de source servie.
+    # DOIT preceder les autres regex, sinon /js/dist/index.js.orig est servi.
+    location ~* \.(bak|orig)$ {
+        return 404;
+    }
+
+    # Sonde de sante interne : pas d'authentification, jamais journalisee.
+    location = /healthz {
+        auth_basic off;
+        access_log off;
+        return 204;
+    }
+
+    location = /index.html {
+        auth_basic $rd_realm;
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        add_header Set-Cookie "rdsession=__RD_SESSION_TOKEN__; Max-Age=7776000; Path=/; HttpOnly; Secure; SameSite=Lax";
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+    }
+
+    location ~ ^/(js/dist/|flutter_service_worker\.js|main\.dart\.js) {
+        auth_basic $rd_realm;
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        add_header Set-Cookie "rdsession=__RD_SESSION_TOKEN__; Max-Age=7776000; Path=/; HttpOnly; Secure; SameSite=Lax";
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+    }
+
+    location / {
+        limit_req zone=rdauth burst=40 nodelay;
+        auth_basic $rd_realm;
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        add_header Set-Cookie "rdsession=__RD_SESSION_TOKEN__; Max-Age=7776000; Path=/; HttpOnly; Secure; SameSite=Lax";
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /ws/id {
+        proxy_pass http://__RD_BACKEND_HOST__:21118;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $rd_client_ip;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /ws/relay {
+        proxy_pass http://__RD_BACKEND_HOST__:21119;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $rd_client_ip;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

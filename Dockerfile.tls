@@ -1,0 +1,5 @@
+# Terminaison TLS devant le client web, sans Cloudflare dans le chemin.
+# Le certificat est obtenu et renouvele automatiquement par TLS-ALPN-01,
+# qui n'exige que le port 443 — le 80 reste ferme.
+FROM caddy:2-alpine
+COPY Caddyfile /etc/caddy/Caddyfile

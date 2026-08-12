@@ -1,0 +1,17 @@
+# Secrets et configuration generee — jamais committes
+.env
+.htpasswd
+nginx.conf
+Caddyfile
+
+# Assets telecharges a l installation (appartiennent a RustDesk / a l image source)
+html/
+
+# Divers
+*.bak
+*.bak-*
+.DS_Store
+
+# Portefeuille de dons : ne doit jamais approcher le depot
+.rustdesk-web-funding/
+*private-key*

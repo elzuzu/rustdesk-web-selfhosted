@@ -1,0 +1,25 @@
+{
+	# Le port 80 reste ferme : seul le defi TLS-ALPN-01, qui n'utilise que 443,
+	# peut donc delivrer le certificat.
+	auto_https disable_redirects
+	email __RD_ACME_EMAIL__
+}
+
+__RD_DOMAIN__ {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options DENY
+	}
+
+	reverse_proxy 127.0.0.1:8081 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
