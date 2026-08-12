@@ -4,7 +4,7 @@
 nginx.conf
 Caddyfile
 
-# Assets telecharges a l installation (appartiennent a RustDesk / a l image source)
+# Arborescence servie, reconstruite par setup.sh depuis assets/
 html/
 
 # Divers

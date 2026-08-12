@@ -184,10 +184,35 @@ A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
 Reasonable hardening not included here: fail2ban on nginx 401s, restricting port
 443 by source IP if your usage allows it.
 
+## Assets and provenance
+
+The client's static assets — 59 files, 2.5 MB — are versioned in
+`assets/rustdesk-web-assets.tar.gz`, with their SHA-256 in `assets/SHA256SUMS`.
+Installation is **offline and depends on no third party**: nothing is downloaded
+at install time.
+
+Only the subset actually served is kept. The Flutter application shipped in the
+same source image (`canvaskit`, `main.dart.js`, `assets/` — 26 MB) does not work
+and is never used.
+
+To verify provenance yourself rather than take it on trust:
+
+```bash
+./scripts/extract-assets.sh --from-image
+```
+
+This re-derives the same files from the original community image — pinned by
+digest, never executed — and reports any divergence from the versioned archive.
+
 ## Licensing
 
-The code in this repository is **MIT**. It redistributes no third-party code:
-assets are downloaded at install time from a pinned digest.
+The code in this repository is **MIT**.
+
+It **does** redistribute the client's compiled assets (see above). They come from
+the RustDesk client, under **AGPL-3.0**; the corresponding source is the RustDesk
+repository at the commit the community image was built from, referenced in
+`scripts/extract-assets.sh`. ogv.js and yuv-canvas carry their own licences,
+included in the archive.
 
 What your browser executes, however, is a derivative work of the RustDesk client,
 under **AGPL-3.0**. Its section 13 requires the **operator** of a network-accessible
@@ -195,10 +220,6 @@ service to offer the corresponding source: this repository, together with the
 pinned digest in `scripts/extract-assets.sh` and the patches in
 `patch-assets.sh`, constitutes that source. If you expose this service publicly,
 keep a link to this repository reachable from your deployment.
-
-**A fragility worth knowing**: reproducibility depends on the source image
-remaining available on Docker Hub. If it disappears, a fresh install will no
-longer be possible as-is — archive `html/` if this service matters to you.
 
 ## Support the project
 

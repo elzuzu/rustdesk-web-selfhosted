@@ -185,10 +185,36 @@ Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logic
 Durcissements raisonnables non inclus : fail2ban sur les 401 de nginx, restriction
 du port 443 par IP si ton usage le permet.
 
+## Assets et provenance
+
+Les fichiers statiques du client — 59 fichiers, 2,5 Mo — sont versionnés dans
+`assets/rustdesk-web-assets.tar.gz`, avec leur empreinte SHA-256 dans
+`assets/SHA256SUMS`. L'installation est donc **hors ligne et ne dépend d'aucun
+tiers** : rien n'est téléchargé au moment de l'installation.
+
+Seul le sous-ensemble réellement servi est conservé. L'application Flutter livrée
+dans la même image d'origine (`canvaskit`, `main.dart.js`, `assets/` — 26 Mo) ne
+fonctionne pas et n'est jamais utilisée.
+
+Pour vérifier la provenance par toi-même plutôt que sur parole :
+
+```bash
+./scripts/extract-assets.sh --from-image
+```
+
+Cette commande re-dérive les mêmes fichiers depuis l'image communautaire
+d'origine — épinglée par digest, jamais exécutée — et signale toute divergence
+avec l'archive versionnée.
+
 ## Licences
 
-Le code de ce dépôt est sous **MIT**. Il ne redistribue aucun code tiers : les
-assets sont téléchargés à l'installation depuis un digest épinglé.
+Le code de ce dépôt est sous **MIT**.
+
+Il **redistribue** en revanche les fichiers compilés du client (voir ci-dessus).
+Ils proviennent du client RustDesk, sous **AGPL-3.0** ; la source correspondante
+est le dépôt RustDesk au commit depuis lequel l'image communautaire a été
+construite, référencé dans `scripts/extract-assets.sh`. ogv.js et yuv-canvas
+portent leurs propres licences, incluses dans l'archive.
 
 Ce que ton navigateur exécute est en revanche un ouvrage dérivé du client RustDesk,
 sous **AGPL-3.0**. Son article 13 impose à l'**opérateur** d'un service accessible
@@ -196,10 +222,6 @@ par le réseau d'en proposer les sources correspondantes : ce dépôt, avec le d
 épinglé dans `scripts/extract-assets.sh` et les correctifs de `patch-assets.sh`,
 constitue cette source. Si tu exposes ce service publiquement, garde un lien vers
 ce dépôt accessible depuis ton déploiement.
-
-**Fragilité à connaître** : la reproductibilité dépend de la disponibilité de
-l'image source sur Docker Hub. Si elle disparaît, une nouvelle installation ne
-sera plus possible en l'état — pense à archiver `html/` si le service t'importe.
 
 ## Soutenir le projet
 
