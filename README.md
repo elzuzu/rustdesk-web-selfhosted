@@ -195,14 +195,15 @@ Only the subset actually served is kept. The Flutter application shipped in the
 same source image (`canvaskit`, `main.dart.js`, `assets/` — 26 MB) does not work
 and is never used.
 
-To verify provenance yourself rather than take it on trust:
+`setup.sh` unpacks them for you; there is nothing extra to run.
+
+If you would rather audit the archive than take it on trust, this **optional**
+command re-derives the same files from the original community image — pinned by
+digest, never executed — and reports any divergence:
 
 ```bash
-./scripts/extract-assets.sh --from-image
+./scripts/extract-assets.sh --verify-provenance    # needs Docker and network
 ```
-
-This re-derives the same files from the original community image — pinned by
-digest, never executed — and reports any divergence from the versioned archive.
 
 ## Licensing
 

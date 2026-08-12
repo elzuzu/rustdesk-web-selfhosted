@@ -196,15 +196,15 @@ Seul le sous-ensemble réellement servi est conservé. L'application Flutter liv
 dans la même image d'origine (`canvaskit`, `main.dart.js`, `assets/` — 26 Mo) ne
 fonctionne pas et n'est jamais utilisée.
 
-Pour vérifier la provenance par toi-même plutôt que sur parole :
+`setup.sh` les décompresse pour toi ; il n'y a rien de plus à lancer.
+
+Si tu préfères auditer l'archive plutôt que la croire sur parole, cette commande
+**facultative** re-dérive les mêmes fichiers depuis l'image communautaire
+d'origine — épinglée par digest, jamais exécutée — et signale toute divergence :
 
 ```bash
-./scripts/extract-assets.sh --from-image
+./scripts/extract-assets.sh --verify-provenance   # necessite Docker et le reseau
 ```
-
-Cette commande re-dérive les mêmes fichiers depuis l'image communautaire
-d'origine — épinglée par digest, jamais exécutée — et signale toute divergence
-avec l'archive versionnée.
 
 ## Licences
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Met en place l'arborescence servie (html/) à partir des assets du client.
 #
-# Par défaut : décompresse l'archive versionnée dans assets/, après
-# vérification de son empreinte. Aucun réseau, aucune dépendance externe.
+# APPELÉ AUTOMATIQUEMENT PAR setup.sh — rien à lancer à la main pour installer.
 #
-# Avec --from-image : re-dérive les mêmes fichiers depuis l'image communautaire
-# d'origine et compare l'empreinte. C'est le moyen de vérifier soi-même la
-# provenance de l'archive plutôt que de la croire sur parole.
+# Sans argument : décompresse l'archive versionnée dans assets/, après
+#   vérification de son empreinte. Hors ligne, aucune dépendance externe.
+#
+# --verify-provenance : OPTIONNEL, jamais nécessaire à l'installation.
+#   Re-dérive les mêmes fichiers depuis l'image communautaire d'origine et
+#   signale toute divergence. Pour qui veut auditer l'archive plutôt que la
+#   croire sur parole. Nécessite Docker et un accès réseau.
 #
 # Pourquoi une archive versionnée : le client web V1 open source a été retiré du
 # dépôt public de RustDesk entre juillet 2025 et la version 1.4.4. Il n'existe
@@ -27,9 +30,9 @@ verifier() {
   echo "  ✓ empreinte vérifiée : ${reel:0:16}…"
 }
 
-if [ "${1:-}" = "--from-image" ]; then
+if [ "${1:-}" = "--verify-provenance" ] || [ "${1:-}" = "--from-image" ]; then
   echo "  re-dérivation depuis l'image d'origine (jamais exécutée)…"
-  command -v docker >/dev/null || { echo "  docker requis pour --from-image"; exit 1; }
+  command -v docker >/dev/null || { echo "  docker requis pour --verify-provenance"; exit 1; }
   docker pull -q "$IMAGE" >/dev/null
   TMPC="rdweb-extract-$$"; TMPD=$(mktemp -d)
   trap 'docker rm -f "$TMPC" >/dev/null 2>&1 || true; rm -rf "$TMPD"' EXIT
