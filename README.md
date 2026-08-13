@@ -35,6 +35,7 @@ that was missing**: the original client wires up display and nothing else.
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
 | Cursor | the real remote cursor, with its hotspot |
 | Audio | Opus, with the audio context resumed on first gesture |
+| Screen wake lock | the display never sleeps while a session is live, like YouTube during playback |
 | Metrics | p50/p95/p99 percentiles for latency and decode time, as an overlay |
 | Access | Basic authentication plus a 90-day session cookie |
 
