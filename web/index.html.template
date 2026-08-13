@@ -840,7 +840,16 @@ window.onGlobalEvent = function(payload){
       // Reappliquer les substitutions : curConn est remplace a chaque
       // connexion, et reconnect() reutilise l'instance avec un _ws neuf.
       try{ patchConn(window.curConn); }catch(_){}
-      var enSession = (c && c.width > 300);
+      // Le canvas GARDE sa largeur apres une coupure : c.width reste a 1920 et
+      // la fin de session passait inapercue. On interroge donc l'etat reel :
+      // le conteneur d'affichage est-il visible, et la liaison est-elle ouverte.
+      var enSession = (function(){
+        var d = document.getElementById("canvas");
+        if (!d || getComputedStyle(d).display === "none") return false;
+        var k = window.curConn;
+        if (!k || !k._ws || !k._ws._websocket) return false;
+        return k._ws._websocket.readyState === 1;
+      })();
       if (enSession) veilleActiver(); else veilleLiberer();
       // Transition « en session » -> « plus en session » : tenter une reprise.
       if (window.__rdEtait && !enSession) repriseplanifier();

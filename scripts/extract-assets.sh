@@ -46,8 +46,11 @@ if [ "${1:-}" = "--verify-provenance" ] || [ "${1:-}" = "--from-image" ]; then
   cp -a "$SRC/js/dist/." html/js/dist/
   cp -a "$SRC/ogvjs-1.8.6" html/
   cp -f "$SRC/yuv-canvas-1.2.6.js" html/
+  # Les workers sont charges par « new Worker("./libopus.js") », que le
+  # navigateur resout depuis la RACINE du document, pas depuis le module.
+  # On les place aux deux endroits : la racine est celle qui compte.
   for f in libopus.js libopus.wasm yuv.js yuv.wasm; do
-    [ -f "$SRC/$f" ] && cp -f "$SRC/$f" html/js/dist/
+    [ -f "$SRC/$f" ] && { cp -f "$SRC/$f" html/js/dist/; cp -f "$SRC/$f" html/; }
   done
   rm -f html/js/dist/index.html
 
