@@ -17,6 +17,13 @@ __RD_DOMAIN__ {
 	}
 
 	reverse_proxy 127.0.0.1:8081 {
+		# Un redemarrage du conteneur web dure quelques secondes. Sans ces
+		# lignes, Caddy renvoie une erreur immediate et coupe les sessions ;
+		# avec elles, il patiente et la reprise est invisible pour le client.
+		lb_try_duration 25s
+		lb_try_interval 250ms
+		fail_duration 0s
+
 		header_up Host {host}
 		header_up X-Real-IP {remote_host}
 		header_up X-Forwarded-For {remote_host}
