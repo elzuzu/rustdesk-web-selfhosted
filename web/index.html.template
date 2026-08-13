@@ -712,12 +712,20 @@ window.onGlobalEvent = function(payload){
       catch(e){ console.warn(e); }
       var c=active(); if(c) c.focus();
     };
-    var fps=document.createElement("select"); fps.title="Images par seconde";
-    [30,15,10,60].forEach(function(v){ var x=document.createElement("option");
-      x.value=v; x.textContent=v+" i/s"; fps.appendChild(x); });
+    // custom_fps est un PLAFOND, pas une cible : le serveur calcule la cadence
+    // reelle depuis la latence mesuree (ABR), puis la rabote a cette valeur.
+    // Monter le plafond au-dessus de ce que l'ABR accorde ne change donc rien ;
+    // le baisser, si.
+    var fps=document.createElement("select");
+    fps.title="Plafond de cadence. Le serveur decide la cadence reelle selon "
+            + "la latence ; ce reglage ne fait que la borner. Le baisser a un "
+            + "effet immediat, le monter n'en a que si la liaison suit.";
+    [[30,"30 i/s max"],[60,"60 i/s max"],[15,"15 i/s max"],[10,"10 i/s max"]]
+      .forEach(function(o){ var x=document.createElement("option");
+        x.value=o[0]; x.textContent=o[1]; fps.appendChild(x); });
     fps.onchange=function(){
       if(rdSend({misc:{option:{custom_fps:+fps.value}}}))
-        console.log("[cadence] "+fps.value+" i/s");
+        console.log("[cadence] plafond a "+fps.value+" i/s (cadence reelle decidee par l'ABR)");
       var c=active(); if(c) c.focus();
     };
     var cod=document.createElement("select"); cod.title="Codec video";
@@ -805,7 +813,7 @@ window.onGlobalEvent = function(payload){
       hud.textContent =
         "aller-retour  p50/p95/p99   " + fmt(S.delay,"ms") + "\n" +
         "decodage      p50/p95/p99   " + fmt(S.decode,"ms") + "\n" +
-        "cadence " + ips.toFixed(1) + " i/s    debit cible " + S.bitrate + " kbit/s" +
+        "trames recues " + ips.toFixed(1) + "/s    debit cible " + S.bitrate + " kbit/s" +
         "    codec " + (RD.codec || "logiciel") +
         (hud.dataset.reprise ? "\n" + hud.dataset.reprise : "");
     }, 1000);
