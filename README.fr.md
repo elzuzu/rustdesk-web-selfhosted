@@ -35,6 +35,7 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
 | Curseur | le vrai curseur distant, avec son point chaud |
 | Audio | Opus, avec réveil du contexte au premier geste |
+| Reprise automatique | une session coupée se relance seule, avec délai croissant — pas de retour au formulaire |
 | Veille écran | l'écran ne se verrouille pas tant qu'une session est active, comme YouTube en lecture |
 | Mesure | percentiles p50/p95/p99 de latence et de décodage, en surimpression |
 | Accès | authentification Basic + cookie de session de 90 jours |

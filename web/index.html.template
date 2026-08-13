@@ -125,6 +125,26 @@ window.__audioCtxs = [];
   });
 })();
 
+// Un service worker de l'epoque Flutter reste enregistre dans les navigateurs
+// qui ont visite les versions precedentes. Il reclame des fichiers supprimes
+// et peut servir une version en cache de la page et du bundle, ce qui produit
+// des comportements incoherents entre rechargements. On le retire.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.getRegistrations().then(function(rs){
+    rs.forEach(function(r){
+      r.unregister().then(function(ok){
+        if (ok) console.log("[sw] service worker obsolete retire — recharge une fois");
+      });
+    });
+  }).catch(function(){});
+  if (window.caches && caches.keys) {
+    caches.keys().then(function(ks){
+      ks.forEach(function(k){ caches.delete(k).then(function(ok){
+        if (ok) console.log("[sw] cache « " + k + " » purge"); }); });
+    }).catch(function(){});
+  }
+}
+
 // Etat partage entre les deux blocs de script.
 window.RD = {
   ready:false,        // vrai apres peer_info : rien ne doit partir avant
@@ -573,6 +593,43 @@ window.onGlobalEvent = function(payload){
   }
 
 
+
+  // ------------------------------------------------------ reprise auto
+  // Une coupure reseau, un relais recree ou un onglet endormi terminent la
+  // session. Plutot que de retomber sur le formulaire, on retente, avec un
+  // delai croissant pour ne pas marteler un serveur qui redemarre.
+  var reprise = { n:0, timer:null, voulue:false };
+
+  function repriseAnnuler(){
+    if (reprise.timer){ clearTimeout(reprise.timer); reprise.timer = null; }
+    reprise.n = 0;
+  }
+
+  function repriseInfo(txt){
+    var h = window.__rdHud;
+    if (h) h.dataset.reprise = txt || "";
+  }
+
+  function repriseplanifier(){
+    if (reprise.voulue){ console.log("[reprise] deconnexion demandee, pas de reprise"); return; }
+    if (reprise.timer) return;
+    if (reprise.n >= 6){
+      console.warn("[reprise] abandon apres 6 tentatives");
+      repriseInfo("reprise abandonnee — recharge la page");
+      return;
+    }
+    var delai = Math.min(30000, 1000 * Math.pow(2, reprise.n));
+    reprise.n++;
+    console.log("[reprise] tentative " + reprise.n + "/6 dans " + (delai/1000) + " s");
+    repriseInfo("reconnexion " + reprise.n + "/6 dans " + (delai/1000) + " s");
+    reprise.timer = setTimeout(function(){
+      reprise.timer = null;
+      repriseInfo("reconnexion en cours…");
+      try { if (window.connect) window.connect(); }
+      catch(e){ console.warn("[reprise]", e); }
+    }, delai);
+  }
+
   // --------------------------------------------------- verrou de veille
   // Empeche l'ecran de se verrouiller pendant une session, comme le font
   // YouTube en lecture et le client RustDesk natif. Le navigateur libere
@@ -697,7 +754,10 @@ window.onGlobalEvent = function(payload){
 
     var orig=document.querySelector("#canvas > button");
     if(orig) orig.style.display="none";
-    quit.onclick=function(){ if(orig) orig.click(); else if(window.cancel) window.cancel(); };
+    quit.onclick=function(){
+      reprise.voulue = true; repriseAnnuler(); repriseInfo("");
+      if(orig) orig.click(); else if(window.cancel) window.cancel();
+    };
 
     function apply(w,h){
       if(rdSend({misc:{change_resolution:{width:w|0,height:h|0}}}))
@@ -746,7 +806,8 @@ window.onGlobalEvent = function(payload){
         "aller-retour  p50/p95/p99   " + fmt(S.delay,"ms") + "\n" +
         "decodage      p50/p95/p99   " + fmt(S.decode,"ms") + "\n" +
         "cadence " + ips.toFixed(1) + " i/s    debit cible " + S.bitrate + " kbit/s" +
-        "    codec " + (RD.codec || "logiciel");
+        "    codec " + (RD.codec || "logiciel") +
+        (hud.dataset.reprise ? "\n" + hud.dataset.reprise : "");
     }, 1000);
 
     window.addEventListener("resize", fitCanvas);
@@ -773,6 +834,10 @@ window.onGlobalEvent = function(payload){
       try{ patchConn(window.curConn); }catch(_){}
       var enSession = (c && c.width > 300);
       if (enSession) veilleActiver(); else veilleLiberer();
+      // Transition « en session » -> « plus en session » : tenter une reprise.
+      if (window.__rdEtait && !enSession) repriseplanifier();
+      if (enSession){ repriseAnnuler(); repriseInfo(""); }
+      window.__rdEtait = enSession;
       var vu = enSession ? "block" : "none";
       if (window.__rdBar) window.__rdBar.style.display = (vu==="block") ? "flex" : "none";
       if (window.__rdHud) window.__rdHud.style.display = vu;
