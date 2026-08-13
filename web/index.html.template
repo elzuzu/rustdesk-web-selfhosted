@@ -145,6 +145,51 @@ if ("serviceWorker" in navigator) {
   }
 }
 
+// Diagnostic des coupures. Le Mac sonde toutes les secondes et abandonne apres
+// 30 s de silence : un « Timeout » signifie donc que CE navigateur s'est tu.
+// On trace ce qui peut le faire taire — gel de l'onglet, veille, perte reseau —
+// et le code de fermeture du websocket, qui distingue une fermeture propre
+// (1000/1001) d'une disparition brutale de la connexion (1006).
+(function(){
+  var dernier = Date.now();
+  window.__rdVu = function(){ dernier = Date.now(); };
+
+  function tracer(ev){
+    var s = Math.round((Date.now() - dernier)/1000);
+    console.warn("[diag] " + ev + " — " + s + " s depuis le dernier message recu"
+               + " | onglet " + document.visibilityState);
+  }
+  ["freeze","resume","pagehide","pageshow"].forEach(function(e){
+    document.addEventListener(e, function(){ tracer(e); }, true);
+  });
+  document.addEventListener("visibilitychange", function(){
+    tracer("visibilite -> " + document.visibilityState);
+  });
+  window.addEventListener("offline", function(){ tracer("reseau perdu"); });
+  window.addEventListener("online",  function(){ tracer("reseau retrouve"); });
+
+  // Le constructeur WebSocket est enveloppe pour tracer les fermetures : le
+  // bundle ne journalise qu'un objet CloseEvent sans en extraire le code.
+  var W = window.WebSocket;
+  function Trace(url, proto){
+    var ws = proto === undefined ? new W(url) : new W(url, proto);
+    ws.addEventListener("message", function(){ dernier = Date.now(); });
+    ws.addEventListener("close", function(e){
+      var s = Math.round((Date.now() - dernier)/1000);
+      console.warn("[diag] websocket ferme  code=" + e.code
+                 + "  propre=" + e.wasClean
+                 + "  raison=\"" + (e.reason || "") + "\""
+                 + "  silence=" + s + " s"
+                 + "  onglet=" + document.visibilityState
+                 + "  " + String(url).replace(/^wss?:\/\/[^/]+/, ""));
+    });
+    return ws;
+  }
+  Trace.prototype = W.prototype;
+  ["CONNECTING","OPEN","CLOSING","CLOSED"].forEach(function(k,i){ Trace[k] = i; });
+  window.WebSocket = Trace;
+})();
+
 // Etat partage entre les deux blocs de script.
 window.RD = {
   ready:false,        // vrai apres peer_info : rien ne doit partir avant
