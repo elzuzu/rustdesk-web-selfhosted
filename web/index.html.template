@@ -180,12 +180,29 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("offline", function(){ tracer("reseau perdu"); });
   window.addEventListener("online",  function(){ tracer("reseau retrouve"); });
 
-  // Le constructeur WebSocket est enveloppe pour tracer les fermetures : le
-  // bundle ne journalise qu'un objet CloseEvent sans en extraire le code.
+  // Le constructeur WebSocket est enveloppe pour tracer les fermetures et la
+  // progression des poignées de main WebSockets.
   var W = window.WebSocket;
+  var sockets = [];
   function Trace(url, proto){
     var ws = proto === undefined ? new W(url) : new W(url, proto);
-    ws.addEventListener("message", function(){ dernier = Date.now(); });
+    var path = String(url).replace(/^wss?:\/\/[^/]+/, "");
+    console.log("[diag] websocket ouverture -> " + path);
+    sockets.push({ url: url, path: path, ws: ws, created: Date.now() });
+
+    ws.addEventListener("open", function(){
+      console.log("[diag] websocket connecte -> " + path);
+    });
+
+    var msgCount = 0;
+    ws.addEventListener("message", function(e){
+      dernier = Date.now();
+      msgCount++;
+      if (msgCount === 1) {
+        console.log("[diag] premier message recu -> " + path);
+      }
+    });
+
     ws.addEventListener("close", function(e){
       var s = Math.round((Date.now() - dernier)/1000);
       console.warn("[diag] websocket ferme  code=" + e.code
@@ -193,13 +210,27 @@ if ("serviceWorker" in navigator) {
                  + "  raison=\"" + (e.reason || "") + "\""
                  + "  silence=" + s + " s"
                  + "  onglet=" + document.visibilityState
-                 + "  " + String(url).replace(/^wss?:\/\/[^/]+/, ""));
+                 + "  " + path);
     });
     return ws;
   }
   Trace.prototype = W.prototype;
   ["CONNECTING","OPEN","CLOSING","CLOSED"].forEach(function(k,i){ Trace[k] = i; });
   window.WebSocket = Trace;
+
+  window.rdDiag = function(){
+    console.group("=== DIAGNOSTIC RUSTDESK WEB ===");
+    console.log("Hôte configuré :", localStorage.getItem("custom-rendezvous-server") || "(non défini)");
+    var k = localStorage.getItem("key") || "";
+    console.log("Clé publique :", k ? (k.substring(0, 12) + "..." + k.substring(k.length - 6) + " (longueur " + k.length + ")") : "(vide)");
+    console.log("ID cible :", localStorage.getItem("id") || "(vide)");
+    console.log("Codecs retenus :", window.RD ? window.RD.codec : "non initialisé");
+    console.log("Sockets récents :", sockets.map(function(s){
+      var st = ["CONNECTING","OPEN","CLOSING","CLOSED"][s.ws.readyState] || s.ws.readyState;
+      return s.path + " [" + st + "] (état: " + st + ", créé il y a " + Math.round((Date.now() - s.created)/1000) + "s)";
+    }));
+    console.groupEnd();
+  };
 })();
 
 // Etat partage entre les deux blocs de script.
