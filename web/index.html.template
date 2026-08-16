@@ -533,28 +533,38 @@ window.onGlobalEvent = function(payload){
   // que le decodeur ogv, le notre fuirait a chaque reconnexion.
   function ensureDecoder(){
     if (RD.dec && RD.dec.state !== "closed") return RD.dec;
-    var ctx = null;
+    var ctx = null, pendingFrame = null, rafId = null;
+
+    function drawPendingFrame(){
+      rafId = null;
+      if (!pendingFrame) return;
+      var frame = pendingFrame; pendingFrame = null;
+      try {
+        var c = rdcanvas();
+        if (c.width !== frame.displayWidth || c.height !== frame.displayHeight){
+          c.width = frame.displayWidth; c.height = frame.displayHeight;
+          ctx = null; fitCanvas();
+        }
+        if (!ctx) ctx = c.getContext("2d", {alpha:false, desynchronized:true});
+        ctx.drawImage(frame, 0, 0);
+        RD.errors = 0;
+        var S = RD.stats, t0 = S.pend.shift();
+        if (t0 !== undefined){
+          S.decode.push(performance.now() - t0);
+          if (S.decode.length > 300) S.decode.shift();
+        }
+        S.frames++;
+      } catch(e){ console.warn("[webcodecs] rendu", e); }
+      finally { frame.close(); }
+    }
+
     RD.dec = new VideoDecoder({
       output: function(frame){
-        try{
-          var c = rdcanvas();
-          if (c.width !== frame.displayWidth || c.height !== frame.displayHeight){
-            c.width = frame.displayWidth; c.height = frame.displayHeight;
-            ctx = null; fitCanvas();
-          }
-          if (!ctx) ctx = c.getContext("2d", {alpha:false, desynchronized:true});
-          ctx.drawImage(frame, 0, 0);
-          RD.errors = 0;
-          // Decodage + rendu, mesures bout a bout. L'ordre de sortie suit
-          // l'ordre d'entree pour ces codecs : une file suffit.
-          var S = RD.stats, t0 = S.pend.shift();
-          if (t0 !== undefined){
-            S.decode.push(performance.now() - t0);
-            if (S.decode.length > 300) S.decode.shift();
-          }
-          S.frames++;
-        } catch(e){ console.warn("[webcodecs] rendu", e); }
-        finally { frame.close(); }   // imperatif : sinon fuite du pool GPU
+        // Inspiration NVIDIA Reflex : Cadencement des trames sur le vsync du navigateur (rAF)
+        // Si une trame plus récente arrive avant le rafraîchissement d'écran, l'ancienne est libérée.
+        if (pendingFrame) { pendingFrame.close(); }
+        pendingFrame = frame;
+        if (!rafId) { rafId = requestAnimationFrame(drawPendingFrame); }
       },
       error: function(e){
         console.warn("[webcodecs] erreur", e.message||e);
@@ -702,8 +712,15 @@ window.onGlobalEvent = function(payload){
     c.tabIndex=0; c.style.outline="none";
     c.oncontextmenu=function(e){ e.preventDefault(); };
 
-    c.addEventListener("mousemove",function(e){ var p=pos(c,e);
-      send("send_mouse",merge({type:"",buttons:"",x:p.x,y:p.y},mods(e))); });
+    // Inspiration NVIDIA / Moonlight : Dépouillement des événements matériels sous-trame (getCoalescedEvents)
+    // Permet une précision chirurgicale sur les souris à haut taux de rafraîchissement (1000Hz) sans bridage 60Hz.
+    c.addEventListener("mousemove", function(e){
+      var evs = (typeof e.getCoalescedEvents === "function") ? e.getCoalescedEvents() : [e];
+      for (var i = 0; i < evs.length; i++){
+        var sub = evs[i], p = pos(c, sub);
+        send("send_mouse", merge({type:"", buttons:"", x:p.x, y:p.y}, mods(sub)));
+      }
+    });
     c.addEventListener("mousedown",function(e){ e.preventDefault(); c.focus(); var p=pos(c,e);
       send("send_mouse",merge({type:"down",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
     c.addEventListener("mouseup",function(e){ e.preventDefault(); var p=pos(c,e);
