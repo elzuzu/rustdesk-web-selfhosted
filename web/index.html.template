@@ -640,6 +640,18 @@ window.onGlobalEvent = function(payload){
       catch(e){ console.warn("[webcodecs] init", e); this.sendVideoReceived();
                 fallbackToSoftware("configuration impossible"); return; }
 
+      // Anti-Lag : si la file du décodeur GPU accumule plus de 2 trames de retard,
+      // on purge immédiatement le décodeur et on réclame une image-clé fraîche pour sauter le lag.
+      if (dec && dec.decodeQueueSize > 2) {
+        console.warn("[webcodecs] file de décodage encombrée (" + dec.decodeQueueSize + "), purge anti-lag instantanée");
+        try {
+          dec.reset();
+          dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920, codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware", optimizeForLatency: true });
+          RD.wantKey = true;
+          this.refresh();
+        } catch(_){}
+      }
+
       var frames = evfs.frames || [];
       for (var i=0; i<frames.length; i++){
         var f = frames[i];
