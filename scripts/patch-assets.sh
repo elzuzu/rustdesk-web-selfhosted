@@ -40,19 +40,6 @@ m=re.search(r'if\(!([A-Za-z0-9_$]+)\.version\)\{[^}]*?Remote version is low[^}]*
 assert m, "patch 4 : motif absent"
 s=s[:m.start()]+'if(!1){}'+s[m.end():]; n+=1
 
-# 5) Alignement des tags Protobuf RequestRelay avec RustDesk Server (hbbr).
-#    Le client V1 encodait licence_key en tag 6 (uint32(50)) et uuid en tag 2 (uint32(18)).
-#    hbbr lisait le tag 2 comme licence_key (recevant la chaine UUID) et rejetait la connexion avec "invalid key".
-old_enc = 'u.id!==""&&e.uint32(10).string(u.id),u.uuid!==""&&e.uint32(18).string(u.uuid),u.socket_addr.length!==0&&e.uint32(26).bytes(u.socket_addr),u.relay_server!==""&&e.uint32(34).string(u.relay_server),u.secure===!0&&e.uint32(40).bool(u.secure),u.licence_key!==""&&e.uint32(50).string(u.licence_key)'
-new_enc = 'u.id!==""&&e.uint32(10).string(u.id),u.licence_key!==""&&e.uint32(18).string(u.licence_key),u.uuid!==""&&e.uint32(26).string(u.uuid),u.socket_addr.length!==0&&e.uint32(34).bytes(u.socket_addr),u.relay_server!==""&&e.uint32(42).string(u.relay_server),u.secure===!0&&e.uint32(48).bool(u.secure)'
-assert s.count(old_enc) == 1, "patch 5 enc : motif absent"
-s = s.replace(old_enc, new_enc); n += 1
-
-old_dec = 'case 1:t.id=i.string();break;case 2:t.uuid=i.string();break;case 3:t.socket_addr=i.bytes();break;case 4:t.relay_server=i.string();break;case 5:t.secure=i.bool();break;case 6:t.licence_key=i.string();break;'
-new_dec = 'case 1:t.id=i.string();break;case 2:t.licence_key=i.string();break;case 3:t.uuid=i.string();break;case 4:t.socket_addr=i.bytes();break;case 5:t.relay_server=i.string();break;case 6:t.secure=i.bool();break;'
-assert s.count(old_dec) == 1, "patch 5 dec : motif absent"
-s = s.replace(old_dec, new_dec); n += 1
-
 open(D+"/index.js","w",encoding="utf-8").write(s)
 print(f"  {n} correctifs appliques")
 PY
