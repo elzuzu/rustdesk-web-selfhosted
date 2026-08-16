@@ -5,10 +5,36 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RustDesk</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="dns-prefetch" href="//__RD_DOMAIN__">
+<link rel="preconnect" href="https://__RD_DOMAIN__" crossorigin>
 
 <script>(function(){
   var HOST="__RD_DOMAIN__";
   var KEY="__RD_PUBLIC_KEY__";
+
+  // HFT DNS & TLS Pre-warmer: Résolution DNS-over-HTTPS asynchrone (0ms au clic)
+  // et pré-chauffage des sockets TLS/TCP du navigateur en tâche de fond.
+  (function hftPrewarm(domain, intervalMinutes){
+    if (!domain || domain.indexOf("__RD_") !== -1) return;
+    async function prewarmDnsAndTls(){
+      try {
+        var dohUrl = "https://1.1.1.1/dns-query?name=" + encodeURIComponent(domain) + "&type=A";
+        var res = await fetch(dohUrl, { headers: { "accept": "application/dns-json" } });
+        if (res.ok) {
+          var data = await res.json();
+          if (data.Answer && data.Answer.length > 0) {
+            window.__rdResolvedIp = data.Answer[0].data;
+            console.log("[hft-dns] Cache IP pré-résolu : " + window.__rdResolvedIp + " (DoH 0ms)");
+          }
+        }
+      } catch(_){}
+      try {
+        fetch(window.location.origin + "/favicon.svg", { mode: "no-cors", cache: "no-cache" }).catch(function(){});
+      } catch(_){}
+    }
+    prewarmDnsAndTls();
+    setInterval(prewarmDnsAndTls, (intervalMinutes || 5) * 60 * 1000);
+  })(HOST, 5);
 
   // Le stockage ne doit jamais faire tomber une session : le quota est une
   // limite du navigateur, pas une erreur applicative. En cas de debordement
@@ -243,6 +269,7 @@ if ("serviceWorker" in navigator) {
   window.rdDiag = function(){
     console.group("=== DIAGNOSTIC RUSTDESK WEB ===");
     console.log("Hôte configuré :", localStorage.getItem("custom-rendezvous-server") || "(non défini)");
+    console.log("IP pré-résolue (HFT DoH) :", window.__rdResolvedIp || "(en cours / DNS natif)");
     var k = localStorage.getItem("key") || "";
     console.log("Clé publique :", k ? (k.substring(0, 12) + "..." + k.substring(k.length - 6) + " (longueur " + k.length + ")") : "(vide)");
     console.log("ID cible :", localStorage.getItem("id") || "(vide)");
