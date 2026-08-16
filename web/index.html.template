@@ -180,6 +180,18 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("offline", function(){ tracer("reseau perdu"); });
   window.addEventListener("online",  function(){ tracer("reseau retrouve"); });
 
+  function showBannerError(msg, type){
+    var el = document.getElementById("rderror");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "rderror";
+      el.style.cssText = "position:fixed;top:1.2rem;left:50%;transform:translateX(-50%);z-index:99999;padding:1rem 1.5rem;border-radius:8px;background:#2a1215;border:1px solid #991b1b;color:#f87171;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;font-size:0.9rem;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.6);display:flex;align-items:center;gap:0.75rem;";
+      document.body.appendChild(el);
+    }
+    var title = type === "key" ? "Échec d'authentification par clé (invalid key)" : "Échec de connexion au poste distant (Timeout)";
+    el.innerHTML = '<span style="font-size:1.5rem">⚠️</span> <div><strong style="color:#fee2e2">' + title + '</strong><br><span style="font-size:0.85rem;color:#fca5a5">' + msg + '</span></div><button onclick="this.parentElement.remove()" style="background:transparent;border:0;color:#fca5a5;font-size:1.2rem;cursor:pointer;margin-left:auto;padding:0 0.4rem">✕</button>';
+  }
+
   // Le constructeur WebSocket est enveloppe pour tracer les fermetures et la
   // progression des poignées de main WebSockets.
   var W = window.WebSocket;
@@ -187,8 +199,9 @@ if ("serviceWorker" in navigator) {
   function Trace(url, proto){
     var ws = proto === undefined ? new W(url) : new W(url, proto);
     var path = String(url).replace(/^wss?:\/\/[^/]+/, "");
+    var wsStartTime = Date.now();
     console.log("[diag] websocket ouverture -> " + path);
-    sockets.push({ url: url, path: path, ws: ws, created: Date.now() });
+    sockets.push({ url: url, path: path, ws: ws, created: wsStartTime });
 
     ws.addEventListener("open", function(){
       console.log("[diag] websocket connecte -> " + path);
@@ -205,12 +218,21 @@ if ("serviceWorker" in navigator) {
 
     ws.addEventListener("close", function(e){
       var s = Math.round((Date.now() - dernier)/1000);
+      var dur = Math.round((Date.now() - wsStartTime)/1000);
       console.warn("[diag] websocket ferme  code=" + e.code
                  + "  propre=" + e.wasClean
                  + "  raison=\"" + (e.reason || "") + "\""
                  + "  silence=" + s + " s"
                  + "  onglet=" + document.visibilityState
                  + "  " + path);
+
+      if (path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
+        if (dur <= 5) {
+          showBannerError("La clé publique configurée dans votre navigateur ou fichier .env ne correspond pas à celle générée par votre serveur RustDesk (hbbr). Récupérez la clé avec 'docker logs hbbr' et mettez-la à jour.", "key");
+        } else if (s >= 18) {
+          showBannerError("Le poste distant n'a pas rejoint le relais. Vérifiez que la machine cible est en ligne et que le port 21117 TCP est ouvert sur votre serveur.", "timeout");
+        }
+      }
     });
     return ws;
   }
