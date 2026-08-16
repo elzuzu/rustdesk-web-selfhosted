@@ -567,7 +567,10 @@ window.onGlobalEvent = function(payload){
           c.width = frame.displayWidth; c.height = frame.displayHeight;
           ctx = null; fitCanvas();
         }
-        if (!ctx) ctx = c.getContext("2d", {alpha:false, desynchronized:true});
+        if (!ctx) {
+          ctx = c.getContext("2d", {alpha:false, desynchronized:true});
+          if (ctx) ctx.imageSmoothingEnabled = false;
+        }
         ctx.drawImage(frame, 0, 0);
         if (window.__rdAtwReset) window.__rdAtwReset();
         RD.errors = 0;
