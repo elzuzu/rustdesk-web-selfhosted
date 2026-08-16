@@ -25,6 +25,26 @@ jobs:
           ./scripts/extract-assets.sh
           ./scripts/patch-assets.sh
 
+      - name: Generate CI Configuration
+        run: |
+          printf 'admin:$6$rounds=5000$test$salt\n' > .htpasswd
+          sed -e "s|__RD_DOMAIN__|localhost|g" \
+              -e "s|__RD_BACKEND_HOST__|127.0.0.1|g" \
+              -e "s|__RD_PUBLIC_KEY__|ci_test_key|g" \
+              -e "s|__RD_DEFAULT_PEER_ID__||g" \
+              -e "s|__RD_ACME_EMAIL__|ci@example.com|g" \
+              -e "s|__RD_SESSION_TOKEN__|ci_token|g" \
+              nginx.conf.template > nginx.conf
+
+          sed -e "s|__RD_DOMAIN__|localhost|g" \
+              -e "s|__RD_ACME_EMAIL__|ci@example.com|g" \
+              Caddyfile.template > Caddyfile
+
+          sed -e "s|__RD_DOMAIN__|localhost|g" \
+              -e "s|__RD_PUBLIC_KEY__|ci_test_key|g" \
+              -e "s|__RD_DEFAULT_PEER_ID__||g" \
+              web/index.html.template > html/index.html
+
       - name: Build Docker Image
         run: |
           docker build -t rustdesk-web:ci .
