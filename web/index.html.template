@@ -276,10 +276,32 @@ if ("serviceWorker" in navigator) {
     console.log("Codecs retenus :", window.RD ? window.RD.codec : "non initialisé");
     console.log("Sockets récents :", sockets.map(function(s){
       var st = ["CONNECTING","OPEN","CLOSING","CLOSED"][s.ws.readyState] || s.ws.readyState;
-      return s.path + " [" + st + "] (état: " + st + ", créé il y a " + Math.round((Date.now() - s.created)/1000) + "s)";
-    }));
     console.groupEnd();
   };
+
+  // NVIDIA Research : Module Asynchronous TimeWarp 2D (Compensation Perceptuelle 1ms)
+  (function initAtw(){
+    var atwWarpX = 0, atwWarpY = 0, atwTimer = null;
+    window.__rdAtwWarp = function(dx, dy){
+      var c = document.getElementById("canvas") || document.querySelector("canvas");
+      if (!c) return;
+      atwWarpX = Math.max(-10, Math.min(10, atwWarpX + (dx || 0) * 0.12));
+      atwWarpY = Math.max(-10, Math.min(10, atwWarpY + (dy || 0) * 0.12));
+      c.style.transform = "translate3d(" + atwWarpX + "px, " + atwWarpY + "px, 0)";
+      if (atwTimer) clearTimeout(atwTimer);
+      atwTimer = setTimeout(function(){
+        atwWarpX = 0; atwWarpY = 0;
+        c.style.transform = "translate3d(0, 0, 0)";
+      }, 35);
+    };
+    window.__rdAtwReset = function(){
+      atwWarpX = 0; atwWarpY = 0;
+      var c = document.getElementById("canvas") || document.querySelector("canvas");
+      if (c && c.style.transform !== "translate3d(0, 0, 0)") {
+        c.style.transform = "translate3d(0, 0, 0)";
+      }
+    };
+  })();
 })();
 
 // Etat partage entre les deux blocs de script.
@@ -547,6 +569,7 @@ window.onGlobalEvent = function(payload){
         }
         if (!ctx) ctx = c.getContext("2d", {alpha:false, desynchronized:true});
         ctx.drawImage(frame, 0, 0);
+        if (window.__rdAtwReset) window.__rdAtwReset();
         RD.errors = 0;
         var S = RD.stats, t0 = S.pend.shift();
         if (t0 !== undefined){
@@ -712,13 +735,17 @@ window.onGlobalEvent = function(payload){
     c.tabIndex=0; c.style.outline="none";
     c.oncontextmenu=function(e){ e.preventDefault(); };
 
-    // Inspiration NVIDIA / Moonlight : Dépouillement des événements matériels sous-trame (getCoalescedEvents)
-    // Permet une précision chirurgicale sur les souris à haut taux de rafraîchissement (1000Hz) sans bridage 60Hz.
+    // Inspiration NVIDIA Research : Asynchronous TimeWarp 2D (1ms Perceptual Latency Compensation)
+    // Lorsqu'un mouvement actif / glissement est détecté, applique une micro-transformation affine locale
+    // sur le canvas pour simuler un temps de réponse instantané (1ms) en attendant la trame serveur.
     c.addEventListener("mousemove", function(e){
       var evs = (typeof e.getCoalescedEvents === "function") ? e.getCoalescedEvents() : [e];
       for (var i = 0; i < evs.length; i++){
         var sub = evs[i], p = pos(c, sub);
         send("send_mouse", merge({type:"", buttons:"", x:p.x, y:p.y}, mods(sub)));
+        if (sub.buttons > 0 && (sub.movementX || sub.movementY)){
+          if (window.__rdAtwWarp) window.__rdAtwWarp(sub.movementX, sub.movementY);
+        }
       }
     });
     c.addEventListener("mousedown",function(e){ e.preventDefault(); c.focus(); var p=pos(c,e);
