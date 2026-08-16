@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint-and-build:
+    name: Lint & Docker Build Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Shell scripts syntax
+        run: |
+          bash -n setup.sh
+          bash -n scripts/extract-assets.sh
+          bash -n scripts/patch-assets.sh
+
+      - name: Test Asset Extraction & Patching
+        run: |
+          ./scripts/extract-assets.sh
+          ./scripts/patch-assets.sh
+
+      - name: Build Docker Image
+        run: |
+          docker build -t rustdesk-web:ci .
+          docker build -t rustdesk-tls:ci -f Dockerfile.tls .
