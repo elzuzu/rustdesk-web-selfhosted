@@ -1,3 +1,10 @@
+# Ces controles s'executent aussi en local, sans Actions :
+#
+#     ./scripts/verify.sh
+#
+# Meme chaine, meme ordre, sur une copie temporaire — ton arborescence n'est
+# pas touchee. Utile quand Actions n'est pas disponible, et de toute facon
+# preferable avant d'ouvrir une PR : la boucle est plus courte.
 name: CI
 
 on:

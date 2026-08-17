@@ -166,6 +166,20 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 
 A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
 
+## Verifying a change
+
+```bash
+./scripts/verify.sh
+```
+
+Runs the whole pipeline — shell syntax, inline JavaScript, asset extraction and
+patching, the authentication wire format **inside the built image**, and a
+container that must actually answer 204 / 401 / 404. It works on a temporary
+copy, so your `.env`, `.htpasswd` and any live deployment are left alone.
+
+The same steps run in CI, but this does not depend on it: a clone should be
+verifiable offline, and the loop is shorter than pushing to find out.
+
 ## Troubleshooting: `invalid key` on the relay
 
 hbbr logs `Relay authentication failed from … - invalid key` and the browser

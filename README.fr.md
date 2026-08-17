@@ -167,6 +167,22 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 
 Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logiciel.
 
+## Vérifier une modification
+
+```bash
+./scripts/verify.sh
+```
+
+Rejoue toute la chaîne — syntaxe shell, JavaScript en ligne, extraction et
+correctifs des assets, format de fil d'authentification **dans l'image
+construite**, et un conteneur qui doit réellement répondre 204 / 401 / 404. Tout
+se fait sur une copie temporaire : ton `.env`, ton `.htpasswd` et un éventuel
+déploiement en place ne sont pas touchés.
+
+Les mêmes étapes tournent en intégration continue, mais ce script n'en dépend
+pas : un dépôt cloné doit être vérifiable hors ligne, et la boucle est plus
+courte que de pousser pour savoir.
+
 ## Dépannage : `invalid key` sur le relais
 
 hbbr journalise `Relay authentication failed from … - invalid key` et le
