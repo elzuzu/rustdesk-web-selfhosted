@@ -1074,6 +1074,8 @@ window.onGlobalEvent = function(payload){
   // declencher (module differe). Et le gestionnaire de mots de passe du
   // navigateur ecrase le champ ID en le prenant pour un identifiant de compte
   // — il propose souvent l'identifiant du compte a la place de l'ID.
+  // Valeurs faisant autorite : elles viennent du deploiement, jamais du formulaire.
+  var RD_HOST = "__RD_DOMAIN__", RD_KEY = "__RD_PUBLIC_KEY__";
   var DEFAUT_ID = "__RD_DEFAULT_PEER_ID__";
   function prefillForm(){
     var host=document.getElementById("host"),
@@ -1104,11 +1106,48 @@ window.onGlobalEvent = function(payload){
     setTimeout(function(){
       var w=(id.value||"").trim();
       if(!w || !/^[0-9 ]{6,}$/.test(w)) id.value = localStorage.getItem("id") || DEFAUT_ID;
+      if(key.value !== RD_KEY) key.value = RD_KEY;
+      if(host.value !== RD_HOST) host.value = RD_HOST;
     }, 400);
 
     console.log("[formulaire] prerempli — ID "+id.value+" (modifiable)");
     return true;
   }
+
+  // Le bundle recopie le formulaire dans localStorage a CHAQUE connexion :
+  //   window.connect = () => { … localStorage.setItem("key", $("#key").value) … }
+  // Tout ce qui a rempli #key entre-temps devient donc la cle envoyee a hbbr.
+  // Le gestionnaire de mots de passe du navigateur le fait volontiers : il voit
+  // un trio hote / cle / identifiant et propose ses propres identifiants — on
+  // l'avait deja vu s'emparer du champ ID. hbbr rejette alors la liaison relais
+  // sans un mot au client (« invalid key » cote serveur, fermeture en moins
+  // d'une seconde cote navigateur), et rien a l'ecran n'indique que c'est le
+  // formulaire qui a ete altere.
+  //
+  // L'hote et la cle viennent du deploiement, jamais de l'utilisateur. On les
+  // reaffirme donc juste avant que le bundle ne les lise. Seul l'ID reste libre.
+  (function protegerConnect(){
+    var mien = null;
+    setInterval(function(){
+      var orig = window.connect;
+      if (typeof orig !== "function" || orig === mien) return;  // deja protege
+      mien = function(){
+        var h = document.getElementById("host"), k = document.getElementById("key");
+        if (h && h.value !== RD_HOST){
+          console.warn("[formulaire] hote altere (\"" + h.value + "\") — corrige avant connexion");
+          h.value = RD_HOST;
+        }
+        if (k && k.value !== RD_KEY){
+          console.warn("[formulaire] cle alteree (" + (k.value ? k.value.length + " caracteres" : "champ vide")
+                     + ") — corrigee avant connexion ; sans cela hbbr aurait repondu « invalid key »");
+          k.value = RD_KEY;
+        }
+        return orig.apply(this, arguments);
+      };
+      window.connect = mien;
+      console.log("[formulaire] connexion protegee : hote et cle reaffirmes a chaque essai");
+    }, 300);
+  })();
 
   // ---------------------------------------------------------- amorcage
   probeCodecs().then(function(c){
