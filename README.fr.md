@@ -167,6 +167,43 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 
 Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logiciel.
 
+## Dépannage : `invalid key` sur le relais
+
+hbbr journalise `Relay authentication failed from … - invalid key` et le
+navigateur n'obtient jamais de session. hbbr ne dit rien au client — il se
+contente de fermer — d'où la bannière de la page, déduite de la vitesse à
+laquelle la liaison est tombée.
+
+**La cause est une clé qui ne correspond pas, et c'est presque toujours l'un de ces trois cas :**
+
+1. **hbbs et hbbr ne partagent pas le même volume `data/`.** Avec `-k _`, chaque
+   processus génère sa propre paire de clés au premier démarrage : la clé publiée
+   par hbbs n'est alors pas celle que hbbr vérifie. Les deux services doivent
+   monter le *même* répertoire.
+2. La valeur donnée à `setup.sh` n'est pas celle qu'utilise réellement le serveur.
+   Relève-la depuis le serveur, ne la retape pas :
+   ```bash
+   docker exec hbbs cat /root/id_ed25519.pub    # 44 caractères base64, finit par « = »
+   ```
+3. Une espace ou un retour à la ligne collé avec la clé. `setup.sh` les retire et
+   signale une forme inattendue, mais un navigateur qui s'est connecté avant la
+   correction garde l'ancienne valeur dans `localStorage` — recharge une fois
+   après avoir corrigé `.env`.
+
+Pour confirmer que c'est bien la clé : une liaison relais qui meurt en **moins
+d'une seconde** est une clé refusée ; une qui vit **une trentaine de secondes**
+signifie que la clé était bonne et que le poste distant n'est jamais arrivé. Ce
+sont les deux chemins distincts de `relay_server.rs` dans hbbr, rien d'autre ne
+ferme cette liaison en silence.
+
+> **Ne pas « corriger » les tags protobuf de `RequestRelay`.** Cela a maintenant
+> été tenté et annulé deux fois. Le `rendezvous.proto` officiel dit `uuid = 2`,
+> `licence_key = 6` — exactement ce que le bundle envoie déjà. Les réassigner
+> casse aussi le client natif, puisque hbbr lit alors l'uuid là où il attend la
+> clé. Et hbbr n'authentifie pas les clients WebSocket autrement que les clients
+> TCP bruts : `make_pair_` est générique sur le flux, et le contrôle de la clé a
+> lieu **avant** toute distinction `is_ws()`.
+
 ## Sécurité
 
 - Authentification Basic sur la page et les assets, avec limitation de débit.

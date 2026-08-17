@@ -76,6 +76,22 @@ echo "    • serveur RustDesk sur une autre machine → son nom ou son IP"
 demander RD_BACKEND_HOST "Hôte du serveur RustDesk" "$DEF_BACKEND"
 demander RD_PUBLIC_KEY "Clé publique du serveur (contenu de data/id_ed25519.pub)"
 [ -n "${RD_PUBLIC_KEY:-}" ] || { c_err "La clé publique est obligatoire."; exit 1; }
+
+# Une clé erronée ne se voit qu'au premier essai de connexion : hbbr ferme la
+# liaison sans rien dire au client, et ne journalise qu'un « invalid key » de
+# son côté. C'est la première cause d'échec, et elle est presque toujours une
+# faute de copie. Autant la voir maintenant.
+RD_PUBLIC_KEY=$(printf '%s' "$RD_PUBLIC_KEY" | tr -d '[:space:]')
+case "$RD_PUBLIC_KEY" in
+  *"BEGIN "*|*"PRIVATE"*)
+    c_err "  ✗ ceci ressemble à une clé PRIVÉE. Il faut data/id_ed25519.pub."; exit 1 ;;
+esac
+if ! printf '%s' "$RD_PUBLIC_KEY" | grep -Eq '^[A-Za-z0-9+/]{43}=$'; then
+  c_warn "  ⚠ forme inattendue : une clé publique RustDesk fait 44 caractères base64"
+  c_warn "    et se termine par « = » (32 octets Ed25519). Reçu : ${#RD_PUBLIC_KEY} caractères."
+  c_warn "    Relève-la avec :  docker exec hbbs cat /root/id_ed25519.pub"
+  c_warn "    Si elle est fausse, hbbr rejettera toutes les sessions relayées."
+fi
 demander RD_DEFAULT_PEER_ID "ID du poste distant à préremplir (facultatif)" ""
 
 titre "TLS"

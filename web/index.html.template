@@ -229,11 +229,24 @@ if ("serviceWorker" in navigator) {
                  + "  onglet=" + document.visibilityState
                  + "  " + path);
 
+      // hbbr ne repond jamais au client sur ces deux echecs : il se contente de
+      // fermer. Seule la duree de vie de la liaison les distingue, et elle
+      // suffit, car les deux chemins sont explicites dans relay_server.rs :
+      //   licence_key invalide  -> « return » immediat, fermeture en < 1 s
+      //   pair jamais arrive    -> sleep(30) puis retrait, fermeture vers 30 s
+      // On se base sur la duree de vie de CETTE liaison, pas sur le silence
+      // global : « dernier » est partage entre toutes les liaisons ouvertes.
       if (path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
         if (dur <= 5) {
-          showBannerError("La clé publique configurée dans votre navigateur ou fichier .env ne correspond pas à celle générée par votre serveur RustDesk (hbbr). Récupérez la clé avec 'docker logs hbbr' et mettez-la à jour.", "key");
-        } else if (s >= 18) {
-          showBannerError("Le poste distant n'a pas rejoint le relais. Vérifiez que la machine cible est en ligne et que le port 21117 TCP est ouvert sur votre serveur.", "timeout");
+          showBannerError("hbbr a refusé la clé publique. La valeur envoyée par cette page "
+            + "doit être exactement celle de data/id_ed25519.pub côté serveur : "
+            + "docker exec hbbs cat /root/id_ed25519.pub — cause la plus fréquente, "
+            + "hbbs et hbbr ne partagent pas le même volume data/, et chacun a donc "
+            + "généré sa propre paire de clés.", "key");
+        } else if (dur >= 20) {
+          showBannerError("Le poste distant n'a pas rejoint le relais dans les 30 s. "
+            + "Vérifie qu'il est en ligne, qu'il pointe vers ce serveur et que le "
+            + "port 21117/tcp est ouvert.", "timeout");
         }
       }
     });

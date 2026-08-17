@@ -166,6 +166,39 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 
 A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
 
+## Troubleshooting: `invalid key` on the relay
+
+hbbr logs `Relay authentication failed from … - invalid key` and the browser
+never gets a session. hbbr tells the client nothing at all — it just closes —
+so the page shows a banner inferred from how fast the socket died.
+
+**The cause is a key mismatch, and it is nearly always one of these:**
+
+1. **hbbs and hbbr do not share the same `data/` volume.** With `-k _`, each
+   process generates its own key pair on first start, so the key hbbs publishes
+   is not the key hbbr checks. Both services must mount the *same* directory.
+2. The value given to `setup.sh` is not what the server actually uses. Read it
+   from the server, do not retype it:
+   ```bash
+   docker exec hbbs cat /root/id_ed25519.pub    # 44 base64 chars, ends with '='
+   ```
+3. Whitespace or a newline pasted along with the key. `setup.sh` strips it and
+   warns on an unexpected shape, but a browser that connected before the fix
+   keeps the old value in `localStorage` — reload once after correcting `.env`.
+
+Confirm it is really the key: a relay socket that dies in **under a second** is
+a rejected key; one that lives about **30 seconds** means the key was fine and
+the remote host never joined. Those are the two distinct code paths in hbbr's
+`relay_server.rs`, nothing else closes that socket silently.
+
+> **Do not "fix" the `RequestRelay` protobuf tags.** This has now been tried and
+> reverted twice. The official `rendezvous.proto` is `uuid = 2`,
+> `licence_key = 6` — exactly what the bundle already sends. Reassigning them
+> breaks the native client too, because hbbr then reads the uuid where the key
+> should be. And hbbr does not authenticate WebSocket clients differently from
+> raw TCP ones: `make_pair_` is generic over the stream, and the key check runs
+> **before** any `is_ws()` branch.
+
 ## Security
 
 - Basic authentication on the page and assets, with rate limiting.
