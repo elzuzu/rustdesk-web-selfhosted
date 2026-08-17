@@ -227,7 +227,10 @@ if ("serviceWorker" in navigator) {
     var path = String(url).replace(/^wss?:\/\/[^/]+/, "");
     var wsStartTime = Date.now();
     console.log("[diag] websocket ouverture -> " + path);
+    // Borne : une session longue enchaine les reconnexions, et chaque entree
+    // retient une reference vers le WebSocket ferme.
     sockets.push({ url: url, path: path, ws: ws, created: wsStartTime });
+    while (sockets.length > 10) sockets.shift();
 
     ws.addEventListener("open", function(){
       console.log("[diag] websocket connecte -> " + path);
@@ -276,6 +279,8 @@ if ("serviceWorker" in navigator) {
     console.log("Codecs retenus :", window.RD ? window.RD.codec : "non initialisé");
     console.log("Sockets récents :", sockets.map(function(s){
       var st = ["CONNECTING","OPEN","CLOSING","CLOSED"][s.ws.readyState] || s.ws.readyState;
+      return s.path + " [" + st + "] ouvert depuis " + Math.round((Date.now() - s.created)/1000) + " s";
+    }));
     console.groupEnd();
   };
 
