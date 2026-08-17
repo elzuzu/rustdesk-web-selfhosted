@@ -149,6 +149,11 @@ fi
 cp "$TMPD/index.html" html/index.html
 echo "  ✓ html/index.html"
 
+# Un bloc <script> qui ne se parse pas est abandonne en entier par le
+# navigateur : la page se chargerait sans la moindre erreur visible, et le
+# client serait completement inerte. On refuse de construire dans cet etat.
+./scripts/check-syntax.sh html/index.html
+
 # ---------------------------------------------------------------- compose
 titre "Construction"
 if [ "$RD_TLS_MODE" = "1" ]; then
