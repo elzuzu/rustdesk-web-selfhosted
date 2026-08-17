@@ -177,6 +177,12 @@ so the page shows a banner inferred from how fast the socket died.
 1. **hbbs and hbbr do not share the same `data/` volume.** With `-k _`, each
    process generates its own key pair on first start, so the key hbbs publishes
    is not the key hbbr checks. Both services must mount the *same* directory.
+   This is the documented requirement: RustDesk's own guide for deploying an
+   extra relay tells you to copy the `id_ed25519` **and** `id_ed25519.pub` pair
+   onto the relay host before starting `hbbr -k _`
+   ([relay docs](https://rustdesk.com/docs/en/self-host/rustdesk-server-pro/relay/)),
+   and the public key is the one generated on hbbs's first run
+   ([client configuration](https://rustdesk.com/docs/en/self-host/client-configuration/)).
 2. The value given to `setup.sh` is not what the server actually uses. Read it
    from the server, do not retype it:
    ```bash

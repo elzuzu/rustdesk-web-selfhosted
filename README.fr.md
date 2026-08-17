@@ -179,7 +179,13 @@ laquelle la liaison est tombée.
 1. **hbbs et hbbr ne partagent pas le même volume `data/`.** Avec `-k _`, chaque
    processus génère sa propre paire de clés au premier démarrage : la clé publiée
    par hbbs n'est alors pas celle que hbbr vérifie. Les deux services doivent
-   monter le *même* répertoire.
+   monter le *même* répertoire. C'est l'exigence documentée : le guide RustDesk
+   pour déployer un relais supplémentaire demande de copier la paire
+   `id_ed25519` **et** `id_ed25519.pub` sur la machine du relais avant de lancer
+   `hbbr -k _`
+   ([doc relais](https://rustdesk.com/docs/en/self-host/rustdesk-server-pro/relay/)),
+   la clé publique étant celle générée au premier démarrage de hbbs
+   ([configuration client](https://rustdesk.com/docs/en/self-host/client-configuration/)).
 2. La valeur donnée à `setup.sh` n'est pas celle qu'utilise réellement le serveur.
    Relève-la depuis le serveur, ne la retape pas :
    ```bash
