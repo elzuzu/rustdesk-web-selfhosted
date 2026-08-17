@@ -73,6 +73,23 @@ jobs:
               || { echo "correctif absent du bundle : $m"; exit 1; }
           done
 
+      # Le controle qui manquait le plus. Un artefact aux tags protobuf
+      # permutes a deja tenu deux heures en production : hbbs acceptait, hbbr
+      # repondait « invalid key ». On verifie donc le fichier tel qu'il part
+      # dans l'image, pas seulement celui du depot -- c'est la ou etait
+      # l'angle mort.
+      - name: Verify authentication wire format in the image
+        run: |
+          docker build -t rustdesk-web:ci-check .
+          check() {
+            n=$(docker run --rm rustdesk-web:ci-check \
+                  grep -c -F "$1" /usr/share/nginx/html/js/dist/index.js || true)
+            [ "$n" = "$2" ] || { echo "attendu $2 occurrence(s) de « $1 », vu $n"; exit 1; }
+          }
+          check 'uint32(18).string(u.uuid)'        1   # RequestRelay.uuid        = champ 2
+          check 'uint32(50).string(u.licence_key)' 1   # RequestRelay.licence_key = champ 6
+          check 'uint32(18).string(u.licence_key)' 0   # la permutation fautive
+
       - name: Build Docker Image
         run: |
           docker build -t rustdesk-web:ci .

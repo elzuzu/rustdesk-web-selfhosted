@@ -40,8 +40,53 @@ m=re.search(r'if\(!([A-Za-z0-9_$]+)\.version\)\{[^}]*?Remote version is low[^}]*
 assert m, "patch 4 : motif absent"
 s=s[:m.start()]+'if(!1){}'+s[m.end():]; n+=1
 
+# --- Pre-condition d'ecriture : le format de fil d'authentification est intact --
+#
+# La verification precede l'ecriture, et c'est le point important : un
+# artefact refuse ne doit jamais atteindre le disque. Sinon il reste en place
+# apres l'echec, et la prochaine construction le recuit dans l'image — ce qui
+# est exactement ce qui s'est produit.
+#
+# Ceci n'est pas de la prudence de principe. Un correctif ajoute ici a deja
+# permute les tags protobuf de RequestRelay sur la foi d'une lecture erronee
+# de la spec. Le commit a ete annule 41 minutes plus tard — mais l'artefact
+# deja produit, lui, est reste en service et a ete recuit dans l'image a
+# chaque reconstruction. Resultat : hbbs acceptait (son PunchHoleRequest
+# n'etait pas touche) et hbbr repondait « invalid key », parce qu'il lisait
+# la cle a la place de l'uuid et trouvait licence_key vide. Deux heures de
+# panne, et un diagnostic qui portait sur le depot pendant que la production
+# servait autre chose.
+#
+# Les deux serveurs authentifient sur ces champs precis. Le schema fait
+# autorite est hbb_common/protos/rendezvous.proto :
+#     RequestRelay     { id=1, uuid=2, socket_addr=3, relay_server=4,
+#                        secure=5, licence_key=6, conn_type=7, token=8 }
+#     PunchHoleRequest { id=1, nat_type=2, licence_key=3, conn_type=4, token=5 }
+# En protobuf, l'octet de tag vaut (numero << 3 | 2) pour une chaine.
+import re
+def tags(ancre):
+    i = s.find(ancre)
+    assert i >= 0, f"ancre introuvable : {ancre}"
+    j = s.find("encode(", i)
+    return {champ: int(t) >> 3
+            for t, champ in re.findall(r'uint32\((\d+)\)\.\w+\(u\.(\w+)\)', s[j:j+300])}
+
+rr = tags('id:"",uuid:"",socket_addr')
+ph = tags('id:"",nat_type:0,licence_key')
+attendu = [("RequestRelay.uuid",           rr.get("uuid"),        2),
+           ("RequestRelay.socket_addr",    rr.get("socket_addr"), 3),
+           ("PunchHoleRequest.licence_key", ph.get("licence_key"), 3)]
+for nom, vu, exige in attendu:
+    if vu != exige:
+        raise SystemExit(
+            f"  ✗ {nom} encode en tag {vu}, attendu {exige}.\n"
+            f"    Un correctif a deplace un champ d'authentification : hbbr\n"
+            f"    rejettera toute session relayee avec « invalid key ».\n"
+            f"    Rien n'a ete ecrit : html/js/dist/index.js est inchange.")
+
 open(D+"/index.js","w",encoding="utf-8").write(s)
 print(f"  {n} correctifs appliques")
+print("  ✓ tags d'authentification conformes (uuid=2, licence_key=6, punch_hole licence_key=3)")
 PY
 
 # Les workers sont charges en relatif depuis /js/dist/, pas depuis la racine.
