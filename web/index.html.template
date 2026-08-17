@@ -5,36 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RustDesk</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
-<link rel="dns-prefetch" href="//__RD_DOMAIN__">
-<link rel="preconnect" href="https://__RD_DOMAIN__" crossorigin>
 
 <script>(function(){
   var HOST="__RD_DOMAIN__";
   var KEY="__RD_PUBLIC_KEY__";
-
-  // HFT DNS & TLS Pre-warmer: Résolution DNS-over-HTTPS asynchrone (0ms au clic)
-  // et pré-chauffage des sockets TLS/TCP du navigateur en tâche de fond.
-  (function hftPrewarm(domain, intervalMinutes){
-    if (!domain || domain.indexOf("__RD_") !== -1) return;
-    async function prewarmDnsAndTls(){
-      try {
-        var dohUrl = "https://1.1.1.1/dns-query?name=" + encodeURIComponent(domain) + "&type=A";
-        var res = await fetch(dohUrl, { headers: { "accept": "application/dns-json" } });
-        if (res.ok) {
-          var data = await res.json();
-          if (data.Answer && data.Answer.length > 0) {
-            window.__rdResolvedIp = data.Answer[0].data;
-            console.log("[hft-dns] Cache IP pré-résolu : " + window.__rdResolvedIp + " (DoH 0ms)");
-          }
-        }
-      } catch(_){}
-      try {
-        fetch(window.location.origin + "/favicon.svg", { mode: "no-cors", cache: "no-cache" }).catch(function(){});
-      } catch(_){}
-    }
-    prewarmDnsAndTls();
-    setInterval(prewarmDnsAndTls, (intervalMinutes || 5) * 60 * 1000);
-  })(HOST, 5);
 
   // Le stockage ne doit jamais faire tomber une session : le quota est une
   // limite du navigateur, pas une erreur applicative. En cas de debordement
@@ -272,11 +246,16 @@ if ("serviceWorker" in navigator) {
   window.rdDiag = function(){
     console.group("=== DIAGNOSTIC RUSTDESK WEB ===");
     console.log("Hôte configuré :", localStorage.getItem("custom-rendezvous-server") || "(non défini)");
-    console.log("IP pré-résolue (HFT DoH) :", window.__rdResolvedIp || "(en cours / DNS natif)");
     var k = localStorage.getItem("key") || "";
     console.log("Clé publique :", k ? (k.substring(0, 12) + "..." + k.substring(k.length - 6) + " (longueur " + k.length + ")") : "(vide)");
     console.log("ID cible :", localStorage.getItem("id") || "(vide)");
     console.log("Codecs retenus :", window.RD ? window.RD.codec : "non initialisé");
+    if (window.RD){
+      var S = window.RD.stats, dt = (Date.now() - (S.movesT0 || Date.now())) / 1000;
+      console.log("Souris — evenements coalesces :", window.RD.coalesce ? "actives" : "desactives",
+                  "| messages envoyes :", S.moves,
+                  dt > 1 ? "(" + (S.moves / dt).toFixed(1) + "/s)" : "");
+    }
     console.log("Sockets récents :", sockets.map(function(s){
       var st = ["CONNECTING","OPEN","CLOSING","CLOSED"][s.ws.readyState] || s.ws.readyState;
       return s.path + " [" + st + "] ouvert depuis " + Math.round((Date.now() - s.created)/1000) + " s";
@@ -284,29 +263,12 @@ if ("serviceWorker" in navigator) {
     console.groupEnd();
   };
 
-  // NVIDIA Research : Module Asynchronous TimeWarp 2D (Compensation Perceptuelle 1ms)
-  (function initAtw(){
-    var atwWarpX = 0, atwWarpY = 0, atwTimer = null;
-    window.__rdAtwWarp = function(dx, dy){
-      var c = document.getElementById("canvas") || document.querySelector("canvas");
-      if (!c) return;
-      atwWarpX = Math.max(-10, Math.min(10, atwWarpX + (dx || 0) * 0.12));
-      atwWarpY = Math.max(-10, Math.min(10, atwWarpY + (dy || 0) * 0.12));
-      c.style.transform = "translate3d(" + atwWarpX + "px, " + atwWarpY + "px, 0)";
-      if (atwTimer) clearTimeout(atwTimer);
-      atwTimer = setTimeout(function(){
-        atwWarpX = 0; atwWarpY = 0;
-        c.style.transform = "translate3d(0, 0, 0)";
-      }, 35);
-    };
-    window.__rdAtwReset = function(){
-      atwWarpX = 0; atwWarpY = 0;
-      var c = document.getElementById("canvas") || document.querySelector("canvas");
-      if (c && c.style.transform !== "translate3d(0, 0, 0)") {
-        c.style.transform = "translate3d(0, 0, 0)";
-      }
-    };
-  })();
+  // Retire : un module dit « TimeWarp » appliquait ici un translate3d de +/-10 px
+  // sur #canvas pendant les glissements. #canvas est le CONTENEUR, et pos() derive
+  // les coordonnees de getBoundingClientRect(), qui inclut les transformations CSS :
+  // le pointeur distant partait donc decale d'autant, precisement pendant les
+  // gestes ou la precision compte. Aucune reprojection n'etait faite non plus,
+  // l'image etait seulement secouee puis remise a zero au bout de 35 ms.
 })();
 
 // Etat partage entre les deux blocs de script.
@@ -319,13 +281,28 @@ window.RD = {
   dec:null,           // VideoDecoder unique, reutilise entre connexions
   wantKey:true,       // garde image-cle : jeter les deltas avant la 1ere cle
   errors:0,           // echecs consecutifs avant repli
+  lastPurge:0,        // horodatage de la derniere purge de file de decodage
   sawAnnexB:false,
   W:0, H:0,           // dimensions de l'ecran distant
   cursors:{},         // cache des curseurs distants, par id
   cursorN:0,
+  // Evenements pointeur coalesces : plus fideles, mais ils multiplient le debit
+  // sortant. Desactives par defaut, cf. rdCoalesce().
+  coalesce: (function(){ try{ return localStorage.getItem("rd-coalesce") === "1"; }catch(e){ return false; } })(),
   // Une latence se lit en distribution, pas en moyenne : c'est la queue qui
   // rend une session desagreable. On garde des fenetres glissantes.
-  stats:{ delay:[], decode:[], bitrate:0, frames:0, pend:[] }
+  stats:{ delay:[], decode:[], bitrate:0, frames:0, pend:[], moves:0, movesT0:0 }
+};
+
+// Bascule les evenements pointeur coalesces et rend la comparaison mesurable :
+// rdCoalesce(false) puis un glissement, rdDiag(), rdCoalesce(true), on refait.
+window.rdCoalesce = function(on){
+  window.RD.coalesce = !!on;
+  try{ localStorage.setItem("rd-coalesce", on ? "1" : "0"); }catch(e){}
+  window.RD.stats.moves = 0; window.RD.stats.movesT0 = Date.now();
+  console.log("[souris] evenements coalesces " + (on ? "actives" : "desactives")
+            + " — compteur remis a zero");
+  return window.RD.coalesce;
 };
 
 // hbbs journalise l'objet TestDelay brut ; c'est la seule source de last_delay
@@ -577,7 +554,6 @@ window.onGlobalEvent = function(payload){
           if (ctx) ctx.imageSmoothingEnabled = false;
         }
         ctx.drawImage(frame, 0, 0);
-        if (window.__rdAtwReset) window.__rdAtwReset();
         RD.errors = 0;
         var S = RD.stats, t0 = S.pend.shift();
         if (t0 !== undefined){
@@ -591,8 +567,11 @@ window.onGlobalEvent = function(payload){
 
     RD.dec = new VideoDecoder({
       output: function(frame){
-        // Inspiration NVIDIA Reflex : Cadencement des trames sur le vsync du navigateur (rAF)
-        // Si une trame plus récente arrive avant le rafraîchissement d'écran, l'ancienne est libérée.
+        // Le decodeur sort les trames au rythme du reseau, l'ecran ne les
+        // affiche qu'au rafraichissement : dessiner hors de ce rythme fait du
+        // travail invisible. On ne garde donc que la derniere trame arrivee et
+        // on la dessine dans le rAF suivant. Une trame remplacee avant d'etre
+        // affichee est fermee sur-le-champ, sinon le pool GPU se vide.
         if (pendingFrame) { pendingFrame.close(); }
         pendingFrame = frame;
         if (!rafId) { rafId = requestAnimationFrame(drawPendingFrame); }
@@ -681,14 +660,27 @@ window.onGlobalEvent = function(payload){
       catch(e){ console.warn("[webcodecs] init", e); this.sendVideoReceived();
                 fallbackToSoftware("configuration impossible"); return; }
 
-      // Anti-Lag : si la file du décodeur GPU accumule plus de 2 trames de retard,
-      // on purge immédiatement le décodeur et on réclame une image-clé fraîche pour sauter le lag.
-      if (dec && dec.decodeQueueSize > 2) {
-        console.warn("[webcodecs] file de décodage encombrée (" + dec.decodeQueueSize + "), purge anti-lag instantanée");
+      // Purge anti-retard : si la file du decodeur s'accumule, tout ce qui y
+      // reste est deja perime — mieux vaut la vider et repartir d'une image-cle.
+      //
+      // Chaque purge coute une image-cle complete reemise par le poste distant.
+      // Sans garde-fou, un simple hoquet en declenche une, dont le surcout de
+      // debit en provoque une autre : la boucle s'entretient. D'ou un seuil plus
+      // haut qu'une simple trame de retard, et un intervalle minimal entre deux
+      // purges.
+      var qMax = 6, purgeMinMs = 3000;
+      if (dec && dec.decodeQueueSize > qMax
+              && Date.now() - (RD.lastPurge || 0) > purgeMinMs) {
+        RD.lastPurge = Date.now();
+        console.warn("[webcodecs] file de decodage encombree ("
+                   + dec.decodeQueueSize + " trames), purge et image-cle");
         try {
           dec.reset();
           dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920, codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware", optimizeForLatency: true });
           RD.wantKey = true;
+          // reset() abandonne les trames en vol : leurs horodatages resteraient
+          // dans la file de mesure et fausseraient durablement les percentiles.
+          RD.stats.pend.length = 0;
           this.refresh();
         } catch(_){}
       }
@@ -743,17 +735,19 @@ window.onGlobalEvent = function(payload){
     c.tabIndex=0; c.style.outline="none";
     c.oncontextmenu=function(e){ e.preventDefault(); };
 
-    // Inspiration NVIDIA Research : Asynchronous TimeWarp 2D (1ms Perceptual Latency Compensation)
-    // Lorsqu'un mouvement actif / glissement est détecté, applique une micro-transformation affine locale
-    // sur le canvas pour simuler un temps de réponse instantané (1ms) en attendant la trame serveur.
+    // Une souris a haute frequence produit plusieurs positions par trame ; le
+    // navigateur les regroupe et getCoalescedEvents() les restitue toutes. Plus
+    // fidele, mais chaque position devient un message sortant de plus vers le
+    // relais. Le gain n'etant pas acquis sur une liaison distante, c'est un choix
+    // explicite et mesurable, pas un defaut. Voir rdCoalesce() et rdDiag().
     c.addEventListener("mousemove", function(e){
-      var evs = (typeof e.getCoalescedEvents === "function") ? e.getCoalescedEvents() : [e];
+      var evs = (RD.coalesce && typeof e.getCoalescedEvents === "function")
+              ? e.getCoalescedEvents() : [e];
+      if (!RD.stats.movesT0) RD.stats.movesT0 = Date.now();
       for (var i = 0; i < evs.length; i++){
-        var sub = evs[i], p = pos(c, sub);
-        send("send_mouse", merge({type:"", buttons:"", x:p.x, y:p.y}, mods(sub)));
-        if (sub.buttons > 0 && (sub.movementX || sub.movementY)){
-          if (window.__rdAtwWarp) window.__rdAtwWarp(sub.movementX, sub.movementY);
-        }
+        var p = pos(c, evs[i]);
+        send("send_mouse", merge({type:"", buttons:"", x:p.x, y:p.y}, mods(evs[i])));
+        RD.stats.moves++;
       }
     });
     c.addEventListener("mousedown",function(e){ e.preventDefault(); c.focus(); var p=pos(c,e);
