@@ -70,12 +70,12 @@ jobs:
       - name: Check rendered page syntax
         run: ./scripts/check-syntax.sh html/index.html
 
-      # Ce que patch-assets.sh corrige est vital : sans ses quatre correctifs,
+      # Ce que patch-assets.sh corrige est vital : sans ses cinq correctifs,
       # aucune connexion n'aboutit. Une evolution du bundle les ferait echouer
       # en silence.
       - name: Verify bundle patches were applied
         run: |
-          for m in '/ws/relay' 'get_conn_status'; do
+          for m in '/ws/relay' 'get_conn_status' '__rdUnzstd'; do
             grep -q -- "$m" html/js/dist/index.js \
               || { echo "correctif absent du bundle : $m"; exit 1; }
           done

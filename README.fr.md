@@ -32,6 +32,7 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
 | `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
 | Presse-papier | distant → navigateur, et navigateur → distant (texte) |
+| Fichiers | panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
 | Curseur | le vrai curseur distant, avec son point chaud |
 | Audio | Opus, avec réveil du contexte au premier geste |
@@ -41,8 +42,9 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Mesure | percentiles p50/p95/p99 de latence et de décodage, en surimpression |
 | Accès | authentification Basic + cookie de session de 90 jours |
 
-**Non supporté** : le transfert de fichiers. Il est absent du protocole de ce
-client — sa boucle de messages ne traite que onze types, aucun lié aux fichiers.
+**Non supporté** : coller un fichier du Mac dans le Finder local. Voir
+[Transfert de fichiers](#transfert-de-fichiers) — ce n'est pas une limite de ce
+dépôt, mais du web lui-même.
 
 ## Prérequis
 
@@ -116,7 +118,7 @@ redémarrages.
 | `web` | `nginx:alpine` | assets, authentification, proxy WebSocket |
 | `tls` | `caddy:2-alpine` | terminaison TLS 443, ACME automatique |
 
-## Les quatre correctifs du bundle
+## Les cinq correctifs du bundle
 
 `scripts/patch-assets.sh` les réapplique de façon idempotente à partir de
 `html/js/dist/index.js.orig`. Sans eux, rien ne fonctionne :
@@ -129,6 +131,55 @@ redémarrages.
 3. **`getByName`** — ne lève plus, conserve la sémantique `null → ""`.
 4. **Garde-fou de version** — hbbs OSS ne renseigne pas `RelayResponse.version` ;
    le client refusait alors la session. Le champ n'est utilisé nulle part ailleurs.
+5. **Décodeur zstd exposé** — les blocs de fichiers descendants arrivent
+   compressés. Le bundle embarque déjà un décodeur wasm, mais au périmètre du
+   module ; on l'expose (`window.__rdUnzstd`) plutôt que d'en embarquer un second.
+
+## Transfert de fichiers
+
+Le client d'origine n'en a **rien** : les codecs protobuf `FileAction`,
+`FileResponse` et `Cliprdr` sont présents dans le bundle, mais sans un seul
+appelant — 13 occurrences chacun, soit exactement le passe-partout généré par
+`ts-proto`. Le répartiteur de messages ne connaît que dix branches, aucune liée
+aux fichiers.
+
+Ce dépôt ajoute un panneau **Fichiers** dans la barre : navigation, téléversement
+(bouton, glisser-déposer d'un fichier ou d'un dossier, `Ctrl+V`), téléchargement,
+création de dossier, renommage, suppression.
+
+### Comment, et pourquoi ainsi
+
+Le transfert passe par une **seconde connexion**, ouverte à la demande. Ce n'est
+pas un choix esthétique : sur le pair, `file_action` n'est traité que si
+`self.file_transfer.is_some()`, champ posé uniquement par
+`LoginRequest.file_transfer`. En session distante ordinaire, toute `FileAction`
+est ignorée **en silence** — ni erreur, ni accusé. Cette connexion n'ouvre aucun
+flux vidéo et disparaît avec la session.
+
+Deux détails du protocole qu'il faut connaître avant de toucher à ce code :
+
+- **`all_files` avant `send`.** Les blocs ne portent qu'un `file_num`, jamais un
+  nom. Seul un `FileAction.all_files` préalable donne la liste — dans l'ordre
+  exact où les blocs arriveront, les deux passant par `get_recursive_files`.
+  Un chemin de *fichier* y produit une entrée unique au **nom vide** : le nom se
+  dérive du chemin.
+- **`remove_dir{recursive:true}` n'efface pas les fichiers.** Côté pair il
+  appelle `remove_all_empty_dir`, qui ne retire que les répertoires vides. Il
+  faut donc énumérer, effacer chaque fichier, puis retirer l'arborescence vidée.
+
+### Ce qui ne sera jamais possible
+
+**Copier un fichier sur le Mac et le coller dans le Finder local.** Un navigateur
+ne peut écrire dans le presse-papier du système que `text/plain`, `text/html` et
+`image/png` ; il n'existe aucun chemin vers `CF_HDROP` (Windows) ni
+`NSFilenamesPboardType` (macOS). Les *web custom formats* de Chrome restent
+d'onglet à onglet. Le sens inverse, lui, fonctionne : un fichier copié dans le
+Finder arrive bien dans `clipboardData.files`, et `Ctrl+V` le téléverse.
+
+C'est aussi la conclusion de Teleport, Guacamole et Kasm : aucun n'utilise le
+presse-papier pour les fichiers, tous ouvrent un canal latéral.
+
+Diagnostic dans la console : `rdFiles()`.
 
 ## Ce qui a été réimplémenté
 

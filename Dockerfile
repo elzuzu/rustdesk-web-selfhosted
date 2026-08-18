@@ -3,7 +3,7 @@
 # Les assets proviennent de pmietlicki/rustdesk-web-client
 # @sha256:da957e62f4c95179107632b7386735aec35c3ba10976bdb3ac00b747e496a2e6
 # dont l'image n'a JAMAIS ete executee : seuls les fichiers ont ete extraits,
-# puis corriges par scripts/patch-assets.sh (4 correctifs documentes).
+# puis corriges par scripts/patch-assets.sh (5 correctifs documentes).
 # Le serveur est le nginx officiel, sous notre propre configuration.
 FROM nginx:alpine
 

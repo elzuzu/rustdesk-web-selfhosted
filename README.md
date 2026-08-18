@@ -32,6 +32,7 @@ that was missing**: the original client wires up display and nothing else.
 | Keyboard | text, accents, non-US layouts, dead keys, control keys |
 | `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
 | Clipboard | remote → browser, and browser → remote (text) |
+| Files | remote panel: browse, upload, download, create, rename, delete |
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
 | Cursor | the real remote cursor, with its hotspot |
 | Audio | Opus, with the audio context resumed on first gesture |
@@ -41,8 +42,9 @@ that was missing**: the original client wires up display and nothing else.
 | Metrics | p50/p95/p99 percentiles for latency and decode time, as an overlay |
 | Access | Basic authentication plus a 90-day session cookie |
 
-**Not supported**: file transfer. It is absent from this client's protocol — its
-message loop handles eleven types, none of them file-related.
+**Not supported**: pasting a file from the Mac into your local file manager. See
+[File transfer](#file-transfer) — that is a limit of the web platform, not of
+this repository.
 
 ## Requirements
 
@@ -116,7 +118,7 @@ Two containers. Configuration and assets are baked into the images; only the
 | `web` | `nginx:alpine` | assets, authentication, WebSocket proxy |
 | `tls` | `caddy:2-alpine` | TLS termination on 443, automatic ACME |
 
-## The four bundle patches
+## The five bundle patches
 
 `scripts/patch-assets.sh` reapplies them idempotently from
 `html/js/dist/index.js.orig`. Without them, nothing works:
@@ -129,6 +131,53 @@ Two containers. Configuration and assets are baked into the images; only the
 3. **`getByName`** — no longer throws, and preserves the `null → ""` semantics.
 4. **Version guard** — hbbs OSS does not populate `RelayResponse.version`, so the
    client refused the session. The field is used nowhere else.
+5. **Exposed zstd decoder** — downstream file blocks arrive compressed. The bundle
+   already ships a wasm decoder, but module-scoped; we expose it
+   (`window.__rdUnzstd`) rather than shipping a second one.
+
+## File transfer
+
+The upstream client has **none**. The `FileAction`, `FileResponse` and `Cliprdr`
+protobuf codecs are present in the bundle, but without a single caller — 13
+occurrences each, exactly the boilerplate `ts-proto` generates. The message
+dispatcher knows only ten branches, none file-related.
+
+This repository adds a **Files** panel to the toolbar: browsing, upload (button,
+drag-and-drop of a file or a folder, `Ctrl+V`), download, create folder, rename,
+delete.
+
+### How, and why this way
+
+Transfers run over a **second connection**, opened on demand. This is not a
+stylistic choice: on the peer, `file_action` is only handled when
+`self.file_transfer.is_some()`, a field set solely by
+`LoginRequest.file_transfer`. In an ordinary remote session every `FileAction` is
+dropped **silently** — no error, no acknowledgement. That connection carries no
+video and dies with the session.
+
+Two protocol details to know before touching this code:
+
+- **`all_files` before `send`.** Blocks carry only a `file_num`, never a name.
+  Only a prior `FileAction.all_files` yields the list — in the exact order the
+  blocks will arrive, since both go through `get_recursive_files`. A *file* path
+  yields a single entry with an **empty name**: the name is derived from the path.
+- **`remove_dir{recursive:true}` does not delete files.** On the peer it calls
+  `remove_all_empty_dir`, which only removes empty directories. You must
+  enumerate, delete each file, then remove the emptied tree.
+
+### What will never be possible
+
+**Copying a file on the Mac and pasting it into your local file manager.** A
+browser may only write `text/plain`, `text/html` and `image/png` to the system
+clipboard; there is no path to `CF_HDROP` (Windows) or `NSFilenamesPboardType`
+(macOS). Chrome's web custom formats stay tab-to-tab. The other direction does
+work: a file copied in Finder does reach `clipboardData.files`, and `Ctrl+V`
+uploads it.
+
+Teleport, Guacamole and Kasm reached the same conclusion: none of them uses the
+clipboard for files; all open a side channel.
+
+Console diagnostics: `rdFiles()`.
 
 ## What was reimplemented
 

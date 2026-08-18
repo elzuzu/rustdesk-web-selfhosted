@@ -40,6 +40,18 @@ m=re.search(r'if\(!([A-Za-z0-9_$]+)\.version\)\{[^}]*?Remote version is low[^}]*
 assert m, "patch 4 : motif absent"
 s=s[:m.start()]+'if(!1){}'+s[m.end():]; n+=1
 
+# 5) Exposer le decodeur zstd du bundle.
+#    Les blocs de fichiers descendants arrivent compresses : le pair applique
+#    zstd a tout ce dont l'extension n'est pas deja compressee (hbb_common
+#    fs.rs, TransferJob::read). Le bundle embarque deja un decodeur wasm,
+#    utilise pour le presse-papier compresse, mais il reste au perimetre du
+#    module. On l'expose plutot que d'embarquer un second decodeur.
+#    S3 est une declaration de fonction : elle est hissee, donc l'affectation
+#    placee avant elle capture bien la fonction a l'evaluation du module.
+old='async function S3(u){const e=1024*1024*64'
+assert s.count(old)==1, "patch 5 : motif absent"
+s=s.replace(old,'window.__rdUnzstd=(u)=>S3(u);'+old); n+=1
+
 # --- Pre-condition d'ecriture : le format de fil d'authentification est intact --
 #
 # La verification precede l'ecriture, et c'est le point important : un
