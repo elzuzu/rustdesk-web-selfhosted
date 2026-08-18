@@ -1854,14 +1854,13 @@ window.onGlobalEvent = function(payload){
     r.onclick = function(){ lister("/"); };
     filAr.appendChild(r);
     var acc = "";
-    (FT.cwd || "").split("/").filter(Boolean).forEach(function(b){
+    (FT.cwd || "").split("/").filter(Boolean).forEach(function(b, i){
       acc = acc + "/" + b;
       var chemin = acc;
-      filAr.appendChild(document.createTextNode(" "));
+      filAr.appendChild(document.createTextNode(i ? " / " : " "));
       var a = document.createElement("a"); a.textContent = b;
       a.onclick = function(){ lister(chemin); };
       filAr.appendChild(a);
-      filAr.appendChild(document.createTextNode(" /"));
     });
 
     ul.innerHTML = "";
