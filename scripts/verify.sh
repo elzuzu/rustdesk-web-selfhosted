@@ -40,6 +40,39 @@ titre "Syntaxe des scripts shell"
 for s in setup.sh scripts/*.sh; do bash -n "$s"; done
 vert "  ✓ tous les scripts se parsent"
 
+titre "Syntaxe Python des outils"
+python3 -m py_compile scripts/relay-probe.py
+vert "  ✓ scripts/relay-probe.py"
+
+titre "Le piege retire doit rester retire"
+# « docker exec hbbs cat /root/id_ed25519.pub » a ete la seule instruction que
+# ce depot donnait pour relever la cle, et elle ne peut pas fonctionner :
+# l'image du serveur n'a pas de shell, et le fichier .pub n'est jamais relu par
+# hbbs donc il manque le plus souvent. Elle a envoye les utilisateurs chercher
+# leur cle ailleurs — c'est-a-dire droit dans les causes 2 et 3.
+#
+# On la refuse la ou elle serait EXECUTEE : dans un bloc de code, ou dans un
+# message de la page. La citer en prose pour expliquer pourquoi elle est fausse
+# reste evidemment permis, et c'est ce que font les README.
+python3 - <<'GARDE'
+import pathlib, re, sys
+fautes = []
+for f in ("README.md", "README.fr.md"):
+    texte = pathlib.Path(f).read_text(encoding="utf-8")
+    for bloc in re.findall(r"```.*?```", texte, re.S):
+        if "id_ed25519.pub" in bloc:
+            fautes.append(f"{f} : « id_ed25519.pub » dans un bloc de code")
+gabarit = pathlib.Path("web/index.html.template").read_text(encoding="utf-8")
+if "id_ed25519.pub" in gabarit:
+    fautes.append("web/index.html.template : la page ne doit pas conseiller le fichier .pub")
+if "docker exec hbbs" in gabarit:
+    fautes.append("web/index.html.template : « docker exec hbbs » ne fonctionne pas, image sans shell")
+for f in fautes:
+    print("  \033[31m✗\033[0m " + f)
+sys.exit(1 if fautes else 0)
+GARDE
+vert "  ✓ aucune instruction impossible"
+
 titre "Syntaxe JavaScript du gabarit"
 ./scripts/check-syntax.sh
 

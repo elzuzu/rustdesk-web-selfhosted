@@ -60,37 +60,92 @@ if [ ${#RD_WEB_PASSWORD} -lt 12 ]; then
 fi
 
 titre "Serveur RustDesk (hbbs / hbbr)"
-# Le moyen de joindre l'hôte depuis un conteneur diffère selon la plateforme :
-# sur macOS et Windows, la passerelle du pont ne route pas vers l'hôte.
+
+# Le moyen de joindre hbbs/hbbr depuis un conteneur dépend de la plateforme, et
+# le deviner ne suffit pas : on ESSAIE. Un candidat n'est retenu que s'il ouvre
+# 21118 ET 21119. N'exiger que 21118 est précisément le défaut qui laisse
+# /ws/id fonctionner pendant que /ws/relay échoue — et 21118 ne prouve même pas
+# la présence de hbbs, le client RustDesk écoute lui aussi dessus.
 DEF_BACKEND="172.17.0.1"
 MOTEUR=$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || echo "")
 case "$(uname -s)$MOTEUR" in
   Darwin*|*"Docker Desktop"*|*OrbStack*|*"Rancher Desktop"*)
-    DEF_BACKEND="host.docker.internal"
-    echo "  Plateforme détectée : $MOTEUR" ;;
+    DEF_BACKEND="host.docker.internal" ;;
 esac
-echo "  Hôte joignable depuis le conteneur web :"
-echo "    • Linux, hbbs/hbbr en network_mode host  → 172.17.0.1"
-echo "    • macOS ou Windows                       → host.docker.internal"
-echo "    • serveur RustDesk sur une autre machine → son nom ou son IP"
+echo "  Recherche de l'hôte joignable depuis un conteneur…"
+if TROUVE=$(./scripts/relay-doctor.sh --print-backend 2>/dev/null) && [ -n "$TROUVE" ]; then
+  c_ok "  ✓ $TROUVE — 21118 et 21119 ouverts"
+  DEF_BACKEND=$TROUVE
+else
+  c_warn "  ⚠ aucun candidat n'ouvre les deux ports. hbbs et hbbr tournent-ils ?"
+  echo "    • Linux, hbbs/hbbr en network_mode host  → 172.17.0.1"
+  echo "    • macOS ou Windows                       → host.docker.internal"
+  echo "    • serveur RustDesk sur une autre machine → son nom ou son IP"
+fi
 demander RD_BACKEND_HOST "Hôte du serveur RustDesk" "$DEF_BACKEND"
-demander RD_PUBLIC_KEY "Clé publique du serveur (contenu de data/id_ed25519.pub)"
+
+# La clé se relève, elle ne se retape pas. La transcription humaine est la
+# deuxième cause de « invalid key » — et la première instruction que nous
+# donnions pour l'éviter, « docker exec hbbs cat /root/id_ed25519.pub », ne
+# peut pas fonctionner : l'image du serveur n'a ni shell ni cat, et le fichier
+# .pub n'est jamais relu par hbbs, donc il manque le plus souvent. La bonne
+# source est ce que le processus annonce au démarrage.
+CLE_RELEVEE=$(./scripts/relay-doctor.sh --print-key 2>/dev/null || true)
+if [ -n "$CLE_RELEVEE" ]; then
+  c_ok "  ✓ clé relevée sur le serveur : ${CLE_RELEVEE:0:8}…${CLE_RELEVEE: -6}"
+  if [ -n "${RD_PUBLIC_KEY:-}" ] && [ "$RD_PUBLIC_KEY" != "$CLE_RELEVEE" ]; then
+    c_warn "  ⚠ ta configuration actuelle porte une AUTRE clé."
+    c_warn "    C'est exactement ce que hbbr rejette. On prend celle du serveur."
+  fi
+  RD_PUBLIC_KEY=$CLE_RELEVEE
+else
+  echo "  Aucun hbbs/hbbr joignable d'ici. Relève la clé sur le serveur avec :"
+  echo "    docker logs hbbs 2>&1 | grep 'Key:'          (Docker)"
+  echo "    journalctl -u hbbs | grep 'Key:'             (systemd)"
+fi
+demander RD_PUBLIC_KEY "Clé publique du serveur"
 [ -n "${RD_PUBLIC_KEY:-}" ] || { c_err "La clé publique est obligatoire."; exit 1; }
 
 # Une clé erronée ne se voit qu'au premier essai de connexion : hbbr ferme la
 # liaison sans rien dire au client, et ne journalise qu'un « invalid key » de
-# son côté. C'est la première cause d'échec, et elle est presque toujours une
-# faute de copie. Autant la voir maintenant.
+# son côté. On refuse donc ici, au lieu d'avertir : un avertissement jaune se
+# survole, et la panne réapparaît des semaines plus tard sous forme d'écran noir.
 RD_PUBLIC_KEY=$(printf '%s' "$RD_PUBLIC_KEY" | tr -d '[:space:]')
 case "$RD_PUBLIC_KEY" in
   *"BEGIN "*|*"PRIVATE"*)
-    c_err "  ✗ ceci ressemble à une clé PRIVÉE. Il faut data/id_ed25519.pub."; exit 1 ;;
+    c_err "  ✗ ceci ressemble à une clé PRIVÉE au format PEM."; exit 1 ;;
 esac
+
+# Une clé privée RustDesk est du base64 nu : ni BEGIN, ni PRIVATE, rien qui la
+# distingue à l'œil d'une clé publique. Mais elle fait 64 octets et sa moitié
+# haute EST la clé publique (common.rs : base64::encode(&tmp[SECRETKEYBYTES/2..])).
+# On peut donc la reconnaître à coup sûr, et rendre la bonne valeur.
+DERIVEE=$(printf '%s' "$RD_PUBLIC_KEY" | python3 -c '
+import base64, sys
+try:
+    sk = base64.b64decode(sys.stdin.read().strip(), validate=True)
+except Exception:
+    sys.exit(1)
+if len(sk) != 64:
+    sys.exit(1)
+print(base64.b64encode(sk[32:]).decode())
+' 2>/dev/null || true)
+if [ -n "$DERIVEE" ]; then
+  c_err "  ✗ c'est la clé PRIVÉE (64 octets) : id_ed25519, pas la clé publique."
+  c_warn "    La publique correspondante est : $DERIVEE"
+  demander REPONSE "L'utiliser à la place ? (o/n)" "o"
+  case "$REPONSE" in
+    o|O|oui|y|Y|yes) RD_PUBLIC_KEY=$DERIVEE; c_ok "  ✓ clé publique retenue" ;;
+    *) c_err "Corrige la clé puis relance."; exit 1 ;;
+  esac
+fi
+
 if ! printf '%s' "$RD_PUBLIC_KEY" | grep -Eq '^[A-Za-z0-9+/]{43}=$'; then
-  c_warn "  ⚠ forme inattendue : une clé publique RustDesk fait 44 caractères base64"
-  c_warn "    et se termine par « = » (32 octets Ed25519). Reçu : ${#RD_PUBLIC_KEY} caractères."
-  c_warn "    Relève-la avec :  docker exec hbbs cat /root/id_ed25519.pub"
-  c_warn "    Si elle est fausse, hbbr rejettera toutes les sessions relayées."
+  c_err "  ✗ ce n'est pas une clé publique RustDesk : 44 caractères base64"
+  c_err "    terminés par « = » (32 octets Ed25519). Reçu : ${#RD_PUBLIC_KEY} caractères."
+  c_err "    hbbr rejetterait toutes les sessions relayées. Relève-la avec :"
+  c_err "      docker logs hbbs 2>&1 | grep 'Key:'"
+  exit 1
 fi
 demander RD_DEFAULT_PEER_ID "ID du poste distant à préremplir (facultatif)" ""
 
@@ -206,6 +261,28 @@ ws=$(curl -s -o /dev/null -w '%{http_code}' -m 5 --http1.1 \
 if [ "$ws" = "101" ]; then c_ok "  ✓ WebSocket vers hbbs (101)"
 else c_warn "  ⚠ WebSocket : $ws — vérifie RD_BACKEND_HOST et que hbbs écoute sur 21118"; fi
 
+# La vérification qui manquait, et c'est celle qui compte : /ws/id suffisait à
+# déclarer l'installation réussie alors que c'est /ws/relay qui échoue. Une
+# session web passe par le relais à 100 % — elle n'a pas d'UDP, donc pas de
+# liaison directe. Une clé que hbbr refuse ne doit plus pouvoir traverser
+# l'installation sans être nommée.
+ECHEC_RELAIS=0
+verdict=$(./scripts/relay-doctor.sh --probe-only \
+          --url "ws://127.0.0.1:8081/ws/relay" --key "$RD_PUBLIC_KEY" 2>&1) || true
+case "$verdict" in
+  ACCEPTEE*) c_ok   "  ✓ hbbr accepte la clé — le relais est authentifié" ;;
+  REFUSEE*)
+    c_err "  ✗ hbbr REFUSE la clé. Aucune session web ne peut aboutir."
+    c_err "    Cause la plus fréquente : hbbs et hbbr ne partagent pas leur"
+    c_err "    répertoire de clés, donc chacun a généré la sienne. Compare :"
+    c_err "      docker logs hbbs 2>&1 | grep 'Key:'"
+    c_err "      docker logs hbbr 2>&1 | grep 'Key:'"
+    c_err "    Diagnostic complet :  ./scripts/relay-doctor.sh"
+    ECHEC_RELAIS=1 ;;
+  *) c_warn "  ⚠ relais intestable : $verdict"
+     c_warn "    ./scripts/relay-doctor.sh dira pourquoi." ;;
+esac
+
 titre "Terminé"
 if [ "$RD_TLS_MODE" = "1" ]; then
   echo "  URL : https://$RD_DOMAIN/"
@@ -223,3 +300,10 @@ else
 fi
 echo ""
 echo "  Identifiant : $RD_WEB_USER"
+
+if [ "$ECHEC_RELAIS" = 1 ]; then
+  echo ""
+  c_err "  La page est en ligne, mais aucune session ne pourra s'établir tant que"
+  c_err "  hbbr refusera cette clé. Corrige-la, puis relance ce script."
+  exit 1
+fi

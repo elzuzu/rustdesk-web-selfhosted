@@ -237,37 +237,92 @@ courte que de pousser pour savoir.
 ## Dépannage : `invalid key` sur le relais
 
 hbbr journalise `Relay authentication failed from … - invalid key` et le
-navigateur n'obtient jamais de session. hbbr ne dit rien au client — il se
-contente de fermer — d'où la bannière de la page, déduite de la vitesse à
-laquelle la liaison est tombée.
+navigateur n'obtient jamais de session. hbbr ne dit **rien** au client, il se
+contente de fermer : côté navigateur on ne voit qu'un `1006`.
 
-**La cause est une clé qui ne correspond pas, et c'est presque toujours l'un de ces trois cas :**
+**Commence par ceci, sur la machine du serveur — c'est fait pour trancher :**
 
-1. **hbbs et hbbr ne partagent pas le même volume `data/`.** Avec `-k _`, chaque
-   processus génère sa propre paire de clés au premier démarrage : la clé publiée
-   par hbbs n'est alors pas celle que hbbr vérifie. Les deux services doivent
-   monter le *même* répertoire. C'est l'exigence documentée : le guide RustDesk
-   pour déployer un relais supplémentaire demande de copier la paire
-   `id_ed25519` **et** `id_ed25519.pub` sur la machine du relais avant de lancer
-   `hbbr -k _`
-   ([doc relais](https://rustdesk.com/docs/en/self-host/rustdesk-server-pro/relay/)),
-   la clé publique étant celle générée au premier démarrage de hbbs
-   ([configuration client](https://rustdesk.com/docs/en/self-host/client-configuration/)).
-2. La valeur donnée à `setup.sh` n'est pas celle qu'utilise réellement le serveur.
-   Relève-la depuis le serveur, ne la retape pas :
-   ```bash
-   docker exec hbbs cat /root/id_ed25519.pub    # 44 caractères base64, finit par « = »
-   ```
-3. Une espace ou un retour à la ligne collé avec la clé. `setup.sh` les retire et
-   signale une forme inattendue, mais un navigateur qui s'est connecté avant la
-   correction garde l'ancienne valeur dans `localStorage` — recharge une fois
-   après avoir corrigé `.env`.
+```bash
+./scripts/relay-doctor.sh            # tableau lisible
+./scripts/relay-doctor.sh --json     # à coller dans un rapport
+```
 
-Pour confirmer que c'est bien la clé : une liaison relais qui meurt en **moins
-d'une seconde** est une clé refusée ; une qui vit **une trentaine de secondes**
-signifie que la clé était bonne et que le poste distant n'est jamais arrivé. Ce
-sont les deux chemins distincts de `relay_server.rs` dans hbbr, rien d'autre ne
-ferme cette liaison en silence.
+Marche à suivre complète, pas à pas, avec le remède de chaque verdict :
+**[docs/DEPANNAGE-RELAIS.md](docs/DEPANNAGE-RELAIS.md)**.
+
+Il relève la clé effective de hbbs et celle de hbbr, la dérive du fichier de
+clé, compare avec ce que la page enverra, teste la joignabilité de 21118 **et**
+21119, lit la configuration du poste contrôlé s'il est sur cette machine, puis
+envoie une vraie trame `RequestRelay` sur `/ws/relay`. Le verdict est binaire.
+
+### « Mais le client natif marche »
+
+Ce n'est pas un contrôle valide, et c'est le faux témoin qui coûte le plus de
+temps. Le client natif perce le NAT et établit une liaison **directe** : il ne
+touche hbbr quasiment jamais. Le client web n'a pas d'UDP, **il passe par le
+relais à 100 %**. « Natif OK, web KO » est exactement la signature attendue d'un
+désaccord de clé entre hbbs et hbbr.
+
+### Ce que hbbr fait, et comment le lire
+
+Le contrôle tient en une ligne de `relay_server.rs` :
+`if !key.is_empty() && rf.licence_key != key { … return; }` — égalité stricte.
+Ensuite il n'y a que deux chemins, et leur durée les distingue :
+
+| Durée de vie de la liaison | Signification |
+|---|---|
+| **moins d'une seconde** | clé refusée : `return` immédiat, sans un mot au client |
+| **une trentaine de secondes** | clé acceptée, mais le pair n'est jamais arrivé (`sleep(30)`) |
+
+Un relais a **deux jambes**, authentifiées séparément : le navigateur d'un
+côté, le poste contrôlé de l'autre. Une clé fausse **sur le poste** ne produit
+donc pas l'échec immédiat mais l'attente de 30 s. Les deux se ressemblent à
+l'écran et n'ont pas la même cause.
+
+### Les quatre causes, par fréquence
+
+1. **hbbs et hbbr ne partagent pas leur répertoire de clés.** Avec `-k _`,
+   chacun exécute `gen_sk(300)` : après une attente, si le fichier manque
+   toujours, il **génère sa propre paire**, sans un mot dans les journaux. Sous
+   Docker c'est un volume non partagé ; en natif, deux processus lancés depuis
+   deux répertoires différents — le fichier de clé est cherché dans le
+   **répertoire de travail**, pas à un chemin fixe.
+   Vérification en une ligne : les deux `Key:` ci-dessous doivent coïncider.
+2. **La valeur donnée à `setup.sh` n'est pas celle du serveur.** Depuis cette
+   version, `setup.sh` la relève tout seul ; ne la retape jamais.
+3. **La clé privée collée à la place de la publique.** `id_ed25519` est du
+   base64 nu, sans `BEGIN` ni `PRIVATE` : rien ne la distingue à l'œil.
+   `setup.sh` la reconnaît désormais à sa taille (64 octets) et propose la
+   publique correspondante — qui en est littéralement la moitié haute.
+4. **`localStorage` périmé ou vide.** Le bundle envoie
+   `localStorage.getItem("key") || void 0` : un stockage vide n'envoie pas une
+   clé vide, il **omet le champ**, et hbbr rejette pareil. Dans la console de la
+   page : `rdRelayTest()` pour le verdict, `rdRelayReset()` pour réécrire la clé
+   depuis la page et recharger.
+
+### Relever la clé effective — la bonne commande
+
+```bash
+docker logs hbbs 2>&1 | grep 'Key:'      # Docker
+docker logs hbbr 2>&1 | grep 'Key:'      # les deux doivent coïncider
+journalctl -u hbbs | grep 'Key:'         # systemd
+```
+
+> **N'utilise pas `docker exec hbbs cat /root/id_ed25519.pub`.** Cette commande,
+> qu'on trouve partout et que ce dépôt a lui-même recommandée, **ne peut pas
+> fonctionner** — pour deux raisons indépendantes. L'image
+> `rustdesk/rustdesk-server` n'a **ni shell, ni `cat`, ni `ls`** : `docker exec`
+> y répond `executable file not found in $PATH`. Et le fichier `.pub` **n'existe
+> souvent pas** : hbbs relit `id_ed25519` et dérive la clé publique de ses 32
+> derniers octets (`common.rs`), il n'a jamais besoin de relire le `.pub`.
+> La clé annoncée au démarrage, elle, est toujours la bonne : c'est celle que le
+> processus applique vraiment.
+
+Si tu n'as accès qu'au fichier, dérive-la sans conteneur :
+
+```bash
+python3 -c "import base64,sys;k=base64.b64decode(open(sys.argv[1],'rb').read().strip());print(base64.b64encode(k[32:]).decode())" data/id_ed25519
+```
 
 > **Ne pas « corriger » les tags protobuf de `RequestRelay`.** Cela a maintenant
 > été tenté et annulé deux fois. Le `rendezvous.proto` officiel dit `uuid = 2`,
@@ -276,6 +331,46 @@ ferme cette liaison en silence.
 > clé. Et hbbr n'authentifie pas les clients WebSocket autrement que les clients
 > TCP bruts : `make_pair_` est générique sur le flux, et le contrôle de la clé a
 > lieu **avant** toute distinction `is_ws()`.
+
+## Où tourne ton serveur
+
+`setup.sh` ne devine plus : il essaie les candidats et retient celui qui ouvre
+**21118 et 21119**. Ce tableau sert à comprendre son choix, ou à s'en passer.
+
+| Condition | Relever la clé | `RD_BACKEND_HOST` |
+|---|---|---|
+| Linux + Docker, `network_mode: host` | `docker logs hbbs \| grep 'Key:'` | `172.17.0.1` |
+| Docker Desktop / OrbStack / Colima | idem | `host.docker.internal`, `host.lima.internal` |
+| Binaires natifs | `journalctl -u hbbs \| grep 'Key:'`, ou dérivation depuis le `id_ed25519` du répertoire de travail | `172.17.0.1` ou `127.0.0.1` |
+| Serveur sur une autre machine | à relever là-bas | son nom ou son IP |
+
+Deux avertissements qui coûtent des heures :
+
+- **`network_mode: host` sous Docker Desktop ne désigne pas macOS**, mais la VM
+  Linux interne. `host.docker.internal` ne joindra pas des conteneurs lancés
+  ainsi ; publie les ports, ou fais tourner le client web sur la même machine.
+- **Le port 21118 n'identifie pas hbbs.** Le *client* RustDesk écoute lui aussi
+  dessus pour ses liaisons directes en réseau local. Sur une machine qui héberge
+  le serveur et fait tourner le client, 21118 est ambigu ; **21119 ne l'est pas**.
+
+Exemple minimal pour hbbs/hbbr, avec le point qui compte — **un seul `data/`,
+monté dans les deux** :
+
+```yaml
+services:
+  hbbs:
+    image: rustdesk/rustdesk-server
+    command: hbbs -k _
+    volumes: [./data:/root]          # le MÊME que hbbr
+    network_mode: host
+    restart: unless-stopped
+  hbbr:
+    image: rustdesk/rustdesk-server
+    command: hbbr -k _
+    volumes: [./data:/root]          # le MÊME que hbbs
+    network_mode: host
+    restart: unless-stopped
+```
 
 ## Sécurité
 

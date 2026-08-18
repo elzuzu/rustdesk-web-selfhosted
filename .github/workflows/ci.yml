@@ -32,6 +32,35 @@ jobs:
         run: |
           for s in setup.sh scripts/*.sh; do bash -n "$s"; done
 
+      - name: Check Python tools syntax
+        run: python3 -m py_compile scripts/relay-probe.py
+
+      # « docker exec hbbs cat /root/id_ed25519.pub » a ete la seule instruction
+      # que ce depot donnait pour relever la cle du serveur, et elle ne peut pas
+      # fonctionner : l'image n'a pas de shell, et le fichier .pub n'est jamais
+      # relu par hbbs donc il manque le plus souvent. Elle a envoye les
+      # utilisateurs chercher leur cle ailleurs, ce qui EST la panne. On la
+      # refuse la ou elle serait executee ; la citer en prose reste permis.
+      - name: Refuse the impossible key-reading command
+        run: |
+          python3 - <<'GARDE'
+          import pathlib, re, sys
+          fautes = []
+          for f in ("README.md", "README.fr.md"):
+              texte = pathlib.Path(f).read_text(encoding="utf-8")
+              for bloc in re.findall(r"```.*?```", texte, re.S):
+                  if "id_ed25519.pub" in bloc:
+                      fautes.append(f + " : id_ed25519.pub dans un bloc de code")
+          gabarit = pathlib.Path("web/index.html.template").read_text(encoding="utf-8")
+          if "id_ed25519.pub" in gabarit:
+              fautes.append("web/index.html.template : la page ne doit pas conseiller le .pub")
+          if "docker exec hbbs" in gabarit:
+              fautes.append("web/index.html.template : docker exec hbbs, image sans shell")
+          for f in fautes:
+              print("::error::" + f)
+          sys.exit(1 if fautes else 0)
+          GARDE
+
       # Le controle qui manquait : un bloc <script> qui ne se parse pas est
       # abandonne EN ENTIER par le navigateur, et tout l'etat de l'application
       # tient dans un seul bloc. Une page entierement inerte etait donc

@@ -56,6 +56,12 @@
   localStorage.setItem("rendezvous-server",(HOST||"").trim());
   localStorage.setItem("key",(KEY||"").trim());
   if(localStorage.getItem("id")===null)localStorage.setItem("id","__RD_DEFAULT_PEER_ID__");
+
+  // Ce que le deploiement a cuit dans la page, expose pour les autres blocs :
+  // le diagnostic doit pouvoir comparer ce que le navigateur ENVOIE (qui vient
+  // de localStorage, et peut etre perime) avec ce que cette page PRESCRIT.
+  window.__rdCleConfig  = (KEY||"").trim();
+  window.__rdHoteConfig = (HOST||"").trim();
 })();</script>
 
 <style>
@@ -245,6 +251,34 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("offline", function(){ tracer("reseau perdu"); });
   window.addEventListener("online",  function(){ tracer("reseau retrouve"); });
 
+  function resumeCle(k){
+    if (!k) return "aucune clé envoyée";
+    if (k.length <= 16) return k + " (" + k.length + " car.)";
+    return k.slice(0, 8) + "…" + k.slice(-6) + " (" + k.length + " car.)";
+  }
+
+  function messageCleRefusee(){
+    var envoyee = "";
+    try { envoyee = localStorage.getItem("key") || ""; } catch(e){}
+    var attendue = window.__rdCleConfig || "";
+    var m = "hbbr a refusé la clé. Envoyée par ce navigateur : " + resumeCle(envoyee) + ". ";
+    if (!envoyee) {
+      m += "Aucune clé n'a été transmise : le bundle lit licence_key dans "
+         + "localStorage et omet le champ s'il est vide — hbbr rejette de la même "
+         + "façon qu'une clé fausse. Recharge la page pour la réécrire. ";
+    } else if (attendue && envoyee !== attendue) {
+      m += "Elle diffère de celle configurée dans cette page (" + resumeCle(attendue)
+         + ") : ton localStorage est périmé. Lance rdRelayReset() puis reconnecte-toi. ";
+    } else {
+      m += "Elle est bien celle configurée dans cette page, donc c'est le SERVEUR qui "
+         + "n'applique pas cette clé. Cause n° 1 : hbbs et hbbr ne partagent pas leur "
+         + "répertoire de clés, et chacun a généré la sienne. Compare les deux : "
+         + "docker logs hbbs 2>&1 | grep 'Key:' et docker logs hbbr 2>&1 | grep 'Key:' ";
+    }
+    m += "— rdRelayTest() en console rejoue le test en 3 s.";
+    return m;
+  }
+
   function showBannerError(msg, type){
     var el = document.getElementById("rderror");
     if (!el) {
@@ -303,15 +337,16 @@ if ("serviceWorker" in navigator) {
       // global : « dernier » est partage entre toutes les liaisons ouvertes.
       if (path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
         if (dur <= 5) {
-          showBannerError("hbbr a refusé la clé publique. La valeur envoyée par cette page "
-            + "doit être exactement celle de data/id_ed25519.pub côté serveur : "
-            + "docker exec hbbs cat /root/id_ed25519.pub — cause la plus fréquente, "
-            + "hbbs et hbbr ne partagent pas le même volume data/, et chacun a donc "
-            + "généré sa propre paire de clés.", "key");
+          showBannerError(messageCleRefusee(), "key");
         } else if (dur >= 20) {
+          // L'autre jambe du relais. Une cle fausse cote POSTE ne tombe pas en
+          // moins d'une seconde : elle nous laisse attendre le pair pendant les
+          // 30 s de hbbr. Les deux pannes se ressemblent a l'ecran.
           showBannerError("Le poste distant n'a pas rejoint le relais dans les 30 s. "
-            + "Vérifie qu'il est en ligne, qu'il pointe vers ce serveur et que le "
-            + "port 21117/tcp est ouvert.", "timeout");
+            + "Soit il est hors ligne ou ne pointe pas vers ce serveur, soit sa propre "
+            + "clé est fausse : hbbr l'a rejeté de son côté, et nous avons attendu un "
+            + "pair qui ne viendrait jamais. Vérifie la clé dans ses réglages réseau, "
+            + "et que le port 21117/tcp est ouvert.", "timeout");
         }
       }
     });
@@ -320,6 +355,90 @@ if ("serviceWorker" in navigator) {
   Trace.prototype = W.prototype;
   ["CONNECTING","OPEN","CLOSING","CLOSED"].forEach(function(k,i){ Trace[k] = i; });
   window.WebSocket = Trace;
+
+  // La meme sonde que scripts/relay-probe.py, rejouee depuis le navigateur.
+  // Le script teste le SERVEUR ; celle-ci est le seul verdict qui prouve ce que
+  // CE navigateur-la envoie reellement — localStorage compris.
+  //
+  // hbbr n'a que deux comportements, separes par deux ordres de grandeur :
+  //   cle refusee  -> relay_server.rs fait « return » sans repondre, la liaison
+  //                   tombe en quelques dizaines de ms ;
+  //   cle acceptee -> le flux est range dans PEERS et hbbr dort 30 s en
+  //                   attendant le pair, donc la liaison reste ouverte.
+  // La cle temoin, volontairement fausse, valide la sonde elle-meme : si elle
+  // passe aussi, ce n'est pas hbbr qui repond, ou il tourne sans -k _.
+  function trameRelay(uuid, cle){
+    var enc = new TextEncoder();
+    function champ(tag, valeur){                 // tags releves dans le bundle :
+      var b = enc.encode(valeur);                // uuid = 2, licence_key = 6
+      var t = tag < 128 ? [tag] : [tag & 127 | 128, tag >> 7];
+      return t.concat([b.length], Array.prototype.slice.call(b));
+    }
+    var interne = champ(18, uuid).concat(champ(50, cle));
+    return new Uint8Array([0x92, 0x01, interne.length].concat(interne));
+  }
+
+  window.rdRelayTest = function(cleForcee){
+    var envoyee = cleForcee;
+    if (envoyee === undefined){ try{ envoyee = localStorage.getItem("key") || ""; }catch(e){ envoyee = ""; } }
+    var essais = [["clé de ce navigateur", envoyee],
+                  ["clé témoin (fausse)", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="],
+                  ["clé vide", ""]];
+    function une(nom, k){
+      return new Promise(function(res){
+        var t0 = Date.now(), fini = false;
+        // W est le constructeur d'origine : passer par le WebSocket instrumente
+        // ferait surgir la banniere de diagnostic pendant le test lui-meme.
+        var ws = new W((location.protocol === "https:" ? "wss://" : "ws://")
+                       + location.host + "/ws/relay");
+        ws.binaryType = "arraybuffer";
+        function fin(v){
+          if (fini) return; fini = true;
+          try{ ws.close(); }catch(e){}
+          res({ essai: nom, verdict: v, ms: Date.now() - t0 });
+        }
+        ws.onopen  = function(){ ws.send(trameRelay("00000000-0000-4000-8000-0000000000ff", k)); };
+        ws.onclose = function(){ fin("REFUSEE"); };
+        ws.onerror = function(){ fin("INTESTABLE"); };
+        setTimeout(function(){ fin("ACCEPTEE"); }, 3000);
+      });
+    }
+    return essais.reduce(function(chaine, e){
+      return chaine.then(function(acc){
+        return une(e[0], e[1]).then(function(r){ acc.push(r); return acc; });
+      });
+    }, Promise.resolve([])).then(function(r){
+      console.table(r);
+      var conf = r[0].verdict, temoin = r[1].verdict;
+      if (conf === "ACCEPTEE" && temoin === "REFUSEE")
+        console.log("%c✓ hbbr accepte la clé de ce navigateur. Si une session échoue "
+                    + "encore, ce n'est pas la clé.", "color:#4ade80");
+      else if (temoin === "ACCEPTEE")
+        console.warn("⚠ hbbr accepte AUSSI une clé fausse : il tourne sans -k _, "
+                     + "donc en relais ouvert à Internet.");
+      else if (conf === "REFUSEE")
+        console.warn("✗ hbbr REFUSE la clé de ce navigateur (" + resumeCle(envoyee) + "). "
+                     + (envoyee && envoyee !== (window.__rdCleConfig || "")
+                        ? "Elle diffère de celle de la page : rdRelayReset()."
+                        : "Compare les clés de hbbs et de hbbr côté serveur."));
+      else
+        console.warn("⚠ intestable : la liaison n'a pas atteint hbbr. Vérifie que "
+                     + "/ws/relay est proxifié et que hbbr écoute sur 21119.");
+      return r;
+    });
+  };
+
+  // Un localStorage perime survit aux rechargements et se voit nulle part :
+  // il suffit d'avoir ouvert la page une fois avant un changement de cle.
+  window.rdRelayReset = function(){
+    try {
+      localStorage.setItem("key", window.__rdCleConfig || "");
+      localStorage.setItem("custom-rendezvous-server", window.__rdHoteConfig || "");
+      localStorage.setItem("rendezvous-server", window.__rdHoteConfig || "");
+      console.log("Clé et hôte réécrits depuis la page. Rechargement…");
+      setTimeout(function(){ location.reload(); }, 400);
+    } catch(e){ console.warn("localStorage inaccessible", e); }
+  };
 
   window.rdDiag = function(){
     console.group("=== DIAGNOSTIC RUSTDESK WEB ===");

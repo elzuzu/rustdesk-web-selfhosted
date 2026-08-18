@@ -232,33 +232,90 @@ verifiable offline, and the loop is shorter than pushing to find out.
 ## Troubleshooting: `invalid key` on the relay
 
 hbbr logs `Relay authentication failed from … - invalid key` and the browser
-never gets a session. hbbr tells the client nothing at all — it just closes —
-so the page shows a banner inferred from how fast the socket died.
+never gets a session. hbbr tells the client **nothing** — it just closes — so
+all the browser sees is a `1006`.
 
-**The cause is a key mismatch, and it is nearly always one of these:**
+**Start here, on the server machine. This is what settles it:**
 
-1. **hbbs and hbbr do not share the same `data/` volume.** With `-k _`, each
-   process generates its own key pair on first start, so the key hbbs publishes
-   is not the key hbbr checks. Both services must mount the *same* directory.
-   This is the documented requirement: RustDesk's own guide for deploying an
-   extra relay tells you to copy the `id_ed25519` **and** `id_ed25519.pub` pair
-   onto the relay host before starting `hbbr -k _`
-   ([relay docs](https://rustdesk.com/docs/en/self-host/rustdesk-server-pro/relay/)),
-   and the public key is the one generated on hbbs's first run
-   ([client configuration](https://rustdesk.com/docs/en/self-host/client-configuration/)).
-2. The value given to `setup.sh` is not what the server actually uses. Read it
-   from the server, do not retype it:
-   ```bash
-   docker exec hbbs cat /root/id_ed25519.pub    # 44 base64 chars, ends with '='
-   ```
-3. Whitespace or a newline pasted along with the key. `setup.sh` strips it and
-   warns on an unexpected shape, but a browser that connected before the fix
-   keeps the old value in `localStorage` — reload once after correcting `.env`.
+```bash
+./scripts/relay-doctor.sh            # readable table
+./scripts/relay-doctor.sh --json     # paste into a report
+```
 
-Confirm it is really the key: a relay socket that dies in **under a second** is
-a rejected key; one that lives about **30 seconds** means the key was fine and
-the remote host never joined. Those are the two distinct code paths in hbbr's
-`relay_server.rs`, nothing else closes that socket silently.
+Full step-by-step runbook, with the remedy for each verdict:
+**[docs/DEPANNAGE-RELAIS.md](docs/DEPANNAGE-RELAIS.md)** (in French).
+
+It reads the effective key of hbbs and of hbbr, derives it from the key file,
+compares it with what the page will send, tests reachability of 21118 **and**
+21119, reads the controlled peer's config if it lives on this machine, then
+sends a real `RequestRelay` frame to `/ws/relay`. The verdict is binary.
+
+### "But the native client works"
+
+That is not a valid control, and it is the false witness that costs the most
+time. The native client punches through NAT and goes **direct**: it barely ever
+touches hbbr. The web client has no UDP — **it relays 100% of the time**.
+"Native fine, web broken" is exactly the signature of a key disagreement
+between hbbs and hbbr.
+
+### What hbbr does, and how to read it
+
+The check is one line of `relay_server.rs`:
+`if !key.is_empty() && rf.licence_key != key { … return; }` — strict equality.
+After that there are only two paths, and their duration tells them apart:
+
+| Socket lifetime | Meaning |
+|---|---|
+| **under one second** | key rejected: immediate `return`, not a word to the client |
+| **about thirty seconds** | key accepted, but the peer never arrived (`sleep(30)`) |
+
+A relay has **two legs**, authenticated separately: the browser on one side,
+the controlled host on the other. A wrong key **on the host** therefore does not
+produce the instant failure but the 30-second wait. The two look alike on screen
+and have different causes.
+
+### The four causes, by frequency
+
+1. **hbbs and hbbr do not share their key directory.** With `-k _`, each runs
+   `gen_sk(300)`: after a wait, if the file is still missing it **generates its
+   own pair**, silently. Under Docker that is an unshared volume; natively, two
+   processes started from two different directories — the key file is looked up
+   in the **working directory**, not at a fixed path.
+   One-line check: the two `Key:` lines below must match.
+2. **The value given to `setup.sh` is not the server's.** As of this version
+   `setup.sh` reads it for you; never retype it.
+3. **The private key pasted instead of the public one.** `id_ed25519` is bare
+   base64, no `BEGIN`, no `PRIVATE`: nothing tells it apart by eye. `setup.sh`
+   now recognises it by size (64 bytes) and offers the matching public key —
+   which is literally its upper half.
+4. **Stale or empty `localStorage`.** The bundle sends
+   `localStorage.getItem("key") || void 0`: empty storage does not send an empty
+   key, it **omits the field**, and hbbr rejects it just the same. In the page's
+   console: `rdRelayTest()` for the verdict, `rdRelayReset()` to rewrite the key
+   from the page and reload.
+
+### Reading the effective key — the command that works
+
+```bash
+docker logs hbbs 2>&1 | grep 'Key:'      # Docker
+docker logs hbbr 2>&1 | grep 'Key:'      # both must match
+journalctl -u hbbs | grep 'Key:'         # systemd
+```
+
+> **Do not use `docker exec hbbs cat /root/id_ed25519.pub`.** That command is
+> everywhere, this repository recommended it too, and it **cannot work** — for
+> two independent reasons. The `rustdesk/rustdesk-server` image has **no shell,
+> no `cat`, no `ls`**: `docker exec` answers `executable file not found in
+> $PATH`. And the `.pub` file **often does not exist**: hbbs reads `id_ed25519`
+> and derives the public key from its last 32 bytes (`common.rs`), so it never
+> needs to read the `.pub` back. The key logged at startup is always the right
+> one: it is the key the process actually enforces.
+
+If all you have is the file, derive it without a container:
+
+```bash
+python3 -c "import base64,sys;k=base64.b64decode(open(sys.argv[1],'rb').read().strip());print(base64.b64encode(k[32:]).decode())" data/id_ed25519
+```
 
 > **Do not "fix" the `RequestRelay` protobuf tags.** This has now been tried and
 > reverted twice. The official `rendezvous.proto` is `uuid = 2`,
@@ -267,6 +324,46 @@ the remote host never joined. Those are the two distinct code paths in hbbr's
 > should be. And hbbr does not authenticate WebSocket clients differently from
 > raw TCP ones: `make_pair_` is generic over the stream, and the key check runs
 > **before** any `is_ws()` branch.
+
+## Where your server runs
+
+`setup.sh` no longer guesses: it tries the candidates and keeps the one that
+opens **21118 and 21119**. This table explains its choice, or lets you skip it.
+
+| Condition | Read the key | `RD_BACKEND_HOST` |
+|---|---|---|
+| Linux + Docker, `network_mode: host` | `docker logs hbbs \| grep 'Key:'` | `172.17.0.1` |
+| Docker Desktop / OrbStack / Colima | same | `host.docker.internal`, `host.lima.internal` |
+| Native binaries | `journalctl -u hbbs \| grep 'Key:'`, or derive from the `id_ed25519` in the working directory | `172.17.0.1` or `127.0.0.1` |
+| Server on another machine | read it over there | its name or IP |
+
+Two warnings that cost hours:
+
+- **`network_mode: host` under Docker Desktop does not mean macOS**, it means
+  the internal Linux VM. `host.docker.internal` will not reach containers
+  started that way; publish the ports, or run the web client on the same host.
+- **Port 21118 does not identify hbbs.** The RustDesk *client* listens on it too
+  for direct LAN connections. On a machine that hosts the server and runs the
+  client, 21118 is ambiguous; **21119 is not**.
+
+Minimal hbbs/hbbr example, with the part that matters — **one `data/`, mounted
+in both**:
+
+```yaml
+services:
+  hbbs:
+    image: rustdesk/rustdesk-server
+    command: hbbs -k _
+    volumes: [./data:/root]          # the SAME as hbbr
+    network_mode: host
+    restart: unless-stopped
+  hbbr:
+    image: rustdesk/rustdesk-server
+    command: hbbr -k _
+    volumes: [./data:/root]          # the SAME as hbbs
+    network_mode: host
+    restart: unless-stopped
+```
 
 ## Security
 
