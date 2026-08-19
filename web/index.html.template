@@ -98,13 +98,53 @@
   #rdbar button.quit{background:#7a2130}
   #rdbar button.quit:hover{background:#9c2a3c}
 
+  /* ------------------------------------------- surimpression de telemetrie
+     Elle informe, elle n'agit jamais. Elle ne doit donc intercepter ni clic,
+     ni deplacement, ni molette : « pointer-events:none » le garantit, et rend
+     le poste distant cliquable sous elle — y compris le menu Demarrer, qui
+     tombe exactement ici.
+
+     Le fond opaque reste le traitement le plus lisible au-dessus d'une image
+     qui change (c'est le classement etabli pour le sous-titrage : plaque, puis
+     contour, puis ombre) — mais c'est aussi lui qui masque. On ne tranche pas
+     entre les deux : quand l'image laisse une bande libre, .horsimage y garde
+     la plaque, occlusion nulle et lisibilite maximale. Quand elle n'en laisse
+     pas, .surimage retire la plaque et confie la lisibilite a un halo porte
+     par le texte lui-meme — le contour anti-interference de Harrison (CHI'95),
+     qui bat l'augmentation d'opacite du fond. A 11 px c'est text-shadow et non
+     -webkit-text-stroke : a cette taille le trace rongerait les contreformes. */
   #rdhud{position:fixed;left:0;bottom:0;z-index:10;display:none;
+         pointer-events:none;user-select:none;-webkit-user-select:none;
+         contain:layout style;   /* pas « paint » : il clipperait le halo */
          padding:.3rem .55rem;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
          white-space:pre;color:#a8b0bd;
-         background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
-         border-top-right-radius:8px;border:1px solid rgba(255,255,255,.08);
-         border-bottom:0;border-left:0;opacity:.3;transition:opacity .18s}
-  #rdhud:hover{opacity:1}
+         border-top-right-radius:8px;
+         opacity:.55;transition:opacity .18s}
+  #rdhud.horsimage{background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
+         border:1px solid rgba(255,255,255,.08);border-bottom:0;border-left:0;
+         opacity:.8}
+  /* Sans plaque, le contraste ne peut plus venir du fond : il vient du trace.
+     Le texte passe donc au blanc — un gris se noierait dans son propre halo,
+     mesure sur fond blanc — et le halo devient un contour plein sur les huit
+     directions, double d'un flou qui le detache d'une image saturee.        */
+  #rdhud.surimage{color:#fff;opacity:.75;
+         text-shadow:0 0 1px #000,0 0 2px #000,0 0 4px rgba(0,0,0,.9),
+         1px 1px 0 #000,-1px 1px 0 #000,1px -1px 0 #000,-1px -1px 0 #000,
+         0 1px 0 #000,0 -1px 0 #000,1px 0 0 #000,-1px 0 0 #000}
+  /* Le HUD ne recoit plus le pointeur : son ancien « :hover » est mort. C'est
+     le bandeau de reglages, seul point interactif de l'ecran, qui le revele.
+     Les deux sont freres dans body, bar ajoute avant hud — « ~ » suffit.     */
+  #rdbar:hover ~ #rdhud,#rdbar:focus-within ~ #rdhud{opacity:1}
+  /* La reprise automatique est le seul message qui ne peut pas attendre d'etre
+     survole : quand il y en a un, le HUD se montre de lui-meme.              */
+  #rdhud[data-reprise]:not([data-reprise=""]){opacity:1}
+  #rdhud .statut{color:#ffd7a8}
+  /* « Reduire la transparence » (macOS Accessibilite, Windows Personnalisation)
+     est une demande explicite : on rend la plaque, on retire le halo.        */
+  @media (prefers-reduced-transparency:reduce){
+    #rdhud,#rdhud.surimage{opacity:1;text-shadow:none;
+         background:rgba(18,20,24,.92);backdrop-filter:none}
+  }
   #rdhud b{color:#e6e8ec;font-weight:600}
 
   /* ------------------------------------------------ panneau de fichiers */
@@ -701,8 +741,29 @@ window.onGlobalEvent = function(payload){
     var k = Math.min(window.innerWidth/c.width, window.innerHeight/c.height);
     c.style.width  = Math.floor(c.width*k)+"px";
     c.style.height = Math.floor(c.height*k)+"px";
+    placerHud();
   }
   window.__rdFit = fitCanvas;
+
+  // fitCanvas conserve le rapport d'image : des qu'il differe de celui de la
+  // fenetre — ce qui est le cas courant, un navigateur n'etant presque jamais
+  // exactement au format de l'ecran distant — il reste une bande noire. Le HUD
+  // est colle en bas a gauche : il ne mord sur l'image que si NI la bande
+  // basse NI la bande gauche ne peuvent le contenir. Tant qu'une des deux le
+  // peut, il garde sa plaque et ne masque rien du tout ; sinon il passe en
+  // halo, sans plaque. Aucune position n'est calculee ici, seulement constatee.
+  function placerHud(){
+    var h = window.__rdHud; if (!h) return;
+    var b = h.getBoundingClientRect();
+    if (!b.height) return;                       // masque : rien a decider
+    var c = active();
+    var r = (c && c.getBoundingClientRect) ? c.getBoundingClientRect() : null;
+    var hors = !!r && (b.height <= Math.floor(window.innerHeight - r.bottom)
+                    || b.width  <= Math.floor(r.left));
+    h.classList.toggle("horsimage", hors);
+    h.classList.toggle("surimage", !hors);
+  }
+  window.__rdPlacerHud = placerHud;
 
   // --------------------------------------------------------- sonde codec
   var CODECS = {
@@ -999,7 +1060,13 @@ window.onGlobalEvent = function(payload){
 
   function repriseInfo(txt){
     var h = window.__rdHud;
-    if (h) h.dataset.reprise = txt || "";
+    if (!h) return;
+    // L'attribut porte la revelation (voir le CSS), le span porte l'annonce :
+    // la telemetrie est muette pour les lecteurs d'ecran — annoncer trois
+    // percentiles chaque seconde serait du bavardage — mais une reconnexion
+    // en cours est un vrai changement d'etat, et role="status" l'annonce.
+    h.dataset.reprise = txt || "";
+    if (h.__statut) h.__statut.textContent = txt ? "\n" + txt : "";
   }
 
   function repriseplanifier(){
@@ -1199,6 +1266,13 @@ window.onGlobalEvent = function(payload){
 
     // --- Affichage des percentiles ---
     var hud=document.createElement("div"); hud.id="rdhud";
+    hud.className="surimage";
+    var hudTel=document.createElement("span");
+    hudTel.setAttribute("aria-hidden","true");       // releve continu, jamais annonce
+    var hudSta=document.createElement("span");
+    hudSta.className="statut"; hudSta.setAttribute("role","status");
+    hud.appendChild(hudTel); hud.appendChild(hudSta);
+    hud.__statut=hudSta;
     document.body.appendChild(hud);
     window.__rdHud=hud;
     var lastFrames=0, lastT=performance.now();
@@ -1213,12 +1287,12 @@ window.onGlobalEvent = function(payload){
         if(!a.length) return "—";
         return P(a,.50).toFixed(0)+" / "+P(a,.95).toFixed(0)+" / "+P(a,.99).toFixed(0)+" "+u;
       }
-      hud.textContent =
+      hudTel.textContent =
         "aller-retour  p50/p95/p99   " + fmt(S.delay,"ms") + "\n" +
         "decodage      p50/p95/p99   " + fmt(S.decode,"ms") + "\n" +
         "trames recues " + ips.toFixed(1) + "/s    debit cible " + S.bitrate + " kbit/s" +
-        "    codec " + (RD.codec || "logiciel") +
-        (hud.dataset.reprise ? "\n" + hud.dataset.reprise : "");
+        "    codec " + (RD.codec || "logiciel");
+      placerHud();
     }, 1000);
 
     window.addEventListener("resize", fitCanvas);
