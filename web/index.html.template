@@ -318,7 +318,12 @@ if ("serviceWorker" in navigator) {
       ligne:   navigator.onLine ? 1 : 0,
       silence: Math.round((now - dernier)/1000),
       ws:      etatWs(),                        // 1 = ouvert
-      trames:  (window.RD && window.RD.stats) ? window.RD.stats.frames : -1
+      trames:  (window.RD && window.RD.stats) ? window.RD.stats.frames : -1,
+      // Un onglet cache voit son decodeur materiel ralenti par le navigateur :
+      // si la file enfle pendant que « trames » stagne, l'engorgement est ici,
+      // et non sur la liaison.
+      file:    (window.RD && window.RD.dec && window.RD.dec.state !== "closed")
+                 ? window.RD.dec.decodeQueueSize : -1
     });
     if (journal.length > 500) journal.shift();
     // Un onglet cache est ralenti par le navigateur : quelques secondes de
@@ -446,7 +451,15 @@ if ("serviceWorker" in navigator) {
       // de l'utilisateur. La fermeture est un evenement — on s'en sert.
       // repriseplanifier() vit dans un autre bloc <script>, d'ou le passage
       // par window ; elle est idempotente, le veilleur peut la rappeler.
-      if (path.indexOf("/ws/relay") !== -1 && window.__rdEtait && window.__rdReprise) {
+      //
+      // Le critere est « cette liaison a-t-elle recu quelque chose », et non
+      // l'etat « __rdEtait » du veilleur : celui-ci est justement pose par le
+      // sondage que l'on contourne, et il reste faux quand la session meurt
+      // avant le tour suivant — mesure le 2026-08-20, deux reprises perdues
+      // puis 55 minutes de silence. Un relais qui n'a jamais rien recu est un
+      // echec d'etablissement (cle refusee, pair absent) : la banniere s'en
+      // charge, une reprise n'y changerait rien.
+      if (path.indexOf("/ws/relay") !== -1 && msgCount > 0 && window.__rdReprise) {
         window.__rdReprise();
       }
     });
