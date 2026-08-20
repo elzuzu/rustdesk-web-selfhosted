@@ -291,6 +291,56 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("offline", function(){ tracer("reseau perdu"); });
   window.addEventListener("online",  function(){ tracer("reseau retrouve"); });
 
+  // ----------------------------------------------- battement de diagnostic
+  // Le tarissement du flux en onglet cache n'est pas explique : la liaison
+  // meurt apres un long silence, sans trame de fermeture. Trois causes
+  // possibles, qu'un simple releve periodique separe :
+  //   veille systeme ou onglet gele -> un battement tarde de plusieurs minutes
+  //   reseau perdu                  -> navigator.onLine passe a faux
+  //   emetteur distant tari         -> le silence croit, tout le reste tient
+  // Le journal vit en memoire — rien dans la console tant que rien n'est
+  // anormal — et se relit par rdTrace() une fois revenu sur l'onglet.
+  var PAS = 2000, battuA = Date.now(), journal = [];
+  function etatWs(){
+    try{
+      var k = window.curConn;
+      return (k && k._ws && k._ws._websocket) ? k._ws._websocket.readyState : -1;
+    }catch(_){ return -1; }
+  }
+  setInterval(function(){
+    var now = Date.now();
+    var retard = Math.round((now - battuA - PAS)/1000);   // 0 quand tout va bien
+    battuA = now;
+    journal.push({
+      heure:   new Date(now).toTimeString().slice(0,8),
+      retard:  retard,                          // secondes de plus que prevu
+      onglet:  document.visibilityState.charAt(0),   // v(isible) ou h(idden)
+      ligne:   navigator.onLine ? 1 : 0,
+      silence: Math.round((now - dernier)/1000),
+      ws:      etatWs(),                        // 1 = ouvert
+      trames:  (window.RD && window.RD.stats) ? window.RD.stats.frames : -1
+    });
+    if (journal.length > 500) journal.shift();
+    // Un onglet cache est ralenti par le navigateur : quelques secondes de
+    // retard sont attendues, et restent muettes. Au-dela de deux minutes ce
+    // n'est plus du ralentissement mais une interruption — on la nomme.
+    if (retard > 120)
+      console.warn("[battement] le temps a saute de " + retard
+                 + " s (veille de la machine ou onglet gele) | onglet "
+                 + document.visibilityState);
+  }, PAS);
+
+  // Relit le battement. La derniere ligne portant « ws:1 » situe la mort de la
+  // liaison ; « retard » dit si le navigateur tournait encore a ce moment-la,
+  // et « silence » depuis combien de temps plus rien n'arrivait.
+  window.rdTrace = function(n){
+    var l = journal.slice(-(n || 60));
+    console.group("Battement — " + l.length + " releves sur " + journal.length + " gardes");
+    console.table(l);
+    console.groupEnd();
+    return l.length;
+  };
+
   function resumeCle(k){
     if (!k) return "aucune clé envoyée";
     if (k.length <= 16) return k + " (" + k.length + " car.)";
@@ -388,6 +438,16 @@ if ("serviceWorker" in navigator) {
             + "pair qui ne viendrait jamais. Vérifie la clé dans ses réglages réseau, "
             + "et que le port 21117/tcp est ouvert.", "timeout");
         }
+      }
+
+      // Fin de la liaison de session. L'attendre par sondage la rendait
+      // tributaire des minuteurs, que le navigateur ralentit a un passage par
+      // minute dans un onglet cache : la session restait morte jusqu'au retour
+      // de l'utilisateur. La fermeture est un evenement — on s'en sert.
+      // repriseplanifier() vit dans un autre bloc <script>, d'ou le passage
+      // par window ; elle est idempotente, le veilleur peut la rappeler.
+      if (path.indexOf("/ws/relay") !== -1 && window.__rdEtait && window.__rdReprise) {
+        window.__rdReprise();
       }
     });
     return ws;
@@ -1089,6 +1149,10 @@ window.onGlobalEvent = function(payload){
     }, delai);
   }
 
+  // Le gestionnaire de fermeture des WebSockets vit dans un autre bloc
+  // <script> et n'a donc pas cette fonction dans sa portee.
+  window.__rdReprise = repriseplanifier;
+
   // --------------------------------------------------- verrou de veille
   // Empeche l'ecran de se verrouiller pendant une session, comme le font
   // YouTube en lecture et le client RustDesk natif. Le navigateur libere
@@ -1098,6 +1162,12 @@ window.onGlobalEvent = function(payload){
 
   async function veilleActiver(){
     if (veille) return;
+    // L'API refuse par conception tant que la page n'est pas visible. Le
+    // veilleur appelant cette fonction toutes les 800 ms tant que la session
+    // dure, sans cette garde chaque passage en arriere-plan produisait un rejet
+    // par battement : le journal en etait noye au moment precis ou il fallait
+    // le lire. Le verrou est repris par le gestionnaire de visibilite.
+    if (document.visibilityState !== "visible") return;
     if (!("wakeLock" in navigator)){
       if (!veillePrevenu){
         veillePrevenu = true;
