@@ -31,7 +31,7 @@ that was missing**: the original client wires up display and nothing else.
 | Mouse | movement, left/right click, wheel, correctly scaled coordinates |
 | Keyboard | text, accents, non-US layouts, dead keys, control keys |
 | `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
-| Clipboard | remote → browser, and browser → remote (text) |
+| Clipboard | text both ways; **images and rich text** too, on Chromium |
 | Files | remote panel: browse, upload, download, create, rename, delete |
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
 | Cursor | the real remote cursor, with its hotspot |
@@ -164,6 +164,35 @@ Two protocol details to know before touching this code:
 - **`remove_dir{recursive:true}` does not delete files.** On the peer it calls
   `remove_all_empty_dir`, which only removes empty directories. You must
   enumerate, delete each file, then remove the emptied tree.
+
+### Rich clipboard: what works, and where
+
+Plain text flows both ways on every browser. **Images** and **rich text** (the
+HTML Word and Excel put on the clipboard) ask for more, and the reach differs by
+direction.
+
+**Browser → remote.** Paste an image into the session and it lands on the remote
+clipboard instead of the file uploader. This direction needs no permission — the
+`paste` event already carries the bytes — so it works everywhere. Two conditions:
+the peer must run **RustDesk 1.3.0 or later**, the only version that understands
+`multi_clipboards` (the peer version is echoed to the console on every image
+send), and the image must stay under **8 MiB**. Browsers do not always hand over
+PNG: jpeg and webp are re-encoded, because announcing the wrong format would give
+the peer bytes it cannot read.
+
+**Remote → browser.** A green "Image reçue ⇩" or "Texte reçu ⇩" button appears in
+the settings bar, which reveals itself. You must click it, and that is not an
+oversight: writing to the system clipboard requires recent user activation, and
+Chrome refuses more than roughly a second after the interaction. Posting
+automatically on arrival is therefore bound to fail — Guacamole exposes a
+dedicated area for the same reason. This direction is **Chromium only**: Firefox
+and Safari do not write images to the clipboard, and the refusal is named in the
+console. KasmVNC, the only comparable project to have done this, likewise limits
+its rich clipboard to Chromium.
+
+An image arriving over the legacy `clipboard` message is intercepted before the
+bundle, whose branch decodes the payload as text unconditionally — without that,
+it would paste garbage.
 
 ### What will never be possible
 

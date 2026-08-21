@@ -31,7 +31,7 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Souris | déplacement, clics gauche/droit, molette, coordonnées mises à l'échelle |
 | Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
 | `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
-| Presse-papier | distant → navigateur, et navigateur → distant (texte) |
+| Presse-papier | texte dans les deux sens ; **images et texte enrichi** aussi, sur Chromium |
 | Fichiers | panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
 | Curseur | le vrai curseur distant, avec son point chaud |
@@ -166,6 +166,36 @@ Deux détails du protocole qu'il faut connaître avant de toucher à ce code :
 - **`remove_dir{recursive:true}` n'efface pas les fichiers.** Côté pair il
   appelle `remove_all_empty_dir`, qui ne retire que les répertoires vides. Il
   faut donc énumérer, effacer chaque fichier, puis retirer l'arborescence vidée.
+
+### Presse-papier riche : ce qui marche, et où
+
+Le texte brut circule dans les deux sens sur tous les navigateurs. Les **images**
+et le **texte enrichi** (HTML de Word ou d'Excel) demandent davantage, et la
+portée n'est pas la même selon le sens.
+
+**Navigateur → poste distant.** Colle une image dans la session : elle part dans
+le presse-papier distant, plus au téléversement. Ce sens ne demande aucune
+permission — l'événement `paste` porte déjà les octets — et fonctionne donc
+partout. Deux conditions : le pair doit être en **RustDesk 1.3.0 ou plus**, seule
+version à comprendre `multi_clipboards` (la version du pair est rappelée dans la
+console à chaque envoi d'image), et l'image doit rester sous **8 Mio**. Un
+navigateur ne fournit pas toujours du PNG : le jpeg et le webp sont reconvertis,
+car annoncer un format faux livrerait au pair des octets illisibles.
+
+**Poste distant → navigateur.** Un bouton vert « Image reçue ⇩ » ou « Texte reçu
+⇩ » apparaît dans le bandeau de réglages, qui se montre alors de lui-même. Il
+faut cliquer, et ce n'est pas un oubli : écrire dans le presse-papier du système
+exige une activation récente de la page, et Chrome refuse au-delà d'environ une
+seconde après l'interaction. Une pose automatique à la réception est donc
+condamnée à échouer — Guacamole expose une zone dédiée pour la même raison.
+Ce sens est du **Chromium** : Firefox et Safari n'écrivent pas d'image dans le
+presse-papier, et le refus est alors nommé dans la console. KasmVNC, seul projet
+comparable à l'avoir fait, restreint lui aussi son presse-papier riche à
+Chromium.
+
+Une image venue du poste distant par l'ancien message `clipboard` est
+interceptée avant le bundle, dont la branche décode le contenu en texte sans
+condition — sans cela, elle collerait du charabia.
 
 ### Ce qui ne sera jamais possible
 
