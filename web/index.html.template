@@ -1218,37 +1218,104 @@ window.onGlobalEvent = function(payload){
     if (globalWired) return; globalWired = true;
 
     // --- Presse-papier sortant : navigateur -> Mac ---
+    // Valeurs relevees dans l'enumeration ClipboardFormat du bundle, non
+    // devinees : Text=0, Rtf=1, Html=2, ImageRgba=21, ImagePng=22,
+    // ImageSvg=23, Special=31. Le porteur est « multi_clipboards », champ 27
+    // du Message, que le pair ne comprend qu'a partir de RustDesk 1.3.0 —
+    // d'ou le rappel de sa version dans le journal quand une image part.
+    var FMT_PNG = 22;
+    var IMG_MAX = 8 * 1024 * 1024;   // au-dela on refuse, en le disant
+
+    function versionPair(){
+      try{
+        var c = window.curConn;
+        return (c && c._peerInfo && c._peerInfo.version) || "";
+      }catch(_){ return ""; }
+    }
+
+    // Rejoue la frappe de collage sur le bon modificateur : Cmd+V si la
+    // permutation est active, Ctrl+V sinon (terminal distant).
+    function rejouerCollage(){
+      setTimeout(function(){
+        var m={alt:"false",shift:"false",
+               ctrl: swapCtrlCmd ? "false" : "true",
+               command: swapCtrlCmd ? "true" : "false"};
+        send("input_key",merge({name:"v",down:"true",press:"false"},m));
+        send("input_key",merge({name:"v",down:"false",press:"false"},m));
+      },150);
+    }
+
+    // Une image du presse-papier local vers celui du poste distant. Le pair
+    // attend du PNG pour le format 22 ; un navigateur peut fournir du jpeg ou
+    // du webp, et l'annoncer PNG produirait des octets que le pair ne saurait
+    // pas lire — on repasse donc par un canvas plutot que de mentir.
+    async function envoyerImagePressePapier(blob){
+      try{
+        var bmp = await createImageBitmap(blob);
+        var w = bmp.width, h = bmp.height;
+        if (blob.type !== "image/png"){
+          var cv = document.createElement("canvas");
+          cv.width = w; cv.height = h;
+          cv.getContext("2d").drawImage(bmp, 0, 0);
+          blob = await new Promise(function(r){ cv.toBlob(r, "image/png"); });
+          if (!blob) throw new Error("conversion en PNG impossible");
+        }
+        if (bmp.close) bmp.close();
+        if (blob.size > IMG_MAX){
+          console.warn("[presse-papier] image de "
+                     + (blob.size/1048576).toFixed(1) + " Mio — au-dela de la "
+                     + "limite de " + (IMG_MAX/1048576) + " Mio, ignoree");
+          return;
+        }
+        var octets = new Uint8Array(await blob.arrayBuffer());
+        if (rdSend({ multi_clipboards: { clipboards: [{
+              format: FMT_PNG, content: octets,
+              width: w, height: h, compress: false }] } })){
+          console.log("[presse-papier] image " + w + "x" + h + ", "
+                    + octets.length + " octets envoyes en PNG — pair en version "
+                    + (versionPair() || "inconnue") + " (1.3.0 minimum requis)");
+          rejouerCollage();
+        }
+      }catch(e){ console.warn("[presse-papier] image :", e); }
+    }
+
     document.addEventListener("paste", function(ev){
       var a = document.activeElement;
       if (a !== player() && a !== document.getElementById("rdcanvas")) return;
       ev.preventDefault();
+      var cd = ev.clipboardData || window.clipboardData;
+      if (!cd) return;
+
+      // Une image d'abord, et avant le televersement : une capture d'ecran
+      // arrive dans cd.files comme n'importe quel fichier, elle partait donc
+      // en transfert au lieu d'atteindre le presse-papier du poste distant.
+      var items = cd.items || [], img = null;
+      for (var i = 0; i < items.length; i++){
+        if (items[i].kind === "file" && items[i].type.indexOf("image/") === 0){
+          img = items[i].getAsFile();
+          if (img) break;
+        }
+      }
+      if (img){ envoyerImagePressePapier(img); return; }
+
       // Un fichier copie dans le Finder arrive ici sous forme de File : le
       // presse-papier n'en porte qu'une POIGNEE, les octets n'etant lus qu'a
       // l'appel de arrayBuffer(). C'est le sens navigateur -> Mac, le seul que
       // le web autorise ; l'inverse est impossible, aucune API ne permet
       // d'ecrire un fichier dans le presse-papier du systeme.
-      var cd = ev.clipboardData || window.clipboardData;
-      if (cd && cd.files && cd.files.length && window.RDFT){
+      if (cd.files && cd.files.length && window.RDFT){
         console.log("[presse-papier] "+cd.files.length+" fichier(s) — televersement");
         window.RDFT.accepterDepot(cd);
         return;
       }
       var t="";
-      try{ t=cd ? (cd.getData("text/plain")||"") : ""; }catch(_){}
+      try{ t=cd.getData("text/plain")||""; }catch(_){}
       if(!t){ console.log("[presse-papier] ignore (contenu non textuel)"); return; }
       if(t.length>1048576){ console.warn("[presse-papier] trop volumineux, ignore"); return; }
       var bytes=new TextEncoder().encode(t);
       if(rdSend({clipboard:{content:bytes,compress:false}})){
         console.log("[presse-papier] "+bytes.length+" octets envoyes");
-        setTimeout(function(){
-          // Rejouer la frappe de collage sur le bon modificateur : Cmd+V si
-          // la permutation est active, Ctrl+V sinon (terminal distant).
-          var m={alt:"false",shift:"false",
-                 ctrl: swapCtrlCmd ? "false" : "true",
-                 command: swapCtrlCmd ? "true" : "false"};
-          send("input_key",merge({name:"v",down:"true",press:"false"},m));
-          send("input_key",merge({name:"v",down:"false",press:"false"},m));
-        },150);
+        rejouerCollage();
       }
     });
 
