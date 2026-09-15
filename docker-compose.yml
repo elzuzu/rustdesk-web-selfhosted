@@ -5,6 +5,10 @@ services:
     container_name: rustdesk-web
     ports:
       - "127.0.0.1:8081:80"
+    volumes:
+      # Journal sur fichier : fail2ban tourne sur l'hote et ne sait pas lire
+      # la sortie standard d'un conteneur.
+      - ./logs:/var/log/nginx
     mem_limit: 128m
     cpus: 0.5
     restart: unless-stopped

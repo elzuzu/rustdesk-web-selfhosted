@@ -1,0 +1,15 @@
+# Journaux du client web RustDesk, lus par la prison fail2ban « rustdesk-auth ».
+#
+# copytruncate plutot qu'un postrotate : nginx tourne dans un conteneur et
+# continuerait d'ecrire dans l'ancien inode apres une rotation classique, ce qui
+# rendrait le journal vide aux yeux de fail2ban sans qu'aucune erreur n'apparaisse.
+/home/ubuntu/rustdesk-web/logs/*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+}
