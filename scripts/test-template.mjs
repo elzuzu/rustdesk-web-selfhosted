@@ -668,6 +668,19 @@ test("peerSupportsMulti : vrai, faux, ou inconnu", () => {
   assert.equal(clip.peerSupportsMulti(null), null);
 });
 
+test("pasteAccepte : canvas toujours, corps de page seulement en session, jamais un champ", () => {
+  const { clip } = chargerLib();
+  const p = (cible, enSession) => clip.pasteAccepte({ cible, enSession });
+  assert.equal(p("canvas", false), true);
+  assert.equal(p("canvas", true), true);
+  assert.equal(p("body", true), true);
+  assert.equal(p("body", false), false);
+  assert.equal(p("champ", true), false);
+  assert.equal(p("autre", true), false);
+  assert.equal(clip.pasteAccepte(null), false);
+  assert.equal(clip.pasteAccepte({}), false);
+});
+
 test("isPasteChord : latin, cyrillique, Dvorak, alt", () => {
   const { clip } = chargerLib();
   const c = (o) => clip.isPasteChord(o);
@@ -892,17 +905,26 @@ function elementRecord(tag) {
     appendChild(c) { e.children.push(c); c.parent = e; return c; },
     insertBefore(c) { e.children.unshift(c); c.parent = e; return c; },
     remove() { if (e.parent) { const i = e.parent.children.indexOf(e); if (i >= 0) e.parent.children.splice(i, 1); } },
-    querySelector() { return null; }, addEventListener() {}, focus() {},
+    querySelector() { return null; }, focus() {},
+    ecouteurs: {},
+    addEventListener(t, f) { (e.ecouteurs[t] ||= []).push(f); },
   };
   if (tag === "canvas") {
     e.getContext = () => ({
       createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
       putImageData(img) { e.pixels = img.data; },
+      drawImage(_b, _x, _y, w, h) { e.dessine = { w, h }; },
     });
-    e.toBlob = (cb) => cb(new Blob([Uint8Array.from([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" }));
+    // Un PNG factice : minuscule, ou proportionnel a la surface quand un test
+    // veut qu'une image « pese » (ratioPng octets par pixel).
+    e.toBlob = (cb) => {
+      const n = pngFixe || (ratioPng ? Math.floor(e.width * e.height * ratioPng) : 4);
+      cb(new Blob([new Uint8Array(n)], { type: "image/png" }));
+    };
   }
   return e;
 }
+let ratioPng = 0, pngFixe = 0;
 
 async function montageEntrant({ decodeur = "reel", ecriture = "ok" } = {}) {
   const bac = creerBac();
@@ -1059,4 +1081,206 @@ avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ;
   assert.equal(r.clipboard, undefined, "sinon le bundle ferait TextDecoder sur du PNG");
   const txt = { clipboard: { format: 0, compress: false, content: utf8("salut") } };
   assert.equal(m.w.__rdPpFiltrer(txt).clipboard.format, 0, "le texte simple est laisse au bundle");
+});
+
+
+// ====================================================================
+// Presse-papier SORTANT et clavier, de bout en bout : le vrai cablage
+// (wireGlobal), un DOM fictif, un pair fictif. On y voit ce qui manquait :
+// chaque echec produit un retour, la limite porte sur ce qui part, le collage
+// distant est retarde selon la taille, et le focus ne se perd plus.
+// ====================================================================
+async function montageSortant({ version = "1.4.2", vivante = true, prete = true, dims = { w: 800, h: 600 } } = {}) {
+  const bac = creerBac();
+  const w = bac.window, doc = bac.document;
+  const reg = {}, ecouteurs = {};
+  doc.getElementById = (id) => reg[id] || null;
+  doc.addEventListener = (t, f) => { (ecouteurs[t] ||= []).push(f); };
+  doc.createElement = elementRecord;
+  const player = elementRecord("canvas");
+  player.id = "player"; player.ecouteurs = {}; player.focuses = 0;
+  player.addEventListener = (t, f) => { (player.ecouteurs[t] ||= []).push(f); };
+  player.focus = () => { player.focuses++; doc.activeElement = player; };
+  reg.player = player;
+  reg.canvas = elementRecord("div");
+  w.getComputedStyle = () => ({ display: vivante ? "block" : "none" });
+  const envoyes = [], touches = [], fermes = { n: 0 };
+  w.setByName = (nom, v) => { touches.push([nom, JSON.parse(v)]); };
+  w.createImageBitmap = async () => ({ width: dims.w, height: dims.h, close() { fermes.n++; } });
+  bac.executer(blocs(html));
+  w.RD.ready = prete;
+  w.curConn = { _peerInfo: { version },
+                _ws: { _websocket: { readyState: 1 }, sendMessage(m) { envoyes.push(m); }, next: async () => null },
+                getRemember: () => true, setRemember() {} };
+  doc.activeElement = player;
+  // Le bootstrap (400 ms) cree la barre et branche l'ecouteur de collage.
+  bac.minuteurs.filter((t) => t.ms === 400 && !t.once).forEach((t) => t.f());
+  const toasts = () => (doc.body.children.find((c) => c.id === "rdtoasts")?.children || [])
+    .map((t) => ({ texte: t.textContent, role: t.attrs.role, erreur: /erreur/.test(t.className) }));
+  const vider = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)); };
+  const collerImage = async (fichier) => {
+    let evite = false;
+    const ev = { preventDefault() { evite = true; },
+                 clipboardData: { items: [{ kind: "file", type: fichier.type, getAsFile: () => fichier }], files: [fichier], getData: () => "" } };
+    (ecouteurs.paste || []).forEach((f) => f(ev));
+    await vider();
+    return evite;
+  };
+  const rejeux = () => bac.minuteurs.filter((t) => t.once && t.ms >= 150 && t.ms <= 2500);
+  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux };
+}
+const images = (m) => m.envoyes.filter((x) => x.multi_clipboards);
+const jpeg = (mio) => new Blob([new Uint8Array(Math.floor(mio * MIO))], { type: "image/jpeg" });
+
+test("outbound B1 : un JPEG qui gonfle en PNG au-dela de la limite est REDUIT, pas refuse", async () => {
+  const m = await montageSortant({ dims: { w: 4000, h: 3000 } });
+  ratioPng = 0.8;                                    // 4000x3000 -> ~9,6 Mo de PNG > 8 Mio
+  try { await m.collerImage(jpeg(3)); } finally { ratioPng = 0; }
+  const [msg] = images(m);
+  assert.ok(msg, "une image est partie : " + JSON.stringify(m.toasts()));
+  const cb = msg.multi_clipboards.clipboards[0];
+  assert.ok(cb.content.length <= 8 * MIO, "le PNG envoye tient dans la limite : " + cb.content.length);
+  assert.ok(cb.width < 4000 && cb.height < 3000, "dimensions reduites : " + cb.width + "x" + cb.height);
+  assert.equal(cb.format, 22);
+  assert.ok(m.toasts().some((t) => /réduite de 4000×3000/.test(t.texte) && !t.erreur), JSON.stringify(m.toasts()));
+  assert.equal(m.fermes.n, 1, "l'ImageBitmap est libere");
+  assert.equal(rejeuxOk(m), true);
+});
+const rejeuxOk = (m) => m.rejeux().length === 1;
+
+test("outbound B1 : trop gros meme reduit -> erreur visible, rien n'est envoye ni rejoue", async () => {
+  const m = await montageSortant({ dims: { w: 300, h: 300 } });
+  pngFixe = 20 * MIO;                                 // un PNG qui ne rapetisse jamais : incompressible
+  try { await m.collerImage(jpeg(1)); } finally { pngFixe = 0; }
+  assert.equal(images(m).length, 0);
+  const t = m.toasts();
+  assert.ok(t.length === 1 && t[0].erreur && /trop grande/.test(t[0].texte), JSON.stringify(t));
+  assert.equal(m.rejeux().length, 0, "pas de Cmd+V sur un presse-papier distant inchange");
+});
+
+test("outbound B1 : une image locale de plus de 64 Mio n'est meme pas decodee", async () => {
+  const m = await montageSortant();
+  let decodee = false; m.w.createImageBitmap = async () => { decodee = true; return { width: 1, height: 1, close() {} }; };
+  const enorme = { type: "image/png", size: 65 * MIO, arrayBuffer: async () => new ArrayBuffer(0) };
+  await m.collerImage(enorme);
+  assert.equal(decodee, false);
+  assert.ok(m.toasts()[0].erreur && /trop volumineuse/.test(m.toasts()[0].texte));
+});
+
+test("outbound B1 : bitmap-failure-toasts — un format que le navigateur ne decode pas", async () => {
+  const m = await montageSortant();
+  m.w.createImageBitmap = async () => { throw new Error("The source image could not be decoded."); };
+  await m.collerImage(new Blob([new Uint8Array(100)], { type: "image/heic" }));
+  assert.equal(images(m).length, 0);
+  const t = m.toasts();
+  assert.ok(t[0].erreur && /Format d'image non pris en charge/.test(t[0].texte), JSON.stringify(t));
+  assert.equal(m.rejeux().length, 0);
+});
+
+test("outbound B1 : rdSend-false-toasts — session pas prete (peer_info pas recu)", async () => {
+  const m = await montageSortant({ prete: false });
+  await m.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
+  assert.equal(images(m).length, 0);
+  assert.ok(m.toasts()[0].erreur && /session n'est pas prête/.test(m.toasts()[0].texte), JSON.stringify(m.toasts()));
+  assert.equal(m.rejeux().length, 0);
+});
+
+test("outbound B4 : old-peer-toast-no-send-no-replay — un pair anterieur a 1.3.0", async () => {
+  for (const version of ["1.2.7", "0.9.0"]) {
+    const m = await montageSortant({ version });
+    await m.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
+    assert.equal(images(m).length, 0, version);
+    assert.ok(m.toasts()[0].erreur && /antérieur à 1\.3\.0/.test(m.toasts()[0].texte), version);
+    assert.equal(m.rejeux().length, 0, "un Cmd+V collerait l'ancien contenu du poste distant");
+  }
+  // Version inconnue : on envoie (le pair est peut-etre recent), en le journalisant.
+  const inc = await montageSortant({ version: "" });
+  await inc.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
+  assert.equal(images(inc).length, 1);
+});
+
+test("outbound B2 : le collage distant est rejoue APRES un delai qui croit avec la taille", async () => {
+  const petit = await montageSortant();
+  await petit.collerImage(new Blob([new Uint8Array(1000)], { type: "image/png" }));
+  assert.equal(petit.rejeux()[0].ms, 150, "une petite image garde l'ancien delai");
+  const gros = await montageSortant();
+  await gros.collerImage(new Blob([new Uint8Array(Math.floor(5.5 * MIO))], { type: "image/png" }));
+  assert.equal(gros.rejeux()[0].ms, 150 + 5 * 250, "5,5 Mio -> 1400 ms");
+  gros.rejeux()[0].f();
+  const v = gros.touches.filter(([n, a]) => n === "input_key" && a.name === "v");
+  assert.equal(v.length, 2);
+  assert.equal(v[0][1].command, "true", "Cmd+V (permutation Ctrl/Cmd active par defaut)");
+});
+
+test("outbound B3 : paste-accepted / paste-refused selon le focus et la session", async () => {
+  const cas = [
+    ["canvas",                      (m) => { m.doc.activeElement = m.player; },                              true],
+    ["body en session vivante",     (m) => { m.doc.activeElement = m.doc.body; },                            true],
+    ["null en session vivante",     (m) => { m.doc.activeElement = null; },                                  true],
+    ["champ de saisie",             (m) => { m.doc.activeElement = { tagName: "INPUT" }; },                  false],
+    ["textarea",                    (m) => { m.doc.activeElement = { tagName: "TEXTAREA" }; },               false],
+    ["contenteditable",             (m) => { m.doc.activeElement = { tagName: "DIV", isContentEditable: true }; }, false],
+    ["dans le panneau de fichiers", (m) => { m.doc.activeElement = { tagName: "BUTTON", closest: (q) => /rdfiles/.test(q) ? {} : null }; }, false],
+    ["un bouton quelconque",        (m) => { m.doc.activeElement = { tagName: "BUTTON", closest: () => null }; }, false],
+  ];
+  for (const [nom, regler, attendu] of cas) {
+    const m = await montageSortant();
+    regler(m);
+    const evite = await m.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
+    assert.equal(images(m).length > 0, attendu, nom);
+    assert.equal(evite, attendu, nom + " : preventDefault seulement si le collage est traite");
+  }
+  // Sans session vivante, le corps de la page n'est pas un collage a nous.
+  const morte = await montageSortant({ vivante: false });
+  morte.doc.activeElement = morte.doc.body;
+  await morte.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
+  assert.equal(images(morte).length, 0);
+});
+
+test("outbound B5 : la touche de collage n'est pas avalee (latin, cyrillique) mais un k Dvorak si", async () => {
+  const m = await montageSortant();
+  const clavier = (e) => {
+    let evite = false; const av = m.touches.length;
+    m.player.ecouteurs.keydown.forEach((f) => f({ preventDefault() { evite = true; }, altKey: false, shiftKey: false, metaKey: false, ...e }));
+    return { evite, envoye: m.touches.length > av };
+  };
+  const latin = clavier({ key: "v", code: "KeyV", ctrlKey: true });
+  assert.deepEqual(latin, { evite: false, envoye: false }, "le navigateur doit emettre « paste »");
+  const cyril = clavier({ key: "м", code: "KeyV", ctrlKey: true });
+  assert.deepEqual(cyril, { evite: false, envoye: false }, "cyrillique : idem");
+  const dvorak = clavier({ key: "k", code: "KeyV", ctrlKey: true });
+  assert.deepEqual(dvorak, { evite: true, envoye: true }, "Dvorak : un k, transmis au poste distant");
+});
+
+test("outbound B3 : un clic sur la barre rend le focus au canvas (sauf sur un <select>)", async () => {
+  const m = await montageSortant();
+  const bar = m.doc.body.children.find((c) => c.id === "rdbar");
+  assert.ok(bar, "la barre est creee");
+  const clic = bar.ecouteurs?.click;
+  assert.ok(clic, "la barre ecoute les clics");
+  const av = m.player.focuses, repere = m.bac.minuteurs.length;
+  clic.forEach((f) => f({ target: { tagName: "BUTTON" } }));
+  m.bac.tick(repere);
+  assert.equal(m.player.focuses, av + 1, "le canvas reprend le focus");
+  const repere2 = m.bac.minuteurs.length;
+  clic.forEach((f) => f({ target: { tagName: "SELECT" } }));
+  m.bac.tick(repere2);
+  assert.equal(m.player.focuses, av + 1, "un <select> garde le focus pour ouvrir sa liste");
+});
+
+test("outbound : le texte et le HTML gardent leur chemin et l'ancien delai", async () => {
+  const m = await montageSortant();
+  let evite = false;
+  const ev = { preventDefault() { evite = true; },
+               clipboardData: { items: [], files: [], getData: (t) => (t === "text/plain" ? "bonjour" : "") } };
+  m.ecouteurs.paste.forEach((f) => f(ev));
+  assert.equal(evite, true);
+  assert.deepEqual(plat(m.envoyes.filter((x) => x.clipboard).map((x) => x.clipboard.content.length)), [7]);
+  assert.equal(m.rejeux()[0].ms, 150);
+});
+
+test("B6 + durcissement : commentaire « champ 28 », et le bloc fichiers refuse une sortie vide", () => {
+  assert.match(html, /multi_clipboards » , champ 28|multi_clipboards », champ 28/);
+  assert.ok(!/champ 27\s*(\n\s*\/\/\s*)?du Message/.test(html), "l'ancien commentaire « champ 27 du Message » est revenu");
+  assert.match(html, /if \(!d \|\| !d\.length\) throw new Error\("decompression zstd echouee"\)/);
 });

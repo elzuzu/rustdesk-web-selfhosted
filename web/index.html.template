@@ -972,6 +972,15 @@ window.onGlobalEvent = function(payload){
     return maj > 1 || (maj === 1 && min >= 3);
   }
 
+  // Faut-il traiter un « paste » ? Sur le canvas, oui. Sur le corps de la page
+  // pendant une session vivante aussi : apres un clic sur un bouton de la barre
+  // le focus tombe sur <body>, et le collage restait ignore jusqu'au prochain
+  // clic dans l'image. Dans un champ (fenetre modale, panneau de fichiers), ou
+  // sur un autre controle, jamais : le collage y appartient a l'utilisateur.
+  function pasteAccepte(cx){
+    return !!cx && (cx.cible === "canvas" || (cx.cible === "body" && !!cx.enSession));
+  }
+
   // Est-ce un « coller » ? La lettre saisie fait foi (Dvorak : le v est ailleurs
   // sur le clavier). Sous une disposition non latine — cyrillique, grec — la
   // lettre n'est pas un v, mais le navigateur declenche quand meme « paste » sur
@@ -1143,7 +1152,7 @@ window.onGlobalEvent = function(payload){
       select: select, zstdContentSize: zstdContentSize, decompress: decompress,
       rgbaPixels: rgbaPixels, describe: describe, slots: slots,
       precheck: precheck, nextScale: nextScale, pasteDelayMs: pasteDelayMs,
-      peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord
+      peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord, pasteAccepte: pasteAccepte
     },
     prefs:  { create: creerPrefs, OK: PREFS_OK },
     recent: { create: creerRecent }
@@ -1782,7 +1791,7 @@ window.onGlobalEvent = function(payload){
       }
       if(k.length!==1) return;
       // Ctrl/Cmd+V : NE PAS intercepter, sinon le navigateur n'emet pas "paste".
-      if((e.ctrlKey||e.metaKey)&&!e.altKey&&k.toLowerCase()==="v") return;
+      if(RDLib.clip.isPasteChord(e)) return;
       if(e.ctrlKey||e.altKey||e.metaKey){
         e.preventDefault();
         var base=(k>="A"&&k<="Z")?k.toLowerCase():k;
@@ -1893,6 +1902,17 @@ window.onGlobalEvent = function(payload){
     if (c && c.width > 300) veilleActiver();
   });
 
+  // Le canvas GARDE sa largeur apres une coupure : c.width reste a 1920 et la fin
+  // de session passait inapercue. On interroge donc l'etat reel : le conteneur
+  // d'affichage est-il visible, et la liaison est-elle ouverte.
+  function sessionVivante(){
+    var d = document.getElementById("canvas");
+    if (!d || getComputedStyle(d).display === "none") return false;
+    var k = window.curConn;
+    if (!k || !k._ws || !k._ws._websocket) return false;
+    return k._ws._websocket.readyState === 1;
+  }
+
   // ------------------------------------------------- cablage global, 1 fois
   var globalWired = false;
   function wireGlobal(){
@@ -1901,11 +1921,11 @@ window.onGlobalEvent = function(payload){
     // --- Presse-papier sortant : navigateur -> Mac ---
     // Valeurs relevees dans l'enumeration ClipboardFormat du bundle, non
     // devinees : Text=0, Rtf=1, Html=2, ImageRgba=21, ImagePng=22,
-    // ImageSvg=23, Special=31. Le porteur est « multi_clipboards », champ 27
-    // du Message, que le pair ne comprend qu'a partir de RustDesk 1.3.0 —
-    // d'ou le rappel de sa version dans le journal quand une image part.
+    // ImageSvg=23, Special=31. Le porteur est « multi_clipboards », champ 28
+    // du Message (tag 226 dans le bundle ; le champ 27 est auth_2fa), que le
+    // pair ne comprend qu'a partir de RustDesk 1.3.0 — d'ou le rappel de sa
+    // version dans le journal quand une image part.
     var FMT_TEXTE = 0, FMT_HTML = 2, FMT_PNG = 22;
-    var IMG_MAX = 8 * 1024 * 1024;   // au-dela on refuse, en le disant
 
     function versionPair(){
       try{
@@ -1918,64 +1938,104 @@ window.onGlobalEvent = function(payload){
     // pair plus ancien ne provoque pas d'erreur : le champ est simplement
     // ignore, et le collage ne se fait pas du tout. Le texte fonctionnant
     // aujourd'hui, on ne bascule le format riche que si le pair sait le lire,
-    // et l'on retombe sinon sur le message simple.
+    // et l'on retombe sinon sur le message simple. Version inconnue : faux ici.
     function pairSupporteMulti(){
-      var v = versionPair();
-      if (!v) return false;
-      var p = String(v).split(".");
-      var maj = parseInt(p[0], 10) || 0, min = parseInt(p[1], 10) || 0;
-      return maj > 1 || (maj === 1 && min >= 3);
+      return RDLib.clip.peerSupportsMulti(versionPair()) === true;
     }
 
     // Rejoue la frappe de collage sur le bon modificateur : Cmd+V si la
-    // permutation est active, Ctrl+V sinon (terminal distant).
-    function rejouerCollage(){
+    // permutation est active, Ctrl+V sinon (terminal distant). Le delai croit
+    // avec la taille envoyee : une image doit etre recue et posee par le poste
+    // distant avant qu'on lui dise de coller.
+    function rejouerCollage(octets){
+      var ms = RDLib.clip.pasteDelayMs(octets);
+      if (ms > 150) console.log("[presse-papier] collage distant dans " + ms + " ms (" + octets + " octets)");
       setTimeout(function(){
         var m={alt:"false",shift:"false",
                ctrl: swapCtrlCmd ? "false" : "true",
                command: swapCtrlCmd ? "true" : "false"};
         send("input_key",merge({name:"v",down:"true",press:"false"},m));
         send("input_key",merge({name:"v",down:"false",press:"false"},m));
-      },150);
+      }, ms);
     }
 
-    // Une image du presse-papier local vers celui du poste distant. Le pair
-    // attend du PNG pour le format 22 ; un navigateur peut fournir du jpeg ou
-    // du webp, et l'annoncer PNG produirait des octets que le pair ne saurait
-    // pas lire — on repasse donc par un canvas plutot que de mentir.
+    // Une image dessinee a la taille voulue, en PNG : le pair attend du PNG pour
+    // le format 22, et un navigateur peut fournir du jpeg ou du webp — annoncer
+    // PNG des octets jpeg produirait des donnees que le pair ne saurait pas lire.
+    function encoderPng(bmp, w, h){
+      var cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      var cx = cv.getContext("2d");
+      cx.imageSmoothingQuality = "high";
+      cx.drawImage(bmp, 0, 0, w, h);
+      return new Promise(function(r){ cv.toBlob(r, "image/png"); }).then(function(b){
+        if (!b) throw RDLib.clip.ClipError(RDLib.clip.ERR.ENCODE, "toBlob a rendu null (" + w + "x" + h + ")");
+        return b;
+      });
+    }
+
+    // Une image du presse-papier local vers celui du poste distant. Chaque
+    // echec se dit : « rien ne se passe » etait la seule reponse, alors que la
+    // cause etait une limite de taille, un format que le navigateur ne decode
+    // pas ou un pair trop ancien.
+    //
+    // La limite porte sur ce qui PART — le PNG — et non sur la source : un jpeg
+    // de quelques Mio gonfle de plusieurs fois en PNG. Trop gros, on reduit les
+    // dimensions (trois fois au plus, en remesurant) plutot que de refuser.
     async function envoyerImagePressePapier(blob){
+      var C = RDLib.clip, bmp = null;
       try{
-        var bmp = await createImageBitmap(blob);
-        var w = bmp.width, h = bmp.height;
-        if (blob.type !== "image/png"){
-          var cv = document.createElement("canvas");
-          cv.width = w; cv.height = h;
-          cv.getContext("2d").drawImage(bmp, 0, 0);
-          blob = await new Promise(function(r){ cv.toBlob(r, "image/png"); });
-          if (!blob) throw new Error("conversion en PNG impossible");
+        var v = versionPair();
+        if (C.peerSupportsMulti(v) === false)
+          throw C.ClipError(C.ERR.VERSION, "pair en version " + v);
+        C.precheck(blob.size);
+        try { bmp = await createImageBitmap(blob); }
+        catch(e){ throw C.ClipError(C.ERR.BITMAP, (blob.type || "type inconnu") + " — " + ((e && e.message) || e)); }
+
+        var cur = { w: bmp.width, h: bmp.height }, png = blob.type === "image/png" ? blob : null, ok = false;
+        for (var essai = 0; essai < 4; essai++){
+          if (!png) png = await encoderPng(bmp, cur.w, cur.h);
+          if (png.size <= C.LIM.OUT_PNG){ ok = true; break; }
+          var n = C.nextScale(cur.w, cur.h, png.size, C.LIM.OUT_PNG);
+          if (!n) break;
+          cur = n; png = null;
         }
-        if (bmp.close) bmp.close();
-        if (blob.size > IMG_MAX){
-          console.warn("[presse-papier] image de "
-                     + (blob.size/1048576).toFixed(1) + " Mio — au-dela de la "
-                     + "limite de " + (IMG_MAX/1048576) + " Mio, ignoree");
-          return;
-        }
-        var octets = new Uint8Array(await blob.arrayBuffer());
-        if (rdSend({ multi_clipboards: { clipboards: [{
+        if (!ok) throw C.ClipError(C.ERR.LIMIT, cur.w + "x" + cur.h);
+
+        var octets = new Uint8Array(await png.arrayBuffer());
+        if (!rdSend({ multi_clipboards: { clipboards: [{
               format: FMT_PNG, content: octets,
-              width: w, height: h, compress: false }] } })){
-          console.log("[presse-papier] image " + w + "x" + h + ", "
-                    + octets.length + " octets envoyes en PNG — pair en version "
-                    + (versionPair() || "inconnue") + " (1.3.0 minimum requis)");
-          rejouerCollage();
-        }
-      }catch(e){ console.warn("[presse-papier] image :", e); }
+              width: cur.w, height: cur.h, compress: false }] } }))
+          throw C.ClipError(C.ERR.NOSEND, "rdSend a refuse");
+        console.log("[presse-papier] image " + cur.w + "x" + cur.h + ", "
+                  + octets.length + " octets envoyes en PNG — pair en version "
+                  + (v || "inconnue") + " (1.3.0 minimum requis)");
+        if (cur.w !== bmp.width || cur.h !== bmp.height)
+          notifier("Image réduite de " + bmp.width + "×" + bmp.height + " à "
+                 + cur.w + "×" + cur.h + " pour tenir dans la limite d'envoi.");
+        rejouerCollage(octets.length);
+      }catch(e){
+        console.warn("[presse-papier] image :", e);
+        notifier(messageErreur(e), "erreur");
+      }finally{
+        if (bmp && bmp.close) bmp.close();
+      }
+    }
+
+    // Ou est le focus ? Le collage ne se traite que sur le canvas, ou sur le
+    // corps de la page pendant une session (voir RDLib.clip.pasteAccepte).
+    function pasteCible(){
+      var a = document.activeElement;
+      if (a && (a === player() || a === document.getElementById("rdcanvas"))) return "canvas";
+      if (!a || a === document.body) return "body";
+      var tag = String(a.tagName || "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || a.isContentEditable) return "champ";
+      if (a.closest && a.closest("#rdfiles, #rdmodal")) return "champ";
+      return "autre";
     }
 
     document.addEventListener("paste", function(ev){
-      var a = document.activeElement;
-      if (a !== player() && a !== document.getElementById("rdcanvas")) return;
+      if (!RDLib.clip.pasteAccepte({ cible: pasteCible(), enSession: sessionVivante() })) return;
       ev.preventDefault();
       var cd = ev.clipboardData || window.clipboardData;
       if (!cd) return;
@@ -2021,7 +2081,7 @@ window.onGlobalEvent = function(payload){
           console.log("[presse-papier] texte enrichi envoye — "
                     + h.length + " car. de HTML"
                     + (t ? " et " + t.length + " car. de texte brut" : ""));
-          rejouerCollage();
+          rejouerCollage(h.length + t.length);
           return;
         }
       }
@@ -2030,7 +2090,7 @@ window.onGlobalEvent = function(payload){
       var bytes=new TextEncoder().encode(t);
       if(rdSend({clipboard:{content:bytes,compress:false}})){
         console.log("[presse-papier] "+bytes.length+" octets envoyes");
-        rejouerCollage();
+        rejouerCollage(bytes.length);
       }
     });
 
@@ -2094,6 +2154,15 @@ window.onGlobalEvent = function(payload){
     var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
     [sel,fit,qual,fps,cod,swp,quit].forEach(function(x){ bar.appendChild(x); });
     document.body.appendChild(bar);
+    // Un bouton de la barre garde le clavier apres son clic : le focus tombait
+    // sur <body>, et le collage restait ignore jusqu'au prochain clic dans
+    // l'image. Le canvas le reprend — sauf pour un <select>, qui doit garder le
+    // focus pour ouvrir sa liste.
+    bar.addEventListener("click", function(ev){
+      var tag = ev.target && String(ev.target.tagName || "").toUpperCase();
+      if (tag === "SELECT" || tag === "OPTION") return;
+      setTimeout(function(){ var c = active(); if (c && c.focus) c.focus(); }, 0);
+    });
 
     var orig=document.querySelector("#canvas > button");
     if(orig) orig.style.display="none";
@@ -2182,16 +2251,7 @@ window.onGlobalEvent = function(payload){
       // Reappliquer les substitutions : curConn est remplace a chaque
       // connexion, et reconnect() reutilise l'instance avec un _ws neuf.
       try{ patchConn(window.curConn); }catch(_){}
-      // Le canvas GARDE sa largeur apres une coupure : c.width reste a 1920 et
-      // la fin de session passait inapercue. On interroge donc l'etat reel :
-      // le conteneur d'affichage est-il visible, et la liaison est-elle ouverte.
-      var enSession = (function(){
-        var d = document.getElementById("canvas");
-        if (!d || getComputedStyle(d).display === "none") return false;
-        var k = window.curConn;
-        if (!k || !k._ws || !k._ws._websocket) return false;
-        return k._ws._websocket.readyState === 1;
-      })();
+      var enSession = sessionVivante();
       if (enSession) veilleActiver(); else veilleLiberer();
       // Transition « en session » -> « plus en session » : tenter une reprise.
       if (window.__rdEtait && !enSession) repriseplanifier();
@@ -2586,7 +2646,9 @@ window.onGlobalEvent = function(payload){
       if (!b.compressed) return b.data;
       if (!window.__rdUnzstd) throw new Error("decodeur zstd absent du bundle");
       return window.__rdUnzstd(b.data).then(function(d){
-        if (!d) throw new Error("decompression zstd echouee");
+        // Le decodeur ne leve jamais : une sortie VIDE pour un bloc non vide est
+        // un echec, pas un bloc vide (voir RDLib.clip.decompress).
+        if (!d || !d.length) throw new Error("decompression zstd echouee");
         return d;
       });
     }).then(function(data){
