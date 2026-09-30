@@ -291,6 +291,18 @@ avecVendor("patched-bundle-parses-as-esm : le bundle patche reste un module vali
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
+avecVendor("patched-bundle-exposes-zstd-decoder : __rdUnzstd inchange, __rdZstdDecoder ajoute apres u4/w3", () => {
+  const b = lire(BUNDLE);
+  const iU = b.indexOf("window.__rdUnzstd=(u)=>S3(u);");
+  const iD = b.indexOf("window.__rdZstdDecoder=async()=>(u4||await w3(),u4);");
+  assert.ok(iU > 0, "__rdUnzstd (utilise par le transfert de fichiers) a disparu ou a change");
+  assert.ok(iD > iU, "__rdZstdDecoder absent ou mal place");
+  // u4 et w3 doivent etre declares AVANT le point d'insertion, dans la meme portee de module.
+  assert.ok(b.indexOf("let u4;async function w3(){") > 0 && b.indexOf("let u4;async function w3(){") < iD,
+    "u4/w3 ne sont plus declares avant le point d'insertion");
+  assert.equal(b.split("window.__rdZstdDecoder=").length - 1, 1, "patch applique deux fois");
+});
+
 // Le vrai decodeur zstd du bundle : la classe « Q » de vendor.js, extraite
 // telle quelle (wasm base64 compris). Aucun compresseur n'est necessaire : on
 // fabrique les trames a la main.

@@ -95,7 +95,7 @@ titre "Syntaxe JavaScript de la page rendue"
 ./scripts/check-syntax.sh html/index.html
 
 titre "Correctifs presents dans le bundle"
-for m in '/ws/relay' 'get_conn_status' '__rdUnzstd'; do
+for m in '/ws/relay' 'get_conn_status' '__rdUnzstd' '__rdZstdDecoder'; do
   grep -q -- "$m" html/js/dist/index.js || { rouge "  ✗ correctif absent : $m"; exit 1; }
   echo "  ✓ $m"
 done

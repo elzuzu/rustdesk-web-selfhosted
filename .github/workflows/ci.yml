@@ -104,7 +104,7 @@ jobs:
       # en silence.
       - name: Verify bundle patches were applied
         run: |
-          for m in '/ws/relay' 'get_conn_status' '__rdUnzstd'; do
+          for m in '/ws/relay' 'get_conn_status' '__rdUnzstd' '__rdZstdDecoder'; do
             grep -q -- "$m" html/js/dist/index.js \
               || { echo "correctif absent du bundle : $m"; exit 1; }
           done

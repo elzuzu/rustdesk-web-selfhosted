@@ -48,9 +48,21 @@ s=s[:m.start()]+'if(!1){}'+s[m.end():]; n+=1
 #    module. On l'expose plutot que d'embarquer un second decodeur.
 #    S3 est une declaration de fonction : elle est hissee, donc l'affectation
 #    placee avant elle capture bien la fonction a l'evaluation du module.
+#
+#    Deux points d'entree, meme patch :
+#      __rdUnzstd(u)      S3 tel quel. Son tampon vaut 30 x la taille
+#                         compressee (plancher 1 Mio) : suffisant pour un bloc
+#                         de fichier de 128 Kio, INSUFFISANT pour une image dont
+#                         le taux de compression depasse 30. Dans ce cas le
+#                         decodeur ne leve pas et ne journalise rien : il rend
+#                         un tableau VIDE, que « if(!o) » ne voit pas.
+#      __rdZstdDecoder()  le decodeur lui-meme (u4, initialise a la demande).
+#                         La page choisit alors la taille de destination
+#                         (RDLib.clip.decompress) : celle de l'en-tete de
+#                         trame, ou largeur x hauteur x 4, ou un doublement.
 old='async function S3(u){const e=1024*1024*64'
 assert s.count(old)==1, "patch 5 : motif absent"
-s=s.replace(old,'window.__rdUnzstd=(u)=>S3(u);'+old); n+=1
+s=s.replace(old,'window.__rdUnzstd=(u)=>S3(u);window.__rdZstdDecoder=async()=>(u4||await w3(),u4);'+old); n+=1
 
 # --- Pre-condition d'ecriture : le format de fil d'authentification est intact --
 #
