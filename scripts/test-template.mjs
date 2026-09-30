@@ -984,7 +984,11 @@ async function montageEntrant({ decodeur = "reel", ecriture = "ok" } = {}) {
   w.navigator.clipboard = {
     write: async (items) => {
       if (ecriture === "refuse") { const e = new Error("refus"); e.name = "NotAllowedError"; throw e; }
-      for (const v of Object.values(items[0].obj)) await v;     // comme le navigateur : rien n'est ecrit si une valeur echoue
+      // Comme le navigateur : rien n'est ecrit si une valeur echoue, et chaque valeur doit etre un Blob.
+      for (const v of Object.values(items[0].obj)) {
+        const r = await v;
+        if (!(r instanceof Blob)) throw new TypeError("la valeur du ClipboardItem n'est pas un Blob");
+      }
       ecrits.push(items[0]);
     },
     writeText: async (t) => { ecrits.push({ texte: t }); },
@@ -1155,16 +1159,18 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   reg.player = player;
   reg.canvas = elementRecord("div");
   w.getComputedStyle = () => ({ display: vivante ? "block" : "none" });
-  const envoyes = [], touches = [], fermes = { n: 0 };
+  const envoyes = [], touches = [], fermes = { n: 0 }, journal = [];   // journal : l'ORDRE des envois
   // setByName(nom, valeur) : la valeur est du JSON pour la plupart des noms, une
   // chaine brute pour d'autres (« image_quality » recoit « low »).
-  w.setByName = (nom, v) => { let a = v; try { a = JSON.parse(v); } catch { /* chaine brute */ } touches.push([nom, a]); };
+  w.setByName = (nom, v) => { let a = v; try { a = JSON.parse(v); } catch { /* chaine brute */ } touches.push([nom, a]); journal.push("set:" + nom); };
   w.VideoDecoder = class { constructor(o) { this.o = o; } configure() {} decode() {} reset() {} close() {} get decodeQueueSize() { return 0; } };
   w.createImageBitmap = async () => ({ width: dims.w, height: dims.h, close() { fermes.n++; } });
   bac.executer(blocs(html));
   w.RD.ready = prete;
   w.curConn = { _id: "123456789", _peerInfo: { version },
-                _ws: { _websocket: { readyState: 1 }, sendMessage(m) { envoyes.push(m); }, next: async () => null },
+                _ws: { _websocket: { readyState: 1 },
+                       sendMessage(m) { envoyes.push(m); journal.push(m.misc && m.misc.option ? "opt:" + Object.keys(m.misc.option).join(",") : "msg"); },
+                       next: async () => null },
                 getRemember: () => true, setRemember() {},
                 getOption: (k) => (k === "image-quality" ? qualiteBundle : undefined) };
   doc.activeElement = player;
@@ -1191,7 +1197,7 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   const zone = () => doc.getElementById("rd-recents");
   const pastilles = () => (zone() ? zone().children : []).filter((c) => c.className === "rdchip");
   const libelles = () => pastilles().map((c) => c.children[0].textContent);
-  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux,
+  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux, journal,
            bar, qual, fps, cod, selRes, peerInfo, options, banniere, form, zone, pastilles, libelles };
 }
 const images = (m) => m.envoyes.filter((x) => x.multi_clipboards);
@@ -1347,7 +1353,7 @@ test("outbound : le texte et le HTML gardent leur chemin et l'ancien delai", asy
 test("B6 + durcissement : commentaire « champ 28 », et le bloc fichiers refuse une sortie vide", () => {
   assert.match(html, /multi_clipboards » , champ 28|multi_clipboards », champ 28/);
   assert.ok(!/champ 27\s*(\n\s*\/\/\s*)?du Message/.test(html), "l'ancien commentaire « champ 27 du Message » est revenu");
-  assert.match(html, /if \(!d \|\| !d\.length\) throw new Error\("decompression zstd echouee"\)/);
+  assert.match(html, /if \(!d \|\| RDLib\.clip\.sortieVideSuspecte\(b\.data, d\)\) throw new Error\("decompression zstd echouee"\)/);
 });
 
 
@@ -1734,4 +1740,112 @@ test("I3 xss-ids-render-as-text : un contenu de stockage malveillant ne devient 
 test("I3 : la CSS defait le style du bouton « Connect » que le bundle applique a tout bouton de #connect", () => {
   assert.match(html, /#app>#connect #rd-recents button\{[^}]*background:transparent/);
   assert.match(html, /#app>#connect #rd-recents \.rdchip-x\{/);
+});
+
+
+// ====================================================================
+// Corrections issues de la relecture independante.
+// ====================================================================
+test("review : isPasteChord — seulement une LETTRE d'un alphabet non latin sur KeyV", () => {
+  const { clip } = chargerLib();
+  const c = (key) => clip.isPasteChord({ key, code: "KeyV", ctrlKey: true });
+  for (const [k, attendu, nom] of [["м", true, "cyrillique"], ["ν", true, "grec"], ["ر", true, "arabe"], ["ה", true, "hebreu"],
+      [";", false, "ponctuation"], ["3", false, "chiffre"], [".", false, "point"], ["é", false, "lettre latine accentuee"],
+      ["k", false, "Dvorak"], ["Dead", false, "touche morte"], ["", false, "vide"], ["ab", false, "plusieurs caracteres"]]) {
+    assert.equal(c(k), attendu, nom);
+  }
+  assert.equal(clip.isPasteChord({ key: "v", code: "KeyV", ctrlKey: true }), true);
+  assert.equal(clip.isPasteChord({ key: 5, code: "KeyV", ctrlKey: true }), false, "key non textuelle");
+});
+
+test("review : sortieVideSuspecte — vide n'est legitime que si la trame declare 0", () => {
+  const { clip } = chargerLib();
+  const vide = new Uint8Array(0), plein = new Uint8Array(3);
+  assert.equal(clip.sortieVideSuspecte(trameRLE(1000), plein), false);
+  assert.equal(clip.sortieVideSuspecte(trameRLE(1000), vide), true, "declare 1000, rend vide : echec silencieux");
+  assert.equal(clip.sortieVideSuspecte(trameSansTaille(1000), vide), true, "rien de declare : suspect");
+  assert.equal(clip.sortieVideSuspecte(Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x00, 0x01, 0x00, 0x00]), vide), false,
+    "une trame qui DECLARE 0 octet est un vrai bloc vide");
+  assert.equal(clip.sortieVideSuspecte(trameRLE(10), undefined), true);
+});
+
+test("review : decompress — pas de magic zstd, aucune allocation demandee au decodeur", async () => {
+  const { clip } = chargerLib();
+  const dec = decodeurFactice(1);
+  for (const garbage of [Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7]), Uint8Array.from([0x28, 0xb5]), utf8("pas du zstd du tout")]) {
+    await assert.rejects(clip.decompress(dec, garbage), (e) => e.code === "DECODE" && /pas une trame zstd/.test(e.detail));
+  }
+  assert.equal(dec.appels.length, 0, "le decodeur n'a pas ete sollicite");
+});
+
+test("review : sessionPrete envoie le ratio 1,5 AVANT le preset — le choix de l'utilisateur l'emporte", async () => {
+  const m = await montageSortant({ prete: false, init: { "rd-prefs": JSON.stringify({ v: 1, quality: "low", fps: 15 }) } });
+  m.peerInfo();
+  const i150 = m.journal.indexOf("opt:custom_image_quality"), iPreset = m.journal.indexOf("set:image_quality"), iFps = m.journal.indexOf("opt:custom_fps");
+  assert.ok(i150 >= 0 && iPreset >= 0, m.journal.join(" | "));
+  assert.ok(i150 < iPreset, "le pair applique les options dans l'ordre d'arrivee : le preset doit venir APRES le ratio : " + m.journal.join(" | "));
+  assert.ok(iFps >= 0);
+  // Sans preference de qualite : le ratio par defaut, et aucun preset.
+  const vierge = await montageSortant({ prete: false });
+  vierge.peerInfo();
+  assert.ok(vierge.journal.includes("opt:custom_image_quality") && !vierge.journal.includes("set:image_quality"));
+});
+
+test("review : un crochet de session qui leve ne prive pas la session de son menu ni du codec", async () => {
+  const m = await montageSortant({ prete: false });
+  m.w.__rdSessionReady = () => { throw new Error("boom"); };
+  const avant = m.options().length;
+  m.peerInfo();
+  assert.equal(m.w.RD.ready, true);
+  assert.ok(m.options().slice(avant).some((o) => o.supported_decoding), "la negociation du codec a bien eu lieu apres l'echec : " + JSON.stringify(m.options()));
+  assert.ok(m.selRes.children.length >= 1, "le menu de resolutions a ete construit");
+});
+
+test("review : un depot lent ne supprime pas l'image PLUS RECENTE qui a pris l'emplacement", async () => {
+  const m = await montageEntrant();
+  const a = { multi_clipboards: { clipboards: [{ format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 }] } };
+  const b = { multi_clipboards: { clipboards: [{ format: 21, compress: true, content: trameRLE(2 * MIO, 0x30), width: 1024, height: 512 }] } };
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer(a);
+  const boutonA = m.barre.querySelector('[data-kind="image"]');
+  boutonA.onclick();                                       // clic AVANT la fin de la conversion de A
+  m.w.__rdPpFiltrer(b);                                    // B prend l'emplacement
+  m.bac.tick(repere); await m.vider();
+  assert.equal(m.ecrits.length, 1, "A a bien ete depose");
+  assert.deepEqual(plat(boutons(m.barre)), ["Image reçue ⇩"], "le bouton de B est reste");
+  // Et un second clic depose B.
+  m.barre.querySelector('[data-kind="image"]').onclick(); await m.vider();
+  assert.equal(m.ecrits.length, 2);
+  assert.deepEqual(plat(boutons(m.barre)), []);
+});
+
+test("review : si la CONVERSION a echoue, le message dit la vraie cause, pas « le navigateur a refuse »", async () => {
+  const m = await montageEntrant({ decodeur: "ancien", ecriture: "refuse" });   // write() rejette NotAllowedError sans attendre la promesse
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 }] } });
+  m.bac.tick(repere); await m.vider();
+  m.barre.querySelector('[data-kind="image"]').onclick(); await m.vider();
+  const t = m.toasts();
+  assert.ok(t.length === 1 && /Décompression/.test(t[0].texte) && !/refusé/.test(t[0].texte), JSON.stringify(t));
+  assert.deepEqual(plat(boutons(m.barre)), [], "erreur definitive : plus de bouton");
+});
+
+test("review : le delai de rejeu du texte riche se calcule en OCTETS, pas en unites UTF-16", async () => {
+  const m = await montageSortant();
+  const html_ = "é".repeat(700000);                        // 700 000 caracteres = 1,4 Mo en UTF-8
+  const ev = { preventDefault() {}, clipboardData: { items: [], files: [], getData: (t) => (t === "text/html" ? html_ : "") } };
+  m.ecouteurs.paste.forEach((f) => f(ev));
+  assert.equal(m.rejeux()[0].ms, 400, "1,4 Mo -> 150 + 250 ms ; en caracteres (700 000) ce serait resté a 150");
+});
+
+test("review : verify.sh refuse un argument inconnu au lieu de lancer le chemin Docker", () => {
+  for (const args of [["--sans-dockr"], ["--no-docker"], ["--sans-docker", "extra"]]) {
+    let code = 0, sortie = "";
+    try { execFileSync("bash", [path.join(RACINE, "scripts", "verify.sh"), ...args], { stdio: "pipe" }); }
+    catch (e) { code = e.status; sortie = String(e.stderr); }
+    assert.equal(code, 2, args.join(" "));
+    assert.match(sortie, /argument|attendu/);
+  }
+  const aide = execFileSync("bash", [path.join(RACINE, "scripts", "verify.sh"), "--help"]).toString();
+  assert.match(aide, /--sans-docker/);
 });

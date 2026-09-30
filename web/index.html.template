@@ -740,7 +740,10 @@ window.onGlobalEvent = function(payload){
       console.log("[session] prete — " + window.RD.res.length + " resolutions disponibles");
       // Les reglages memorises et le ratio de qualite s'appliquent a CHAQUE
       // session, ici, et avant la negociation du codec (elle lit RD.forced).
-      if (window.__rdSessionReady) window.__rdSessionReady();
+      // Un echec ici ne doit priver la session ni de son menu de resolutions ni
+      // de la negociation du codec, qui suivent dans le meme bloc.
+      try { if (window.__rdSessionReady) window.__rdSessionReady(); }
+      catch (err) { console.warn("[session] reglages non appliques :", err); }
       if (window.__rdMenu) window.__rdMenu();
       if (window.__rdNegotiate) window.__rdNegotiate();
     }
@@ -899,6 +902,10 @@ window.onGlobalEvent = function(payload){
     opts = opts || {};
     var max = opts.max > 0 ? opts.max : LIM.RAW_MAX;
     if (!u8 || !u8.length) throw ClipError(ERR.DECODE, "entree vide");
+    // Pas de magic zstd : inutile de demander au decodeur d'allouer jusqu'a
+    // 128 Mio, huit fois de suite, pour apprendre que ce n'est pas une trame.
+    if (u8.length < 4 || u8[0] !== 0x28 || u8[1] !== 0xb5 || u8[2] !== 0x2f || u8[3] !== 0xfd)
+      throw ClipError(ERR.DECODE, "ce n'est pas une trame zstd");
     var fcs = zstdContentSize(u8), tailles = [];
     if (fcs !== null){
       if (fcs > max) throw ClipError(ERR.TOO_BIG, fcs + " octets declares, limite " + max);
@@ -921,6 +928,14 @@ window.onGlobalEvent = function(payload){
     }
     throw ClipError(ERR.DECODE, "aucune taille de sortie ne convient (jusqu'a "
                     + tailles[tailles.length - 1] + " octets)" + (derniere ? " — " + derniere : ""));
+  }
+
+  // Une sortie VIDE est-elle un echec du decodeur, ou le vrai contenu d'une
+  // trame vide ? Seule la taille declaree dans l'en-tete le dit : 0 -> legitime ;
+  // autre chose, ou rien de declare -> le decodeur a echoue sans le dire.
+  function sortieVideSuspecte(entree, sortie){
+    if (sortie && sortie.length) return false;
+    return zstdContentSize(entree) !== 0;
   }
 
   // Les pixels d'une image RGBA brute, ou une erreur : dimensions plausibles,
@@ -1017,14 +1032,17 @@ window.onGlobalEvent = function(payload){
   }
 
   // Est-ce un « coller » ? La lettre saisie fait foi (Dvorak : le v est ailleurs
-  // sur le clavier). Sous une disposition non latine — cyrillique, grec — la
-  // lettre n'est pas un v, mais le navigateur declenche quand meme « paste » sur
-  // la touche physique : on la reconnait a son code, et seulement dans ce cas.
+  // sur le clavier). Sous une disposition d'un alphabet non latin — cyrillique,
+  // grec, arabe, hebreu — la lettre n'est pas un v, mais le navigateur declenche
+  // quand meme « paste » sur la touche physique : on la reconnait a son code, et
+  // SEULEMENT si le caractere saisi est une lettre de cet alphabet. Une
+  // ponctuation ou un chiffre sur cette touche n'est pas un collage : l'avaler
+  // ferait disparaitre le raccourci de la session distante.
   function isPasteChord(e){
     if (!e || !(e.ctrlKey || e.metaKey) || e.altKey) return false;
     var key = typeof e.key === "string" ? e.key : "";
     if (key.toLowerCase() === "v") return true;
-    return e.code === "KeyV" && key.length === 1 && !/^[A-Za-z]$/.test(key);
+    return e.code === "KeyV" && /^\p{L}$/u.test(key) && !/^\p{Script=Latin}$/u.test(key);
   }
 
   // ------------------------------------------------- stockage : deux pieges
@@ -1185,6 +1203,7 @@ window.onGlobalEvent = function(payload){
     clip: {
       FMT: FMT, LIM: LIM, ERR: ERR, ClipError: ClipError,
       select: select, zstdContentSize: zstdContentSize, decompress: decompress,
+      sortieVideSuspecte: sortieVideSuspecte,
       rgbaPixels: rgbaPixels, describe: describe, slots: slots,
       precheck: precheck, nextScale: nextScale, pasteDelayMs: pasteDelayMs,
       peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord, pasteAccepte: pasteAccepte
@@ -1550,7 +1569,9 @@ window.onGlobalEvent = function(payload){
     var slot = { kind: "image", cb: image.cb, w: image.cb.width, h: image.cb.height };
     slot.promesse = new Promise(function(resolve, reject){
       setTimeout(function(){
-        if (ppSlots.get("image") !== slot){ resolve(null); return; }     // supplante
+        // Supplante avant que la tache ne tourne : inutile de convertir — sauf si
+        // un clic l'attend deja (voir ppDeposer), auquel cas sa promesse doit tenir.
+        if (ppSlots.get("image") !== slot && !slot.clique){ resolve(null); return; }
         ppImageEnBlob(image).then(function(blob){
           slot.pret = true;
           image.cb.content = null;                                   // les octets recus ne servent plus
@@ -1666,19 +1687,26 @@ window.onGlobalEvent = function(payload){
   async function ppDeposer(kind){
     var slot = ppSlots.get(kind);
     if (!slot) return;
+    slot.clique = true;
+    // Pendant l'attente, un contenu plus recent a pu prendre l'emplacement : ce
+    // qu'on vient d'ecrire est l'ANCIEN, le nouveau et son bouton doivent rester.
+    var encoreLe_mien = function(){ return ppSlots.get(kind) === slot; };
     try{
       if (kind === "image") await ppEcrireImage(slot.promesse);
       else await ppEcrireTexte(await slot.promesse);
       console.log("[presse-papier] " + kind + " déposé dans le presse-papier local");
-      ppSlots.take(kind);
-      ppRetirerBouton(kind);
+      if (encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
       notifier(kind === "image" ? "Image déposée dans le presse-papier local."
                                 : "Texte déposé dans le presse-papier local.");
-    }catch(e){
+    }catch(e0){
+      // Si la CONVERSION a echoue, c'est elle la vraie cause : write() rejoue son
+      // rejet sous un autre nom (NotAllowedError, DataError…) et le message
+      // « le navigateur a refuse » serait faux — et definitif, donc trompeur.
+      var e = slot.erreur || e0;
       console.warn("[presse-papier] depot refuse : " + (e && e.name) + " — " + (e && e.message));
       // Une erreur de conversion est definitive : reessayer ne changerait rien.
       // Un refus du navigateur, lui, peut passer au clic suivant.
-      if (e && e.name === "ClipError"){ ppSlots.take(kind); ppRetirerBouton(kind); }
+      if (e && e.name === "ClipError" && encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
       notifier(messageErreur(e), "erreur");
     }finally{
       var c = active(); if (c) c.focus();      // le bouton ne doit pas garder le clavier
@@ -2065,6 +2093,12 @@ window.onGlobalEvent = function(payload){
     var p = prefs.get();
     // Le codec d'abord : __rdNegotiate lit RD.forced juste apres.
     if (p.codec) RD.forced = p.codec;
+    // La contrainte n'est pas la bande passante (le relais plafonne 30x au-dessus
+    // du besoin) : qualite rehaussee a chaque session, pas une fois par page.
+    // C'est la valeur PAR DEFAUT ; elle part EN PREMIER, car le pair applique les
+    // options dans l'ordre d'arrivee : un preset choisi par l'utilisateur doit
+    // venir apres et l'emporter (« Fluidite » ne peut pas tourner au ratio 1,5).
+    if (rdSend({misc:{option:{custom_image_quality:150}}})) console.log("[qualite] ratio 1.5 applique");
     // Qualite. Preference absente : on ne pousse RIEN — le bundle renvoie deja
     // la qualite qu'il a memorisee pour ce pair, et l'on aligne simplement le
     // selecteur dessus (il affichait « Equilibre » quel que soit l'etat reel).
@@ -2076,9 +2110,6 @@ window.onGlobalEvent = function(payload){
         if (ui.qual) ui.qual.value = (RDLib.prefs.OK.quality.indexOf(q) >= 0) ? q : "balanced";
       }
     }catch(e){ console.warn("[reglages] qualite :", e); }
-    // La contrainte n'est pas la bande passante (le relais plafonne 30x au-dessus
-    // du besoin) : qualite rehaussee a chaque session, pas une fois par page.
-    if (rdSend({misc:{option:{custom_image_quality:150}}})) console.log("[qualite] ratio 1.5 applique");
     if (p.fps && rdSend({misc:{option:{custom_fps:p.fps}}}))
       console.log("[cadence] plafond a " + p.fps + " i/s (reglage memorise)");
     if (p.quality || p.fps || p.codec) majSelects(p);
@@ -2257,15 +2288,18 @@ window.onGlobalEvent = function(payload){
       // MultiClipboards est fait pour cela — les deux entrees partent dans le
       // meme message et l'application distante choisit ce qu'elle sait poser.
       if (h && pairSupporteMulti()){
-        var lot = [{ format: FMT_HTML, content: new TextEncoder().encode(h),
+        // Le delai de rejeu se calcule en OCTETS : « h.length » compte des unites
+        // UTF-16, un texte accentue ou asiatique pese 2 a 4 fois plus.
+        var hb = new TextEncoder().encode(h), tb = t ? new TextEncoder().encode(t) : null;
+        var lot = [{ format: FMT_HTML, content: hb,
                      width: 0, height: 0, compress: false }];
-        if (t) lot.push({ format: FMT_TEXTE, content: new TextEncoder().encode(t),
+        if (t) lot.push({ format: FMT_TEXTE, content: tb,
                           width: 0, height: 0, compress: false });
         if (rdSend({ multi_clipboards: { clipboards: lot } })){
           console.log("[presse-papier] texte enrichi envoye — "
                     + h.length + " car. de HTML"
                     + (t ? " et " + t.length + " car. de texte brut" : ""));
-          rejouerCollage(h.length + t.length);
+          rejouerCollage(hb.length + (tb ? tb.length : 0));
           return;
         }
       }
@@ -2888,9 +2922,9 @@ window.onGlobalEvent = function(payload){
       if (!b.compressed) return b.data;
       if (!window.__rdUnzstd) throw new Error("decodeur zstd absent du bundle");
       return window.__rdUnzstd(b.data).then(function(d){
-        // Le decodeur ne leve jamais : une sortie VIDE pour un bloc non vide est
-        // un echec, pas un bloc vide (voir RDLib.clip.decompress).
-        if (!d || !d.length) throw new Error("decompression zstd echouee");
+        // Le decodeur ne leve jamais : une sortie VIDE est un echec, sauf si la
+        // trame declare elle-meme une taille de 0 (voir RDLib.clip.decompress).
+        if (!d || RDLib.clip.sortieVideSuspecte(b.data, d)) throw new Error("decompression zstd echouee");
         return d;
       });
     }).then(function(data){

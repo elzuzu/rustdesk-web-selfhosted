@@ -20,7 +20,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 SOURCE=$(pwd)
 SANS_DOCKER=0
-[ "${1:-}" = "--sans-docker" ] && SANS_DOCKER=1
+case "${1:-}" in
+  "")            ;;
+  --sans-docker) SANS_DOCKER=1 ;;
+  -h|--help)     sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *)             printf '\033[31m  ✗ argument inconnu : %s (voir --help)\033[0m\n' "$1" >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { printf '\033[31m  ✗ un seul argument attendu (voir --help)\033[0m\n' >&2; exit 2; }
 
 vert()  { printf '\033[32m%s\033[0m\n' "$*"; }
 rouge() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
