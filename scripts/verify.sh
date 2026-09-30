@@ -100,6 +100,15 @@ for m in '/ws/relay' 'get_conn_status' '__rdUnzstd'; do
   echo "  ✓ $m"
 done
 
+titre "Banc du gabarit"
+# Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.
+if command -v node >/dev/null 2>&1; then
+  node scripts/test-template.mjs --require-vendor
+  vert "  ✓ banc du gabarit"
+else
+  rouge "  ⚠ node absent — banc du gabarit ignore (la CI le fait)"
+fi
+
 titre "Construction des images"
 docker build -q -t rustdesk-web:verify . >/dev/null
 docker build -q -t rustdesk-tls:verify -f Dockerfile.tls . >/dev/null
