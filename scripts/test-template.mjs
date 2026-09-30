@@ -128,7 +128,14 @@ function creerBac({ quota = null } = {}) {
   const executer = (blocs_) => blocs_.forEach((b, i) => {
     new vm.Script(b, { filename: `bloc${i}.js` }).runInContext(ctx);
   });
-  return { window: bac, ctx, minuteurs, executer, stockage: bac.localStorage };
+  // Execute les setTimeout a delai NUL poses depuis le repere (les minuteurs
+  // du chargement, et les delais longs des retours, ne sont jamais joues).
+  const tick = (repere) => {
+    const dus = minuteurs.slice(repere).filter((t) => t.once && t.ms === 0);
+    dus.forEach((t) => t.f());
+    return dus.length;
+  };
+  return { window: bac, ctx, minuteurs, executer, tick, document, stockage: bac.localStorage };
 }
 
 // ------------------------------------------------------------ structure
@@ -583,6 +590,14 @@ test("decompress-over-max : une taille declaree au-dela de la limite est refusee
   assert.equal(Math.max(...dec2.appels), 4 * MIO);
 });
 
+test("decompress-unique : un decodeur de repli qui ignore la taille n'est essaye qu'une fois", async () => {
+  const { clip } = chargerLib();
+  let n = 0;
+  await assert.rejects(clip.decompress({ unique: true, decode() { n++; return undefined; } }, trameSansTaille(64)),
+    (e) => e.code === "DECODE");
+  assert.equal(n, 1);
+});
+
 test("decompress : un decodeur asynchrone est accepte", async () => {
   const { clip } = chargerLib();
   const out = await clip.decompress(decodeurFactice(2 * MIO, { asynchrone: true }), trameRLE(2 * MIO));
@@ -859,4 +874,189 @@ test("recent-storage-failures : avale -> copie memoire ; qui leve -> jamais de t
   assert.equal(a.list()[0].id, "111111111", "la page garde sa liste");
   const b = recent.create(stock({ leve: true }));
   assert.doesNotThrow(() => { b.list(); b.add("222222222"); b.remove("222222222"); b.clear(); b.seedFrom("{}", "", ""); });
+});
+
+
+// ====================================================================
+// Presse-papier ENTRANT, de bout en bout : le vrai bloc de cablage, le vrai
+// decodeur zstd, un DOM fictif. Sans navigateur, on verifie ce qui compte :
+// que rien ne bloque msgLoop, qu'une image tres compressible arrive entiere,
+// qu'un texte n'efface pas l'image, et que chaque echec se voit.
+// ====================================================================
+function elementRecord(tag) {
+  const e = {
+    tag, className: "", attrs: {}, children: [], style: {}, dataset: {},
+    textContent: "", title: "", onclick: null,
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    setAttribute(k, v) { e.attrs[k] = v; },
+    appendChild(c) { e.children.push(c); c.parent = e; return c; },
+    insertBefore(c) { e.children.unshift(c); c.parent = e; return c; },
+    remove() { if (e.parent) { const i = e.parent.children.indexOf(e); if (i >= 0) e.parent.children.splice(i, 1); } },
+    querySelector() { return null; }, addEventListener() {}, focus() {},
+  };
+  if (tag === "canvas") {
+    e.getContext = () => ({
+      createImageData: (w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData(img) { e.pixels = img.data; },
+    });
+    e.toBlob = (cb) => cb(new Blob([Uint8Array.from([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" }));
+  }
+  return e;
+}
+
+async function montageEntrant({ decodeur = "reel", ecriture = "ok" } = {}) {
+  const bac = creerBac();
+  bac.executer(blocs(html));
+  const w = bac.window;
+  bac.document.createElement = elementRecord;
+
+  // La barre : seulement ce que ppBouton lui demande.
+  const barre = elementRecord("div");
+  barre.classes = new Set();
+  barre.classList = { add: (c) => barre.classes.add(c), remove: (c) => barre.classes.delete(c),
+                      contains: (c) => barre.classes.has(c), toggle() {} };
+  barre.querySelector = (sel) => {
+    const m = /\[data-kind="(\w+)"\]/.exec(sel);
+    return barre.children.find((b) => b.className === "rdppbtn" && (!m || b.attrs["data-kind"] === m[1])) || null;
+  };
+  w.__rdBar = barre;
+
+  // Le decodeur : le vrai wasm du bundle, avec un espion sur decode().
+  const appels = [];
+  if (decodeur === "reel") {
+    const Q = chargerDecodeur(); const dec = new Q(); await dec.init();
+    w.__rdZstdDecoder = async () => ({ decode(u8, n) { appels.push(n); return dec.decode(u8, n); } });
+  } else if (decodeur === "ancien") {                   // bundle sans __rdZstdDecoder : S3 tel quel
+    const Q = chargerDecodeur(); const dec = new Q(); await dec.init();
+    w.__rdUnzstd = async (u8) => dec.decode(u8, tamponS3(u8.length));
+  }
+  // Le presse-papier du navigateur.
+  const ecrits = [];
+  w.ClipboardItem = class { constructor(obj) { this.obj = obj; } };
+  w.navigator.clipboard = {
+    write: async (items) => {
+      if (ecriture === "refuse") { const e = new Error("refus"); e.name = "NotAllowedError"; throw e; }
+      for (const v of Object.values(items[0].obj)) await v;     // comme le navigateur : rien n'est ecrit si une valeur echoue
+      ecrits.push(items[0]);
+    },
+    writeText: async (t) => { ecrits.push({ texte: t }); },
+  };
+  const toasts = () => (bac.document.body.children.find((c) => c.id === "rdtoasts")?.children || [])
+    .map((t) => ({ texte: t.textContent, role: t.attrs.role, erreur: /erreur/.test(t.className) }));
+  const vider = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)); };
+  return { bac, w, barre, appels, ecrits, toasts, vider };
+}
+const utf8 = (t) => new TextEncoder().encode(t);
+const boutons = (barre) => barre.children.filter((b) => b.className === "rdppbtn").map((b) => b.textContent);
+
+avecVendor("inbound : next() n'attend pas la conversion (msgLoop et acquittements video non bloques)", async () => {
+  const m = await montageEntrant();
+  const repere = m.bac.minuteurs.length;
+  const msg = { multi_clipboards: { clipboards: [
+    { format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 } ] } };
+  const t = m.w.__rdPpFiltrer(msg);
+  assert.equal(t, msg, "le message est rendu tel quel, synchronement");
+  assert.equal(m.appels.length, 0, "aucun decodage n'a eu lieu sur le chemin de msgLoop");
+  assert.deepEqual(plat(boutons(m.barre)), ["Image reçue ⇩"]);
+  assert.ok(m.barre.classes.has("attention"));
+  assert.equal(m.bac.tick(repere), 1, "la conversion part dans une tache a part");
+});
+
+avecVendor("inbound : une capture a fonds unis (taux > 30x) arrive ENTIERE — la panne d'origine", async () => {
+  const m = await montageEntrant();
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 21, compress: true, content: trameRLE(2 * MIO, 0x20), width: 1024, height: 512 } ] } });
+  m.bac.tick(repere);
+  const canvasCree = [];
+  const creer = m.bac.document.createElement;
+  m.bac.document.createElement = (tag) => { const e = creer(tag); if (tag === "canvas") canvasCree.push(e); return e; };
+  await m.vider();
+  // Clic sur le bouton.
+  m.barre.querySelector('[data-kind="image"]').onclick();
+  await m.vider();
+  assert.equal(m.ecrits.length, 1, "le presse-papier a recu un ClipboardItem");
+  const blob = await m.ecrits[0].obj["image/png"];
+  assert.ok(blob.size > 0);
+  // Les pixels transmis au canvas sont les VRAIS (0x20), pas des zeros.
+  assert.equal(canvasCree.length, 1, "un canvas de conversion, cree hors du chemin de msgLoop");
+  const cv = canvasCree[0];
+  assert.ok(m.appels.length >= 1 && m.appels[0] === 2 * MIO, "taille lue dans l'en-tete de trame : " + m.appels);
+  assert.equal(cv.pixels.length, 1024 * 512 * 4);
+  assert.equal(cv.pixels[0], 0x20); assert.equal(cv.pixels[cv.pixels.length - 1], 0x20);
+  assert.deepEqual(plat(boutons(m.barre)), [], "le bouton disparait apres le depot");
+  assert.ok(!m.barre.classes.has("attention"));
+  assert.ok(m.toasts().some((t) => /déposée/.test(t.texte) && !t.erreur));
+});
+
+avecVendor("inbound : avec l'ancien bundle (__rdUnzstd seul), la sortie vide est une ERREUR visible, pas une image blanche", async () => {
+  const m = await montageEntrant({ decodeur: "ancien" });
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 } ] } });
+  m.bac.tick(repere); await m.vider();
+  m.barre.querySelector('[data-kind="image"]').onclick();
+  await m.vider();
+  assert.equal(m.ecrits.length, 0, "rien n'a ete ecrit dans le presse-papier");
+  const t = m.toasts();
+  assert.ok(t.length === 1 && t[0].erreur && t[0].role === "alert" && /Décompression/.test(t[0].texte), JSON.stringify(t));
+  assert.deepEqual(plat(boutons(m.barre)), [], "erreur definitive : plus de bouton");
+});
+
+avecVendor("inbound : un texte apres une image n'efface pas l'image — un bouton par usage", async () => {
+  const m = await montageEntrant();
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 22, compress: false, content: Uint8Array.from([0x89, 0x50, 0x4e, 0x47]), width: 1, height: 1 } ] } });
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 0, compress: false, content: utf8("bonjour") } ] } });
+  assert.deepEqual(plat(boutons(m.barre).sort()), ["Image reçue ⇩", "Texte reçu ⇩"]);
+});
+
+avecVendor("inbound : le HTML garde le VRAI texte brut, sans le fabriquer en retirant les balises", async () => {
+  const m = await montageEntrant();
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 2, compress: false, content: utf8("<b>gras</b> &amp; plus") },
+    { format: 0, compress: false, content: utf8("gras & plus") } ] } });
+  m.bac.tick(repere); await m.vider();
+  m.barre.querySelector('[data-kind="text"]').onclick(); await m.vider();
+  const item = m.ecrits[0];
+  const plain = await (await item.obj["text/plain"]).text();
+  assert.equal(plain, "gras & plus", "le texte brut annonce par le pair, pas « gras &amp; plus »");
+  assert.equal(await (await item.obj["text/html"]).text(), "<b>gras</b> &amp; plus");
+});
+
+avecVendor("inbound : un refus du navigateur laisse le bouton pour reessayer, et le dit", async () => {
+  const m = await montageEntrant({ ecriture: "refuse" });
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 } ] } });
+  m.bac.tick(repere); await m.vider();
+  m.barre.querySelector('[data-kind="image"]').onclick(); await m.vider();
+  assert.deepEqual(plat(boutons(m.barre)), ["Image reçue ⇩"], "refus temporaire : le bouton reste");
+  const t = m.toasts();
+  assert.ok(t[0].erreur && /refusé/.test(t[0].texte), JSON.stringify(t));
+});
+
+avecVendor("inbound : ClipboardItem qui refuse une promesse (TypeError) -> repli, on attend le blob", async () => {
+  const m = await montageEntrant();
+  m.w.ClipboardItem = class { constructor(obj) {
+    for (const v of Object.values(obj)) if (v && typeof v.then === "function") throw new TypeError("promesse non prise en charge");
+    this.obj = obj; } };
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 } ] } });
+  m.bac.tick(repere); await m.vider();
+  m.barre.querySelector('[data-kind="image"]').onclick(); await m.vider();
+  assert.equal(m.ecrits.length, 1);
+  assert.ok((await m.ecrits[0].obj["image/png"]).size > 0, "un Blob, plus une promesse");
+});
+
+avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ; le texte simple reste", async () => {
+  const m = await montageEntrant();
+  const img = { clipboard: { format: 22, compress: false, content: Uint8Array.from([1, 2, 3]), width: 1, height: 1 } };
+  const r = m.w.__rdPpFiltrer(img);
+  assert.equal(r.clipboard, undefined, "sinon le bundle ferait TextDecoder sur du PNG");
+  const txt = { clipboard: { format: 0, compress: false, content: utf8("salut") } };
+  assert.equal(m.w.__rdPpFiltrer(txt).clipboard.format, 0, "le texte simple est laisse au bundle");
 });

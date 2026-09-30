@@ -152,6 +152,18 @@
   }
   #rdhud b{color:#e6e8ec;font-weight:600}
 
+  /* ------------------------------------------------------------ retours */
+  /* Un echec doit se voir : la console n'est pas un endroit ou l'utilisateur
+     regarde. Ni clic, ni deplacement, ni molette : le retour informe, il ne
+     recouvre jamais l'ecran distant. Aucune animation. */
+  #rdtoasts{position:fixed;left:50%;bottom:1.2rem;transform:translateX(-50%);z-index:40;
+         display:flex;flex-direction:column;align-items:center;gap:.4rem;
+         max-width:min(36rem,92vw);pointer-events:none}
+  .rdtoast{padding:.45rem .8rem;border-radius:8px;font-size:.82rem;line-height:1.35;
+         background:rgba(18,20,24,.94);color:#e6e8ec;text-align:center;
+         border:1px solid rgba(255,255,255,.12);box-shadow:0 2px 10px rgba(0,0,0,.4)}
+  .rdtoast.erreur{border-color:#9c2a3c;background:rgba(58,18,26,.96)}
+
   /* ------------------------------------------------ panneau de fichiers */
   #rdfiles{position:fixed;top:0;right:0;bottom:0;width:min(30rem,92vw);z-index:20;
          display:none;flex-direction:column;
@@ -862,6 +874,9 @@ window.onGlobalEvent = function(payload){
       tailles.push(t);
       while (t < max){ t = Math.min(t * 2, max); tailles.push(t); }
     }
+    // Le repli sur l'ancien __rdUnzstd (S3 ignore la taille demandee) n'a
+    // aucune raison d'etre rejoue huit fois avec le meme resultat.
+    if (dec && dec.unique) tailles = tailles.slice(0, 1);
     var derniere = "";
     for (var i = 0; i < tailles.length; i++){
       var out;
@@ -1374,6 +1389,35 @@ window.onGlobalEvent = function(payload){
     showActive(); fitCanvas();
   }
 
+  // ---------------------------------------------------------------- retours
+  // Une seule region « aria-live », creee a la demande. Les echecs passent en
+  // role="alert" (annonces tout de suite), le reste en role="status".
+  var toastsZone = null;
+  function notifier(texte, niveau){
+    try{
+      if (!toastsZone){
+        toastsZone = document.createElement("div");
+        toastsZone.id = "rdtoasts";
+        toastsZone.setAttribute("aria-live", "polite");
+        document.body.appendChild(toastsZone);
+      }
+      var t = document.createElement("div");
+      t.className = "rdtoast" + (niveau === "erreur" ? " erreur" : "");
+      t.setAttribute("role", niveau === "erreur" ? "alert" : "status");
+      t.textContent = texte;
+      toastsZone.appendChild(t);
+      setTimeout(function(){ t.remove(); }, niveau === "erreur" ? 9000 : 4500);
+    }catch(e){ console.warn("[retour]", e); }
+  }
+  window.__rdToast = notifier;
+
+  // Le texte d'une erreur de presse-papier, pour l'utilisateur.
+  function messageErreur(e){
+    if (e && e.name === "ClipError") return RDLib.messages[e.code] || String(e.message);
+    if (e && e.name === "NotAllowedError") return RDLib.messages.DENIED;
+    return "Presse-papier : opération impossible (" + ((e && e.name) || "erreur") + ").";
+  }
+
   // ============================================ presse-papier ENTRANT
   // Le poste distant annonce son presse-papier de deux facons, et le bundle
   // n'en traite qu'une : « clipboard », qu'il decode inconditionnellement en
@@ -1384,124 +1428,206 @@ window.onGlobalEvent = function(payload){
   // c'est le seul endroit ou l'on voit le message decode AVANT l'aiguillage,
   // ce qui permet aussi de lui retirer une image que sa branche texte
   // collerait sinon en charabia.
-  var FMT_PNG_R = 22, FMT_RGBA_R = 21, FMT_HTML_R = 2, FMT_TEXTE_R = 0;
-  var ppRecu = null;                       // dernier presse-papier distant
+  //
+  // Ce point de greffe est sur le chemin de TOUS les messages, video comprise :
+  // msgLoop est sequentiel et acquitte chaque image par sendVideoReceived. On
+  // n'y fait donc que RANGER ce qui arrive — le decodage et la conversion en
+  // PNG, qui coutent des dizaines de millisecondes sur une capture d'ecran,
+  // partent dans une tache a part et leur resultat est une promesse.
+  var FMT_PNG_R = RDLib.clip.FMT.PNG, FMT_RGBA_R = RDLib.clip.FMT.RGBA;
+  var ppSlots = RDLib.clip.slots();        // un emplacement par usage : image / texte
 
-  async function ppContenu(cb){
-    var d = cb.content;
-    if (cb.compress){
-      if (!window.__rdUnzstd) throw new Error("decodeur zstd absent du bundle");
-      d = await window.__rdUnzstd(d);
+  // Le decodeur zstd du bundle. __rdZstdDecoder (patch 5) donne le decodeur
+  // lui-meme, dont on choisit la taille de destination ; un bundle patche par
+  // une version anterieure n'a que __rdUnzstd, dont le tampon est trop petit
+  // pour une image tres compressible : on s'en sert quand meme, mais une sortie
+  // vide y est une erreur.
+  async function ppDecodeur(){
+    if (window.__rdZstdDecoder) return await window.__rdZstdDecoder();
+    if (window.__rdUnzstd){
+      return { unique: true, decode: function(u8){ return window.__rdUnzstd(u8); } };
     }
+    throw RDLib.clip.ClipError(RDLib.clip.ERR.DECODE, "decodeur zstd absent du bundle");
+  }
+
+  async function ppContenu(cb, attendu){
+    var d = cb.content;
+    if (cb.compress) d = await RDLib.clip.decompress(await ppDecodeur(), d, { hint: attendu || 0 });
     return d;
   }
 
   // Le format 21 transporte les octets bruts de l'image. Passer par un canvas
   // est le seul moyen d'en faire un PNG, seul type d'image qu'un navigateur
   // accepte d'ecrire dans le presse-papier du systeme.
-  function ppRgbaEnPng(octets, w, h){
+  async function ppRgbaEnPng(pixels, w, h){
     var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
     var cx = cv.getContext("2d");
     var img = cx.createImageData(w, h);
-    img.data.set(octets.subarray(0, img.data.length));
+    img.data.set(pixels);
     cx.putImageData(img, 0, 0);
-    return new Promise(function(r){ cv.toBlob(r, "image/png"); });
+    var blob = await new Promise(function(r){ cv.toBlob(r, "image/png"); });
+    if (!blob) throw RDLib.clip.ClipError(RDLib.clip.ERR.ENCODE, "toBlob a rendu null (" + w + "x" + h + ")");
+    return blob;
   }
 
-  async function ppRetenir(liste){
-    var png = null, rgba = null, html = null, texte = null;
-    for (var i = 0; i < liste.length; i++){
-      var cb = liste[i];
-      if (cb.format === FMT_PNG_R  && !png)   png   = cb;
-      else if (cb.format === FMT_RGBA_R && !rgba)  rgba  = cb;
-      else if (cb.format === FMT_HTML_R && !html)  html  = cb;
-      else if (cb.format === FMT_TEXTE_R && !texte) texte = cb;
-    }
-    var choix = png || rgba || html || texte;
-    if (!choix) return;
-
-    var octets = await ppContenu(choix);
-    if (choix === png){
-      ppRecu = { type:"image/png", w:choix.width, h:choix.height,
-                 blob:new Blob([octets], {type:"image/png"}) };
-    } else if (choix === rgba){
-      ppRecu = { type:"image/png", w:choix.width, h:choix.height,
-                 blob: await ppRgbaEnPng(octets, choix.width, choix.height) };
-    } else {
-      ppRecu = { type: choix === html ? "text/html" : "text/plain",
-                 texte: new TextDecoder().decode(octets) };
-    }
-    ppBouton();
-    console.log("[presse-papier] recu du poste distant : " + ppRecu.type
-      + (ppRecu.blob ? " " + ppRecu.w + "x" + ppRecu.h
-                     : " (" + ppRecu.texte.length + " caracteres)")
-      + " — le bouton « Coller ici » le depose dans ce navigateur");
+  // Image -> Blob PNG. Deux formes : PNG (deja pret, au mieux a decompresser)
+  // et RGBA brut (a valider puis a passer par un canvas).
+  async function ppImageEnBlob(image){
+    var cb = image.cb;
+    if (image.kind === "png")
+      return new Blob([await ppContenu(cb, 0)], { type: "image/png" });
+    var w = cb.width | 0, h = cb.height | 0;
+    var brut = await ppContenu(cb, w * h * 4);
+    console.log("[presse-papier] image décompressée : " + RDLib.clip.describe(cb, brut.length));
+    return ppRgbaEnPng(RDLib.clip.rgbaPixels(brut, w, h), w, h);
   }
 
-  async function ppFiltrer(m){
+  async function ppTexteEnValeur(sel){
+    var r = { html: null, texte: null };
+    if (sel.html) r.html = new TextDecoder().decode(await ppContenu(sel.html, 0));
+    if (sel.text) r.texte = new TextDecoder().decode(await ppContenu(sel.text, 0));
+    return r;
+  }
+
+  // Range l'image : la conversion demarre tout de suite, mais HORS du chemin de
+  // msgLoop — un « setTimeout » que personne n'attend. Un emplacement remplace
+  // avant que la tache ne tourne n'est pas converti du tout.
+  function ppRangerImage(image){
+    var slot = { kind: "image", cb: image.cb, w: image.cb.width, h: image.cb.height };
+    slot.promesse = new Promise(function(resolve, reject){
+      setTimeout(function(){
+        if (ppSlots.get("image") !== slot){ resolve(null); return; }     // supplante
+        ppImageEnBlob(image).then(function(blob){
+          slot.pret = true;
+          image.cb.content = null;                                   // les octets recus ne servent plus
+          resolve(blob);
+        }, reject);
+      }, 0);
+    });
+    slot.promesse.catch(function(e){                                 // pas de « unhandledrejection »
+      slot.erreur = e;
+      console.warn("[presse-papier] conversion de l'image : " + (e && e.message || e));
+    });
+    ppSlots.put("image", slot);
+  }
+
+  function ppRangerTexte(sel){
+    var slot = { kind: "text", riche: !!sel.html };
+    slot.promesse = ppTexteEnValeur(sel);
+    slot.promesse.catch(function(e){
+      slot.erreur = e;
+      console.warn("[presse-papier] decodage du texte : " + (e && e.message || e));
+    });
+    ppSlots.put("text", slot);
+  }
+
+  function ppRetenir(liste){
+    var sel = RDLib.clip.select(liste);
+    (liste || []).forEach(function(cb){
+      if (cb) console.log("[presse-papier] recu du poste distant : " + RDLib.clip.describe(cb));
+    });
+    if (sel.image) ppRangerImage(sel.image);
+    if (sel.html || sel.text) ppRangerTexte(sel);
+    if (sel.image || sel.html || sel.text) ppBouton();
+  }
+
+  // Synchrone, et volontairement : rien ici ne doit retarder msgLoop.
+  function ppFiltrer(m){
     if (!m) return m;
     if (m.multi_clipboards && m.multi_clipboards.clipboards
         && m.multi_clipboards.clipboards.length){
-      await ppRetenir(m.multi_clipboards.clipboards);
+      ppRetenir(m.multi_clipboards.clipboards);
       return m;                       // le bundle l'ignore, rien a lui cacher
     }
     if (m.clipboard && (m.clipboard.format === FMT_PNG_R
                      || m.clipboard.format === FMT_RGBA_R)){
       var cb = m.clipboard;
       delete m.clipboard;             // sinon : TextDecoder sur du PNG
-      await ppRetenir([cb]);
+      ppRetenir([cb]);
     }
     return m;                         // texte simple : le bundle sait faire
   }
 
-  // Ecrire dans le presse-papier du systeme exige une activation recente : le
-  // navigateur refuse toute ecriture differee, et Chrome au-dela d'environ une
-  // seconde apres l'interaction. Une pose automatique a la reception est donc
-  // condamnee — d'ou ce bouton, qui fournit le geste. C'est le meme choix que
-  // Guacamole, qui expose une zone dediee plutot que d'automatiser.
+  // Ecrire dans le presse-papier du systeme exige, selon les navigateurs, une
+  // activation utilisateur recente (Safari l'exige strictement). Une pose
+  // automatique a la reception n'est donc pas fiable — d'ou ces boutons, qui
+  // fournissent le geste. C'est le meme choix que Guacamole, qui expose une zone
+  // dediee plutot que d'automatiser. Un bouton par usage : image, texte.
+  var PP_LIBELLES = { image: "Image reçue ⇩", text: "Texte reçu ⇩" };
   function ppBouton(){
     var bar = window.__rdBar;
-    if (!bar || !ppRecu) return;
-    var b = bar.querySelector(".rdppbtn");
-    if (!b){
-      b = document.createElement("button");
-      b.className = "rdppbtn";
-      b.onclick = ppDeposer;
-      bar.insertBefore(b, bar.firstChild);
-    }
-    bar.classList.add("attention");
-    b.textContent = ppRecu.blob ? "Image reçue ⇩" : "Texte reçu ⇩";
-    b.title = "Déposer ce contenu dans le presse-papier de ce navigateur. "
-            + "Un clic est indispensable : le navigateur refuse d'écrire dans "
-            + "le presse-papier sans geste de ta part.";
+    if (!bar) return;
+    ppSlots.kinds().forEach(function(kind){
+      var b = bar.querySelector('.rdppbtn[data-kind="' + kind + '"]');
+      if (!b){
+        b = document.createElement("button");
+        b.className = "rdppbtn";
+        b.setAttribute("data-kind", kind);
+        b.onclick = function(){ ppDeposer(kind); };
+        bar.insertBefore(b, bar.firstChild);
+      }
+      b.textContent = PP_LIBELLES[kind];
+      b.title = "Déposer ce contenu dans le presse-papier de ce navigateur. "
+              + "Un clic est nécessaire : le navigateur n'écrit pas dans le "
+              + "presse-papier sans geste de ta part.";
+    });
+    if (ppSlots.kinds().length) bar.classList.add("attention");
   }
 
-  async function ppDeposer(){
-    if (!ppRecu) return;
+  function ppRetirerBouton(kind){
+    var bar = window.__rdBar;
+    if (!bar) return;
+    var b = bar.querySelector('.rdppbtn[data-kind="' + kind + '"]');
+    if (b) b.remove();
+    if (!ppSlots.kinds().length) bar.classList.remove("attention");
+  }
+
+  // Une image : la PROMESSE du blob va directement dans le ClipboardItem. Le
+  // geste est ainsi consomme au clic, que la conversion soit finie ou non.
+  // Certains navigateurs refusent une promesse comme valeur : TypeError a la
+  // construction, on attend alors le blob avant d'ecrire.
+  async function ppEcrireImage(promesse){
+    var item;
+    try { item = new ClipboardItem({ "image/png": promesse }); }
+    catch (e){
+      if (!(e && e.name === "TypeError")) throw e;
+      item = new ClipboardItem({ "image/png": await promesse });
+    }
+    await navigator.clipboard.write([item]);
+  }
+
+  async function ppEcrireTexte(valeur){
+    if (valeur.html){
+      // Le vrai texte brut, s'il a ete annonce : on ne fabrique le sien en
+      // retirant les balises qu'a defaut.
+      var plain = valeur.texte != null ? valeur.texte : valeur.html.replace(/<[^>]*>/g, "");
+      await navigator.clipboard.write([ new ClipboardItem({
+        "text/html":  new Blob([valeur.html], {type:"text/html"}),
+        "text/plain": new Blob([plain], {type:"text/plain"}) }) ]);
+    } else {
+      await navigator.clipboard.writeText(valeur.texte || "");
+    }
+  }
+
+  async function ppDeposer(kind){
+    var slot = ppSlots.get(kind);
+    if (!slot) return;
     try{
-      if (ppRecu.blob){
-        await navigator.clipboard.write([
-          new ClipboardItem({ "image/png": ppRecu.blob }) ]);
-      } else if (ppRecu.type === "text/html"){
-        await navigator.clipboard.write([ new ClipboardItem({
-          "text/html":  new Blob([ppRecu.texte], {type:"text/html"}),
-          "text/plain": new Blob([ppRecu.texte.replace(/<[^>]*>/g, "")],
-                                 {type:"text/plain"}) }) ]);
-      } else {
-        await navigator.clipboard.writeText(ppRecu.texte);
-      }
-      console.log("[presse-papier] depose dans le presse-papier local");
-      ppRecu = null;
-      var bar = window.__rdBar;
-      if (bar){
-        var b = bar.querySelector(".rdppbtn");
-        if (b) b.remove();
-        bar.classList.remove("attention");
-      }
+      if (kind === "image") await ppEcrireImage(slot.promesse);
+      else await ppEcrireTexte(await slot.promesse);
+      console.log("[presse-papier] " + kind + " déposé dans le presse-papier local");
+      ppSlots.take(kind);
+      ppRetirerBouton(kind);
+      notifier(kind === "image" ? "Image déposée dans le presse-papier local."
+                                : "Texte déposé dans le presse-papier local.");
     }catch(e){
-      console.warn("[presse-papier] depot refuse : " + e.name + " — " + e.message
-        + (/Firefox|Safari/.test(navigator.userAgent)
-           ? " (ce navigateur n'ecrit pas d'image dans le presse-papier)" : ""));
+      console.warn("[presse-papier] depot refuse : " + (e && e.name) + " — " + (e && e.message));
+      // Une erreur de conversion est definitive : reessayer ne changerait rien.
+      // Un refus du navigateur, lui, peut passer au clic suivant.
+      if (e && e.name === "ClipError"){ ppSlots.take(kind); ppRetirerBouton(kind); }
+      notifier(messageErreur(e), "erreur");
+    }finally{
+      var c = active(); if (c) c.focus();      // le bouton ne doit pas garder le clavier
     }
   }
   window.__rdPpFiltrer = ppFiltrer;
@@ -1605,7 +1731,7 @@ window.onGlobalEvent = function(payload){
       var suivant = c._ws.next.bind(c._ws);
       c._ws.next = async function(){
         var m = await suivant();
-        try { return await ppFiltrer(m); }
+        try { return ppFiltrer(m); }
         catch(e){ console.warn("[presse-papier] entrant :", e); return m; }
       };
     }
