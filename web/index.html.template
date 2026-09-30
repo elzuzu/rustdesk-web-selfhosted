@@ -193,6 +193,10 @@
   #app>#connect #rd-recents button{margin:0;padding:.2rem .6rem;border:0;border-radius:0;
          background:transparent;color:#e6e8ec;font-size:.78rem;font-weight:400;cursor:pointer}
   #app>#connect #rd-recents button:hover,#app>#connect #rd-recents button:focus-visible{background:#3a4150}
+  /* overflow:hidden rogne l'anneau de focus du bouton enfant : c'est la pastille
+     entiere qui porte l'anneau. */
+  #app>#connect #rd-recents .rdchip:focus-within{outline:2px solid #7aa2ff;outline-offset:1px}
+  #app>#connect #rd-recents .rdchip button:focus-visible{outline:none}
   #app>#connect #rd-recents .rdchip-x{padding:.2rem .45rem;color:#8b94a3}
   #app>#connect #rd-recents .rdchip-clear{color:#8b94a3;text-decoration:underline;padding:.2rem .3rem}
 
@@ -443,6 +447,13 @@ if ("serviceWorker" in navigator) {
     var ws = proto === undefined ? new W(url) : new W(url, proto);
     var path = String(url).replace(/^wss?:\/\/[^/]+/, "");
     var wsStartTime = Date.now();
+    // L'epoque de session a l'ouverture de CETTE liaison. Une liaison plus
+    // ancienne — celle de la connexion « fichiers » d'une session deja finie —
+    // peut se fermer apres qu'un connect() a remis RD.ready a faux : sans cette
+    // comparaison, sa fermeture passait pour un echec d'etablissement de la
+    // nouvelle session (bannieres « cle refusee » / « pair absent », reprise
+    // parasite).
+    var epoque = window.RD ? window.RD.epoque : 0;
     console.log("[diag] websocket ouverture -> " + path);
     // Borne : une session longue enchaine les reconnexions, et chaque entree
     // retient une reference vers le WebSocket ferme.
@@ -479,7 +490,8 @@ if ("serviceWorker" in navigator) {
       //   pair jamais arrive    -> sleep(30) puis retrait, fermeture vers 30 s
       // On se base sur la duree de vie de CETTE liaison, pas sur le silence
       // global : « dernier » est partage entre toutes les liaisons ouvertes.
-      if (path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
+      var courante = !window.RD || window.RD.epoque === epoque;
+      if (courante && path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
         if (dur <= 5) {
           showBannerError(messageCleRefusee(), "key");
         } else if (dur >= 20) {
@@ -508,7 +520,7 @@ if ("serviceWorker" in navigator) {
       // puis 55 minutes de silence. Un relais qui n'a jamais rien recu est un
       // echec d'etablissement (cle refusee, pair absent) : la banniere s'en
       // charge, une reprise n'y changerait rien.
-      if (path.indexOf("/ws/relay") !== -1 && msgCount > 0 && window.__rdReprise) {
+      if (courante && path.indexOf("/ws/relay") !== -1 && msgCount > 0 && window.__rdReprise) {
         window.__rdReprise();
       }
     });
@@ -633,6 +645,7 @@ if ("serviceWorker" in navigator) {
 // Etat partage entre les deux blocs de script.
 window.RD = {
   ready:false,        // vrai apres peer_info : rien ne doit partir avant
+  epoque:0,           // +1 a chaque connect() : une liaison n'est « de la session » que si elle est nee dans l'epoque courante
   res:[],             // modes supportes par l'ecran distant
   orig:null,          // resolution d'origine
   codec:null,         // "h265" | "vp9" | null (= logiciel ogv)
@@ -810,7 +823,9 @@ window.onGlobalEvent = function(payload){
   function normId(s){
     if (!isPeerId(s)) return null;
     var d = s.replace(/\s+/g, "");
-    return /^[0-9]{6,}$/.test(d) ? d : null;
+    // Trente-deux chiffres au plus : un « ID » de 300 000 chiffres est un
+    // contenu de stockage hostile, pas un identifiant.
+    return /^[0-9]{6,32}$/.test(d) ? d : null;
   }
   // « 123456789 » -> « 123 456 789 » : la presentation de RustDesk.
   function fmtId(s){
@@ -823,7 +838,8 @@ window.onGlobalEvent = function(payload){
   var LIM = {
     OUT_PNG: 8 * MIO,      // image envoyee au poste distant, apres conversion
     RAW_MAX: 128 * MIO,    // taille decompressee maximale acceptee en entree
-    SRC_MAX: 64 * MIO      // image locale au-dela de laquelle on ne tente meme pas
+    SRC_MAX: 64 * MIO,     // image locale au-dela de laquelle on ne tente meme pas
+    PIXELS_MAX: 32 * MIO   // pixels d'une image ENVOYEE : le poste distant la decode en RGBA (4 octets/pixel)
   };
   var ERR = { DECODE: "DECODE", TOO_BIG: "TOO_BIG", SHORT: "SHORT", DIMS: "DIMS",
               ENCODE: "ENCODE", LIMIT: "LIMIT", VERSION: "VERSION", NOSEND: "NOSEND",
@@ -981,6 +997,21 @@ window.onGlobalEvent = function(payload){
     };
   }
 
+  // Signature d'un PNG : 89 50 4E 47 0D 0A 1A 0A.
+  function estPng(u8){
+    if (!u8 || u8.length < 8) return false;
+    var sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    for (var i = 0; i < 8; i++) if (u8[i] !== sig[i]) return false;
+    return true;
+  }
+
+  // Dimensions ramenees sous PIXELS_MAX, rapport conserve. Inchangees si elles y sont deja.
+  function reduirePixels(w, h){
+    if (!(w > 0 && h > 0) || w * h <= LIM.PIXELS_MAX) return { w: w, h: h };
+    var f = Math.sqrt(LIM.PIXELS_MAX / (w * h));
+    return { w: Math.max(1, Math.floor(w * f)), h: Math.max(1, Math.floor(h * f)) };
+  }
+
   // Une image locale de plus de SRC_MAX n'est meme pas decodee.
   function precheck(octetsSource){
     if (octetsSource > LIM.SRC_MAX)
@@ -1130,13 +1161,20 @@ window.onGlobalEvent = function(payload){
     var key = opts.key || "rd-recent", max = opts.max || 10,
         maintenant = opts.now || function(){ return Date.now(); }, mem = null;
 
+    // Un horodatage venu du stockage est borne a « maintenant + un jour » : « 9e99 »
+    // se classerait sinon en tete pour toujours.
+    function horodatage(v){
+      var n = Number(v);
+      if (!isFinite(n) || n < 0) return 0;
+      return Math.min(n, maintenant() + 86400000);
+    }
     function propre(liste){
       var vus = {}, r = [];
       (Array.isArray(liste) ? liste : []).forEach(function(e){
         var id = e && normId(e.id);
         if (!id || vus[id]) return;
         vus[id] = true;
-        r.push({ id: id, t: isFinite(e.t) ? Number(e.t) : 0 });
+        r.push({ id: id, t: horodatage(e.t) });
       });
       r.sort(function(a, b){ return b.t - a.t; });      // tri stable : le plus recent d'abord
       return r.slice(0, max);
@@ -1182,7 +1220,7 @@ window.onGlobalEvent = function(payload){
         if (p && typeof p === "object"){
           Object.keys(p).forEach(function(id){
             var n = normId(id), tm = p[id] && Number(p[id].tm);
-            if (n && tm > 0) liste.push({ id: n, t: tm });
+            if (n && tm > 0) liste.push({ id: n, t: horodatage(tm) });
           });
         }
         var dernier = normId(dernierId), defaut = normId(idDefaut);
@@ -1203,7 +1241,7 @@ window.onGlobalEvent = function(payload){
     clip: {
       FMT: FMT, LIM: LIM, ERR: ERR, ClipError: ClipError,
       select: select, zstdContentSize: zstdContentSize, decompress: decompress,
-      sortieVideSuspecte: sortieVideSuspecte,
+      sortieVideSuspecte: sortieVideSuspecte, estPng: estPng, reduirePixels: reduirePixels,
       rgbaPixels: rgbaPixels, describe: describe, slots: slots,
       precheck: precheck, nextScale: nextScale, pasteDelayMs: pasteDelayMs,
       peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord, pasteAccepte: pasteAccepte
@@ -1466,14 +1504,20 @@ window.onGlobalEvent = function(payload){
   // Une seule region « aria-live », creee a la demande. Les echecs passent en
   // role="alert" (annonces tout de suite), le reste en role="status".
   var toastsZone = null;
+  // Une region « aria-live » creee EN MEME TEMPS que son premier contenu n'est
+  // pas annoncee de facon fiable : elle est donc posee d'avance (wireGlobal).
+  function zoneRetours(){
+    if (!toastsZone){
+      toastsZone = document.createElement("div");
+      toastsZone.id = "rdtoasts";
+      toastsZone.setAttribute("aria-live", "polite");
+      document.body.appendChild(toastsZone);
+    }
+    return toastsZone;
+  }
   function notifier(texte, niveau){
     try{
-      if (!toastsZone){
-        toastsZone = document.createElement("div");
-        toastsZone.id = "rdtoasts";
-        toastsZone.setAttribute("aria-live", "polite");
-        document.body.appendChild(toastsZone);
-      }
+      zoneRetours();
       var t = document.createElement("div");
       t.className = "rdtoast" + (niveau === "erreur" ? " erreur" : "");
       t.setAttribute("role", niveau === "erreur" ? "alert" : "status");
@@ -1547,8 +1591,14 @@ window.onGlobalEvent = function(payload){
   // et RGBA brut (a valider puis a passer par un canvas).
   async function ppImageEnBlob(image){
     var cb = image.cb;
-    if (image.kind === "png")
-      return new Blob([await ppContenu(cb, 0)], { type: "image/png" });
+    if (image.kind === "png"){
+      var png = await ppContenu(cb, 0);
+      // Des octets qui ne sont pas un PNG feraient echouer write() avec un nom
+      // generique, et le bouton resterait pour rien.
+      if (!RDLib.clip.estPng(png))
+        throw RDLib.clip.ClipError(RDLib.clip.ERR.DECODE, "signature PNG absente (" + (png ? png.length : 0) + " octets)");
+      return new Blob([png], { type: "image/png" });
+    }
     var w = cb.width | 0, h = cb.height | 0;
     var brut = await ppContenu(cb, w * h * 4);
     console.log("[presse-papier] image décompressée : " + RDLib.clip.describe(cb, brut.length));
@@ -2027,10 +2077,11 @@ window.onGlobalEvent = function(payload){
       var b = document.createElement("button");
       b.type = "button"; b.className = "rdchip-id";
       b.textContent = RDLib.fmtId(e.id);
-      b.title = "Utiliser cet ID (Suppr pour le retirer de la liste)";
+      b.title = "Utiliser cet ID (Suppr ou Retour arrière pour le retirer de la liste)";
       b.onclick = function(){ choisirRecent(e.id); };
       b.addEventListener("keydown", function(ev){
-        if (ev.key === "Delete"){ ev.preventDefault(); retirerRecent(e.id); }
+        // Suppr, ou Retour arriere : un portable Mac n'a pas de touche Suppr.
+        if (ev.key === "Delete" || ev.key === "Backspace"){ ev.preventDefault(); retirerRecent(e.id); }
       });
       // La croix est reservee a la souris : vingt arrets de tabulation pour dix
       // ID seraient pire que l'absence de liste. Au clavier : Suppr sur l'ID.
@@ -2132,6 +2183,7 @@ window.onGlobalEvent = function(payload){
   var globalWired = false;
   function wireGlobal(){
     if (globalWired) return; globalWired = true;
+    zoneRetours();
 
     // --- Presse-papier sortant : navigateur -> Mac ---
     // Valeurs relevees dans l'enumeration ClipboardFormat du bundle, non
@@ -2208,6 +2260,10 @@ window.onGlobalEvent = function(payload){
         catch(e){ throw C.ClipError(C.ERR.BITMAP, (blob.type || "type inconnu") + " — " + ((e && e.message) || e)); }
 
         var cur = { w: bmp.width, h: bmp.height }, png = blob.type === "image/png" ? blob : null, ok = false;
+        // Un PNG plat de 6000 x 6000 pese moins de 1 Mo mais fait decoder 144 Mo de
+        // pixels au poste distant : les DIMENSIONS sont plafonnees aussi.
+        var borne = C.reduirePixels(cur.w, cur.h);
+        if (borne.w !== cur.w || borne.h !== cur.h){ cur = borne; png = null; }
         for (var essai = 0; essai < 4; essai++){
           if (!png) png = await encoderPng(bmp, cur.w, cur.h);
           if (png.size <= C.LIM.OUT_PNG){ ok = true; break; }
@@ -2280,9 +2336,14 @@ window.onGlobalEvent = function(payload){
       var t="", h="";
       try{ t=cd.getData("text/plain")||""; }catch(_){}
       try{ h=cd.getData("text/html")||"";  }catch(_){}
-      if(!t && !h){ console.log("[presse-papier] ignore (contenu non textuel)"); return; }
+      if(!t && !h){
+        console.log("[presse-papier] ignore (contenu non textuel)");
+        notifier("Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller.", "erreur");
+        return; }
       if(t.length>1048576 || h.length>1048576){
-        console.warn("[presse-papier] trop volumineux, ignore"); return; }
+        console.warn("[presse-papier] trop volumineux, ignore");
+        notifier("Texte trop volumineux pour le presse-papier distant (limite : 1 Mio).", "erreur");
+        return; }
 
       // Texte enrichi : Word et Excel deposent du HTML a cote du texte brut.
       // MultiClipboards est fait pour cela — les deux entrees partent dans le
@@ -2304,11 +2365,16 @@ window.onGlobalEvent = function(payload){
         }
       }
 
-      if(!t){ console.log("[presse-papier] ignore (HTML seul, pair trop ancien)"); return; }
+      if(!t){
+        console.log("[presse-papier] ignore (HTML seul, pair trop ancien)");
+        notifier("Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu.", "erreur");
+        return; }
       var bytes=new TextEncoder().encode(t);
       if(rdSend({clipboard:{content:bytes,compress:false}})){
         console.log("[presse-papier] "+bytes.length+" octets envoyes");
         rejouerCollage(bytes.length);
+      } else {
+        notifier(RDLib.messages.NOSEND, "erreur");
       }
     });
 
@@ -2612,6 +2678,11 @@ window.onGlobalEvent = function(payload){
         // celui du bouton Connect ET de la reprise auto (reconnect() du bundle le
         // contourne, mais rien ne l'appelle).
         RD.ready = false;
+        RD.epoque = (RD.epoque | 0) + 1;
+        // « Quitter » pose reprise.voulue et rien ne l'effacait : apres une
+        // deconnexion voulue, la reprise auto restait coupee jusqu'au rechargement.
+        // Une nouvelle connexion est, par definition, une nouvelle intention.
+        reprise.voulue = false;
         return orig.apply(this, arguments);
       };
       window.connect = mien;

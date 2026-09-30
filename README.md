@@ -207,8 +207,11 @@ conversion to PNG happen in a separate task, never on the message loop (which al
 acknowledges every video frame), and the result is handed to the clipboard as a
 promise, so the click is honoured whether or not the conversion has finished. One
 slot per kind: a text arriving after an image no longer erases it. This direction
-is **Chromium only**: Firefox and Safari do not write images to the clipboard. KasmVNC, the only
-comparable project to have done this, likewise limits its rich clipboard to
+is only **tested on Chromium**. Firefox (from version 127) and Safari expose the
+same `ClipboardItem` API and may accept it — Safari requires the user activation,
+which is one more reason for the click — but that is untested here, and the code
+falls back to waiting for the image when a browser refuses a promise value. KasmVNC,
+the only comparable project to have done this, limits its rich clipboard to
 Chromium.
 
 An image arriving over the legacy `clipboard` message is intercepted before the
@@ -328,7 +331,7 @@ node scripts/test-template.mjs --require-vendor          # Node only, no depende
 NODE_PATH=$(npm root -g) node scripts/test-browser.mjs   # real Chromium, via Playwright
 ```
 
-The template bench loads the page's four scripts together in one context, guards
+The template bench loads the page's five scripts together in one context, guards
 the contracts other tools read from the page, and exercises the clipboard,
 session and toolbar wiring against a fake DOM, with the bundle's real zstd
 decoder. The browser bench measures what a fake DOM cannot: where the pointer

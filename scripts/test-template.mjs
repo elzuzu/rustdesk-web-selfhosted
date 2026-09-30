@@ -1165,7 +1165,13 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   w.setByName = (nom, v) => { let a = v; try { a = JSON.parse(v); } catch { /* chaine brute */ } touches.push([nom, a]); journal.push("set:" + nom); };
   w.VideoDecoder = class { constructor(o) { this.o = o; } configure() {} decode() {} reset() {} close() {} get decodeQueueSize() { return 0; } };
   w.createImageBitmap = async () => ({ width: dims.w, height: dims.h, close() { fermes.n++; } });
+  // Une horloge que le test peut avancer : la duree de vie d'une liaison relais decide de la banniere.
+  const horloge_ = { decalage: 0 };
+  const DateReelle = Date;
+  w.Date = class extends DateReelle { static now() { return DateReelle.now() + horloge_.decalage; } };
   bac.executer(blocs(html));
+  const depotsFichiers = { n: 0 };
+  w.RDFT.accepterDepot = () => { depotsFichiers.n++; };          // espion : un collage d'image ne doit PAS televerser
   w.RD.ready = prete;
   w.curConn = { _id: "123456789", _peerInfo: { version },
                 _ws: { _websocket: { readyState: 1 },
@@ -1197,7 +1203,7 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   const zone = () => doc.getElementById("rd-recents");
   const pastilles = () => (zone() ? zone().children : []).filter((c) => c.className === "rdchip");
   const libelles = () => pastilles().map((c) => c.children[0].textContent);
-  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux, journal,
+  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux, journal, horloge: horloge_, depotsFichiers,
            bar, qual, fps, cod, selRes, peerInfo, options, banniere, form, zone, pastilles, libelles };
 }
 const images = (m) => m.envoyes.filter((x) => x.multi_clipboards);
@@ -1848,4 +1854,209 @@ test("review : verify.sh refuse un argument inconnu au lieu de lancer le chemin 
   }
   const aide = execFileSync("bash", [path.join(RACINE, "scripts", "verify.sh"), "--help"]).toString();
   assert.match(aide, /--sans-docker/);
+});
+
+
+// ====================================================================
+// Constats de l'audit independant.
+// ====================================================================
+test("audit F1 : une ancienne liaison relais qui se ferme APRES un connect() n'est ni « cle refusee » ni une reprise", async () => {
+  const m = await montageSortant({ prete: false });
+  m.peerInfo();                                            // session 1 etablie
+  const ft = new m.w.WebSocket("wss://h/ws/relay");        // la liaison de la connexion « fichiers », ouverte pendant la session
+  ft.emettre("open", {}); ft.emettre("message", {});
+  m.w.connect = () => 1;
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());
+  m.w.connect();                                           // la reprise auto relance : nouvelle epoque, RD.ready = false
+  m.horloge.decalage = 25000;                              // la liaison « fichiers » avait 25 s de vie
+  let reprises = 0; m.w.__rdReprise = () => { reprises++; };
+  ft.emettre("close", { code: 1006, wasClean: false, reason: "" });
+  assert.equal(m.banniere(), null, "une liaison d'une epoque revolue ne dit rien de l'etablissement de la nouvelle session");
+  assert.equal(reprises, 0, "et ne relance pas connect() par-dessus la tentative en cours");
+});
+
+test("audit F1 : une liaison de l'epoque COURANTE garde ses bannieres et sa reprise", async () => {
+  const m = await montageSortant({ prete: false });
+  m.peerInfo();
+  m.w.connect = () => 1;
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());
+  m.w.connect();
+  let reprises = 0; m.w.__rdReprise = () => { reprises++; };
+  const neuve = new m.w.WebSocket("wss://h/ws/relay");
+  neuve.emettre("open", {}); neuve.emettre("message", {});
+  m.horloge.decalage = 25000;
+  neuve.emettre("close", { code: 1006, wasClean: false, reason: "" });
+  assert.ok(m.banniere(), "le pair n'est jamais arrive : la banniere « n'a pas rejoint le relais » est legitime");
+  assert.equal(reprises, 1, "et la fermeture de la liaison de la session courante declenche la reprise");
+});
+
+test("audit F7 : « Quitter » n'eteint plus la reprise auto pour toujours", async () => {
+  const m = await montageSortant({ vivante: false });
+  const quit = m.bar.children.find((c) => c.className === "quit");
+  quit.onclick();                                          // deconnexion VOULUE
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdReprise();
+  assert.equal(m.bac.minuteurs.slice(repere).filter((t) => t.once && t.ms >= 1000).length, 0, "voulue : pas de reprise");
+  m.w.connect = () => 1;
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());
+  m.w.connect();                                           // l'utilisateur se reconnecte : nouvelle intention
+  const r2 = m.bac.minuteurs.length;
+  m.w.__rdReprise();
+  assert.equal(m.bac.minuteurs.slice(r2).filter((t) => t.once && t.ms >= 1000).length, 1, "la reprise auto est de nouveau active");
+});
+
+test("audit F3 : chaque echec du collage TEXTE se voit aussi", async () => {
+  const coller = async (m, dt) => {
+    let evite = false;
+    m.ecouteurs.paste.forEach((f) => f({ preventDefault() { evite = true; }, clipboardData: { items: [], files: [], getData: (t) => dt[t] || "" } }));
+    await m.vider(); return evite;
+  };
+  const m1 = await montageSortant();
+  await coller(m1, { "text/plain": "x".repeat(1048577) });
+  assert.ok(m1.toasts().some((t) => t.erreur && /trop volumineux/.test(t.texte)), JSON.stringify(m1.toasts()));
+  const m2 = await montageSortant({ prete: false });
+  await coller(m2, { "text/plain": "bonjour" });
+  assert.ok(m2.toasts().some((t) => t.erreur && /session n'est pas prête/.test(t.texte)), JSON.stringify(m2.toasts()));
+  const m3 = await montageSortant({ version: "1.2.7" });
+  await coller(m3, { "text/html": "<b>x</b>" });
+  assert.ok(m3.toasts().some((t) => t.erreur && /trop ancien/.test(t.texte)), JSON.stringify(m3.toasts()));
+  const m4 = await montageSortant();
+  await coller(m4, {});
+  assert.ok(m4.toasts().some((t) => t.erreur && /ni du texte ni une image/.test(t.texte)), JSON.stringify(m4.toasts()));
+  // Et le chemin qui marche ne produit aucun retour d'erreur.
+  const ok = await montageSortant();
+  await coller(ok, { "text/plain": "bonjour" });
+  assert.equal(ok.toasts().length, 0);
+});
+
+test("audit B20 : un collage d'image n'ouvre PAS en plus le televersement de fichiers", async () => {
+  const m = await montageSortant();
+  await m.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
+  assert.equal(images(m).length, 1);
+  assert.equal(m.depotsFichiers.n, 0, "la capture d'ecran partait AUSSI au televersement avant c110499");
+  // Un fichier qui n'est pas une image, lui, va bien au televersement.
+  let evite = false; const fichier = new Blob([new Uint8Array(10)], { type: "application/pdf" });
+  m.ecouteurs.paste.forEach((f) => f({ preventDefault() { evite = true; },
+    clipboardData: { items: [{ kind: "file", type: "application/pdf", getAsFile: () => fichier }], files: [fichier], getData: () => "" } }));
+  assert.equal(m.depotsFichiers.n, 1);
+});
+
+test("audit C23 : le vrai next() de la liaison passe par ppFiltrer (le crochet est bien installe)", async () => {
+  const m = await montageSortant();
+  const msg = { clipboard: { format: 22, compress: false, content: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), width: 1, height: 1 } };
+  m.w.curConn._ws.next = async () => msg;
+  m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());       // le veilleur appelle patchConn
+  const recu = await m.w.curConn._ws.next();
+  assert.equal(recu.clipboard, undefined, "l'image est retiree du message avant le bundle");
+  assert.ok(m.bar.children.some((c) => c.className === "rdppbtn"), "et son bouton est apparu : le message a bien traverse ppFiltrer");
+});
+
+test("audit D06 : l'ecouteur keyup ephemere d'Echap ne s'accumule pas", async () => {
+  const m = await montageSortant();
+  m.bar.children.find((c) => c.className === "rdhandle").onclick();          // ouverte
+  const echap = () => m.bar.ecouteurs.keydown.forEach((f) => f({ key: "Escape", preventDefault() {}, target: { tagName: "BUTTON" } }));
+  const repere = m.bac.minuteurs.length;
+  echap();
+  assert.equal((m.ecouteurs.keyup || []).length, 1);
+  (m.ecouteurs.keyup || []).slice().forEach((f) => f({ key: "Escape" }));
+  assert.equal((m.ecouteurs.keyup || []).length, 0, "retire apres le keyup");
+  // Le keyup ne vient jamais : le delai de garde le retire.
+  m.bar.children.find((c) => c.className === "rdhandle").onclick();          // ouverte de nouveau
+  const r2 = m.bac.minuteurs.length;
+  echap();
+  assert.equal((m.ecouteurs.keyup || []).length, 1);
+  const garde = m.bac.minuteurs.slice(r2).find((t) => t.once && t.ms === 1500);
+  assert.ok(garde, "un delai de garde de 1,5 s est arme");
+  garde.f();
+  assert.equal((m.ecouteurs.keyup || []).length, 0, "l'ecouteur ne reste pas arme");
+});
+
+test("audit F5 : un PNG recu sans signature est une erreur definitive, pas un « DataError » generique", async () => {
+  const m = await montageEntrant();
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 22, compress: false, content: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9]), width: 1, height: 1 }] } });
+  m.bac.tick(repere); await m.vider();
+  m.barre.querySelector('[data-kind="image"]').onclick(); await m.vider();
+  assert.equal(m.ecrits.length, 0);
+  assert.ok(m.toasts().some((t) => t.erreur && /Décompression|corrompues/.test(t.texte)), JSON.stringify(m.toasts()));
+  assert.deepEqual(plat(boutons(m.barre)), [], "definitive : plus de bouton");
+  const { clip } = chargerLib();
+  assert.equal(clip.estPng(Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0])), true);
+  assert.equal(clip.estPng(new Uint8Array(3)), false);
+  assert.equal(clip.estPng(null), false);
+});
+
+test("audit F5 : les dimensions d'une image ENVOYEE sont plafonnees (32 Mpixels)", async () => {
+  const { clip } = chargerLib();
+  assert.deepEqual(plat(clip.reduirePixels(5000, 6000)), { w: 5000, h: 6000 }, "30 Mpx : sous 32 Mi pixels (33 554 432)");
+  const c = clip.reduirePixels(6000, 6000);                     // 36 Mpx : au-dessus, donc ramene sous la limite
+  assert.ok(c.w * c.h <= clip.LIM.PIXELS_MAX && c.w < 6000 && c.w === c.h, JSON.stringify(c));
+  const r = clip.reduirePixels(8000, 6000);
+  assert.ok(r.w * r.h <= clip.LIM.PIXELS_MAX && r.w < 8000, JSON.stringify(r));
+  assert.ok(Math.abs(r.w / r.h - 8000 / 6000) < 0.01, "rapport conserve");
+  assert.deepEqual(plat(clip.reduirePixels(100, 100)), { w: 100, h: 100 });
+  // Bout en bout : un PNG plat de 9000 x 6000 (54 Mpx) part reduit, avec un retour.
+  const m = await montageSortant({ dims: { w: 9000, h: 6000 } });
+  await m.collerImage(new Blob([new Uint8Array(1000)], { type: "image/png" }));
+  const cb = images(m)[0].multi_clipboards.clipboards[0];
+  assert.ok(cb.width * cb.height <= clip.LIM.PIXELS_MAX && cb.width < 9000, `${cb.width}x${cb.height}`);
+  assert.ok(m.toasts().some((t) => /réduite de 9000×6000/.test(t.texte)), JSON.stringify(m.toasts()));
+});
+
+test("audit F5 : un ID de plus de 32 chiffres et un horodatage a 9e99 ne s'installent pas en tete", () => {
+  const { recent, normId } = chargerLib();
+  assert.equal(normId("1".repeat(32)), "1".repeat(32));
+  assert.equal(normId("1".repeat(33)), null);
+  assert.equal(normId("1".repeat(300000)), null);
+  const s = stock({ init: { "rd-recent": JSON.stringify({ v: 1, ids: [{ id: "111111111", t: 1000 }, { id: "222222222", t: 9e99 }] }) } });
+  const r = recent.create(s, { now: () => 2000 });
+  assert.equal(r.list()[0].id, "222222222");
+  assert.ok(r.list()[0].t <= 2000 + 86400000, "horodatage borne a maintenant + un jour : " + r.list()[0].t);
+  r.add("333333333");                                        // maintenant = 2000 : doit passer AVANT l'entree falsifiee ? non : elle est bornee a 2000 + 1 jour
+  const peers = { "444444444": { tm: 1e300 } };
+  const r2 = recent.create(stock(), { now: () => 5000 });
+  r2.seedFrom(peers, "", "");
+  assert.ok(r2.list()[0].t <= 5000 + 86400000);
+});
+
+test("audit F5 : Retour arriere retire une pastille comme Suppr (portables Mac)", async () => {
+  const m = await montageSortant({ formulaire: true, init: { peers: PEERS } });
+  let evite = false;
+  m.pastilles()[0].children[0].ecouteurs.keydown.forEach((f) => f({ key: "Backspace", preventDefault() { evite = true; } }));
+  assert.equal(evite, true);
+  assert.equal(m.pastilles().length, 2);
+});
+
+test("audit F5 : la region aria-live des retours existe des le debut, vide", async () => {
+  const m = await montageSortant();
+  const zone = m.doc.body.children.find((c) => c.id === "rdtoasts");
+  assert.ok(zone, "creee avec la barre, avant tout retour");
+  assert.equal(zone.attrs["aria-live"], "polite");
+  assert.equal(zone.children.length, 0);
+});
+
+test("audit F5 : l'anneau de focus d'une pastille n'est pas rogne par overflow:hidden", () => {
+  assert.match(html, /#app>#connect #rd-recents \.rdchip:focus-within\{outline:2px solid/);
+});
+
+test("audit F6 : check-syntax.sh est un vrai controle de script CLASSIQUE (un « return; » de premier niveau est refuse)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rdsyntax-"));
+  try {
+    const f = path.join(tmp, "page.html");
+    fs.writeFileSync(f, "<!DOCTYPE html><html><body><script>var a = 1;\nreturn;\n</script></body></html>");
+    let code = 0;
+    try { execFileSync("bash", [path.join(RACINE, "scripts", "check-syntax.sh"), f], { stdio: "pipe" }); }
+    catch (e) { code = e.status; }
+    assert.notEqual(code, 0, "« node --check » laissait passer ceci ; un navigateur abandonne le bloc en entier");
+    fs.writeFileSync(f, "<!DOCTYPE html><html><body><script>var a = 1;\n</script></body></html>");
+    execFileSync("bash", [path.join(RACINE, "scripts", "check-syntax.sh"), f], { stdio: "pipe" });
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("audit F8 : aucune reference externe dans la page (ni CDN, ni URL absolue, ni police distante)", () => {
+  assert.ok(!/https?:\/\//i.test(html), "une URL absolue est apparue dans le gabarit");
+  for (const m of html.matchAll(/<(?:script|link|img|iframe)\b[^>]*\b(?:src|href)\s*=\s*["']([^"']*)["']/gi)) {
+    assert.ok(!/^(?:https?:)?\/\//i.test(m[1]), "reference externe : " + m[1]);
+  }
+  assert.ok(!/@import\s+url\(\s*["']?(?:https?:)?\/\//i.test(html));
 });

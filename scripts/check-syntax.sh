@@ -45,7 +45,10 @@ PY
   for f in "$TMPD/$tag"-*.js; do
     [ -f "$f" ] || continue
     i=$(basename "$f" .js); i=${i##*-}
-    if err=$(node --check "$f" 2>&1); then
+    # « node --check » lit le fichier comme un module CommonJS : un « return; » de
+    # premier niveau y passe, alors qu'un script classique de navigateur le
+    # refuse et abandonne le bloc EN ENTIER. vm.Script est le bon analyseur.
+    if err=$(node -e 'const vm=require("vm"),fs=require("fs");const f=process.argv[1];try{new vm.Script(fs.readFileSync(f,"utf8"),{filename:f})}catch(e){console.error(String(e.stack).split("\n").slice(0,6).join("\n"));process.exit(1)}' "$f" 2>&1); then
       printf '    ✓ bloc %s\n' "$i"
     else
       printf '    ✗ bloc %s\n' "$i"

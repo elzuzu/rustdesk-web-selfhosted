@@ -211,9 +211,12 @@ dédiée pour la même raison. Le décodage et la conversion en PNG se font dans
 tâche à part, jamais sur la boucle de messages (qui acquitte aussi chaque image
 vidéo), et le résultat est confié au presse-papier sous forme de promesse : le clic
 est honoré que la conversion soit terminée ou non. Un emplacement par type : un
-texte arrivant après une image ne l'efface plus. Ce sens est du **Chromium** :
-Firefox et Safari n'écrivent pas d'image dans le presse-papier. KasmVNC, seul projet
-comparable à l'avoir fait, restreint lui aussi son presse-papier riche à Chromium.
+texte arrivant après une image ne l'efface plus. Ce sens n'est **testé que sur
+Chromium**. Firefox (à partir de la version 127) et Safari exposent la même API
+`ClipboardItem` et peuvent l'accepter — Safari exige l'activation de l'utilisateur,
+une raison de plus pour le clic — mais rien ne le vérifie ici, et le code se replie
+sur l'attente de l'image quand un navigateur refuse une promesse. KasmVNC, seul
+projet comparable à l'avoir fait, restreint son presse-papier riche à Chromium.
 
 Une image venue du poste distant par l'ancien message `clipboard` est
 interceptée avant le bundle, dont la branche décode le contenu en texte sans
@@ -337,7 +340,7 @@ node scripts/test-template.mjs --require-vendor          # Node seul, sans dépe
 NODE_PATH=$(npm root -g) node scripts/test-browser.mjs   # vrai Chromium, via Playwright
 ```
 
-Le banc du gabarit charge ensemble les quatre scripts de la page dans un seul
+Le banc du gabarit charge ensemble les cinq scripts de la page dans un seul
 contexte, garde les contrats que d'autres outils lisent dans la page, et exerce le
 câblage du presse-papier, de la session et de la barre sur un DOM fictif, avec le
 vrai décodeur zstd du bundle. Le banc navigateur mesure ce qu'un DOM fictif ne peut
