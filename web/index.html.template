@@ -706,6 +706,9 @@ window.onGlobalEvent = function(payload){
       }
       window.RD.ready = true;
       console.log("[session] prete — " + window.RD.res.length + " resolutions disponibles");
+      // Les reglages memorises et le ratio de qualite s'appliquent a CHAQUE
+      // session, ici, et avant la negociation du codec (elle lit RD.forced).
+      if (window.__rdSessionReady) window.__rdSessionReady();
       if (window.__rdMenu) window.__rdMenu();
       if (window.__rdNegotiate) window.__rdNegotiate();
     }
@@ -1390,6 +1393,15 @@ window.onGlobalEvent = function(payload){
   function fallbackToSoftware(raison){
     if (!RD.codec) return;
     console.warn("[codec] repli logiciel : "+raison);
+    // Un codec FORCE (et memorise) qui ne tient pas reviendrait a chaque session,
+    // et echouerait de la meme facon : on le rend a « auto ».
+    if (RD.forced === "h265" || RD.forced === "vp9"){
+      var ancien = RD.forced;
+      RD.forced = "auto";
+      prefs.set({ codec: "auto" });
+      if (ui.cod) ui.cod.value = "auto";
+      notifier("Codec " + ancien.toUpperCase() + " indisponible (" + raison + ") : retour en automatique.", "erreur");
+    }
     RD.codec = null; RD.errors = 0;
     negotiate();
     var c = window.curConn;
@@ -1397,6 +1409,7 @@ window.onGlobalEvent = function(payload){
     if (c && c.__rdOrigDraw){ c.draw = c.__rdOrigDraw; }
     showActive(); fitCanvas();
   }
+  window.__rdFallback = fallbackToSoftware;
 
   // ---------------------------------------------------------------- retours
   // Une seule region « aria-live », creee a la demande. Les echecs passent en
@@ -1835,6 +1848,10 @@ window.onGlobalEvent = function(payload){
   function repriseplanifier(){
     if (reprise.voulue){ console.log("[reprise] deconnexion demandee, pas de reprise"); return; }
     if (reprise.timer) return;
+    // La fermeture d'UNE liaison relais n'est pas la fin de la session : la
+    // connexion « fichiers » en ouvre une seconde, et sa fermeture appelle
+    // __rdReprise alors que la session video est bien vivante.
+    if (sessionVivante()) return;
     if (reprise.n >= 6){
       console.warn("[reprise] abandon apres 6 tentatives");
       repriseInfo("reprise abandonnee — recharge la page");
@@ -1846,6 +1863,8 @@ window.onGlobalEvent = function(payload){
     repriseInfo("reconnexion " + reprise.n + "/6 dans " + (delai/1000) + " s");
     reprise.timer = setTimeout(function(){
       reprise.timer = null;
+      // Elle a pu revenir entre-temps : ne pas relancer connect() par-dessus.
+      if (sessionVivante()){ repriseAnnuler(); repriseInfo(""); return; }
       repriseInfo("reconnexion en cours…");
       try { if (window.connect) window.connect(); }
       catch(e){ console.warn("[reprise]", e); }
@@ -1912,6 +1931,51 @@ window.onGlobalEvent = function(payload){
     if (!k || !k._ws || !k._ws._websocket) return false;
     return k._ws._websocket.readyState === 1;
   }
+
+  // ------------------------------------------------------ reglages memorises
+  // Qualite, plafond de cadence et codec survivent au rechargement de la page,
+  // et se reappliquent a chaque session : le ratio de qualite n'etait envoye
+  // qu'UNE fois par page (le sondage « tuned »), donc jamais apres une reprise.
+  var prefs = (function(){
+    try { return RDLib.prefs.create(window.localStorage); }
+    catch(e){ return RDLib.prefs.create({ getItem: function(){ return null; }, setItem: function(){}, removeItem: function(){} }); }
+  })();
+  var ui = {};                       // les <select> de la barre, poses par wireGlobal
+
+  function majSelects(p){
+    if (ui.qual) ui.qual.value = p.quality || "balanced";
+    if (ui.fps && p.fps) ui.fps.value = String(p.fps);
+    if (ui.cod) ui.cod.value = p.codec || "auto";
+  }
+
+  // Appelee de facon SYNCHRONE par le peer_info de chaque session (onGlobalEvent,
+  // avant __rdNegotiate). Rien n'est envoye avant : rdSend refuse tant que
+  // RD.ready est faux, et les compteurs secretbox seraient desynchronises.
+  function sessionPrete(){
+    var p = prefs.get();
+    // Le codec d'abord : __rdNegotiate lit RD.forced juste apres.
+    if (p.codec) RD.forced = p.codec;
+    // Qualite. Preference absente : on ne pousse RIEN — le bundle renvoie deja
+    // la qualite qu'il a memorisee pour ce pair, et l'on aligne simplement le
+    // selecteur dessus (il affichait « Equilibre » quel que soit l'etat reel).
+    try{
+      if (p.quality){
+        window.setByName("image_quality", p.quality);
+      } else {
+        var q = window.curConn && window.curConn.getOption && window.curConn.getOption("image-quality");
+        if (ui.qual) ui.qual.value = (RDLib.prefs.OK.quality.indexOf(q) >= 0) ? q : "balanced";
+      }
+    }catch(e){ console.warn("[reglages] qualite :", e); }
+    // La contrainte n'est pas la bande passante (le relais plafonne 30x au-dessus
+    // du besoin) : qualite rehaussee a chaque session, pas une fois par page.
+    if (rdSend({misc:{option:{custom_image_quality:150}}})) console.log("[qualite] ratio 1.5 applique");
+    if (p.fps && rdSend({misc:{option:{custom_fps:p.fps}}}))
+      console.log("[cadence] plafond a " + p.fps + " i/s (reglage memorise)");
+    if (p.quality || p.fps || p.codec) majSelects(p);
+    // Une session reussie efface la banniere d'echec d'une tentative precedente.
+    try{ var b = document.getElementById("rderror"); if (b) b.remove(); }catch(_){}
+  }
+  window.__rdSessionReady = sessionPrete;
 
   // ------------------------------------------------- cablage global, 1 fois
   var globalWired = false;
@@ -2105,6 +2169,7 @@ window.onGlobalEvent = function(payload){
     qual.onchange=function(){
       try{ window.setByName("image_quality",qual.value); console.log("[qualite] "+qual.value); }
       catch(e){ console.warn(e); }
+      prefs.set({ quality: qual.value });
       var c=active(); if(c) c.focus();
     };
     // custom_fps est un PLAFOND, pas une cible : le serveur calcule la cadence
@@ -2121,6 +2186,7 @@ window.onGlobalEvent = function(payload){
     fps.onchange=function(){
       if(rdSend({misc:{option:{custom_fps:+fps.value}}}))
         console.log("[cadence] plafond a "+fps.value+" i/s (cadence reelle decidee par l'ABR)");
+      prefs.set({ fps: +fps.value });
       var c=active(); if(c) c.focus();
     };
     var cod=document.createElement("select"); cod.title="Codec video";
@@ -2129,10 +2195,19 @@ window.onGlobalEvent = function(payload){
         x.value=o[0]; x.textContent=o[1]; cod.appendChild(x); });
     cod.onchange=function(){
       RD.forced = cod.value;
+      prefs.set({ codec: cod.value });
       if (RD.forced === "auto"){ probeCodecs().then(function(c){ RD.codec=c; window.__rdNegotiate(); }); }
       else { window.__rdNegotiate(); }
       var c=active(); if(c) c.focus();
     };
+    // Les reglages memorises : les selecteurs demarrent sur ce que l'utilisateur
+    // a choisi la derniere fois, plus sur les valeurs par defaut.
+    ui.qual = qual; ui.fps = fps; ui.cod = cod;
+    (function(p){
+      if (p.codec) RD.forced = p.codec;
+      majSelects(p);
+    })(prefs.get());
+
     // Permutation Ctrl/Cmd : indispensable hors terminal, nuisible dedans.
     var swp=document.createElement("button");
     function majSwap(){
@@ -2232,19 +2307,13 @@ window.onGlobalEvent = function(payload){
     window.addEventListener("resize", fitCanvas);
 
     // Veilleur : taille, reglages initiaux, repatch apres reconnexion.
-    var last=0, tuned=false;
+    var last=0;
     setInterval(function(){
       var c = active();
       if (c && c.width !== last){
         last = c.width;
         console.log("[ecran distant] "+c.width+"x"+c.height);
         fitCanvas();
-      }
-      // Qualite rehaussee une fois la session prete : la contrainte n'est pas
-      // la bande passante (le relais plafonne 30x au-dessus du besoin).
-      if (RD.ready && !tuned){
-        tuned = rdSend({misc:{option:{custom_image_quality:150}}});
-        if (tuned) console.log("[qualite] ratio 1.5 applique");
       }
       // Memoriser le mot de passe du pair : ui.js ne l'active jamais.
       try{ if(window.curConn && !window.curConn.getRemember()) window.curConn.setRemember(true); }catch(_){}
@@ -2336,6 +2405,13 @@ window.onGlobalEvent = function(payload){
                      + ") — corrigee avant connexion ; sans cela hbbr aurait repondu « invalid key »");
           k.value = RD_KEY;
         }
+        // Une NOUVELLE session commence : elle n'est pas prete tant que son propre
+        // peer_info n'est pas arrive. On le remet a faux ICI et non en fin de
+        // session — le diagnostic des liaisons relais lit RD.ready, et une
+        // fermeture normale ne doit pas passer pour « cle refusee ». Ce chemin est
+        // celui du bouton Connect ET de la reprise auto (reconnect() du bundle le
+        // contourne, mais rien ne l'appelle).
+        RD.ready = false;
         return orig.apply(this, arguments);
       };
       window.connect = mien;

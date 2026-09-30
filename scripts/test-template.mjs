@@ -87,8 +87,8 @@ function creerBac({ quota = null } = {}) {
   const fictif = () => ({
     style: {}, dataset: {}, children: [],
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
-    appendChild(c) { this.children.push(c); return c; },
-    insertBefore(c) { this.children.unshift(c); return c; },
+    appendChild(c) { this.children.push(c); c.parent = this; return c; },
+    insertBefore(c) { this.children.unshift(c); c.parent = this; return c; },
     setAttribute() {}, addEventListener() {}, removeEventListener() {},
     querySelector() { return null; }, querySelectorAll() { return []; },
     getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
@@ -104,8 +104,10 @@ function creerBac({ quota = null } = {}) {
     readyState: "complete", cookie: "",
   };
   class WebSocket {
-    constructor(u) { this.url = u; this.readyState = 0; }
-    addEventListener() {} send() {} close() {}
+    constructor(u) { this.url = u; this.readyState = 0; this.ecouteurs = {}; }
+    addEventListener(t, f) { (this.ecouteurs[t] ||= []).push(f); }
+    emettre(t, ev) { (this.ecouteurs[t] || []).forEach((f) => f(ev)); }
+    send() {} close() {}
   }
   const bac = {
     console, Storage, localStorage: new Storage(), sessionStorage: new Storage(),
@@ -1090,28 +1092,36 @@ avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ;
 // chaque echec produit un retour, la limite porte sur ce qui part, le collage
 // distant est retarde selon la taille, et le focus ne se perd plus.
 // ====================================================================
-async function montageSortant({ version = "1.4.2", vivante = true, prete = true, dims = { w: 800, h: 600 } } = {}) {
+async function montageSortant({ version = "1.4.2", vivante = true, prete = true, dims = { w: 800, h: 600 },
+                                init = {}, qualiteBundle } = {}) {
   const bac = creerBac();
   const w = bac.window, doc = bac.document;
   const reg = {}, ecouteurs = {};
-  doc.getElementById = (id) => reg[id] || null;
+  for (const [k, v] of Object.entries(init)) bac.stockage.setItem(k, v);
+  // Un element pose dans <body> (la banniere d'erreur, les retours) se retrouve par son id.
+  doc.getElementById = (id) => reg[id] || doc.body.children.find((c) => c.id === id) || null;
   doc.addEventListener = (t, f) => { (ecouteurs[t] ||= []).push(f); };
   doc.createElement = elementRecord;
   const player = elementRecord("canvas");
   player.id = "player"; player.ecouteurs = {}; player.focuses = 0;
+  player.parentNode = elementRecord("div");
   player.addEventListener = (t, f) => { (player.ecouteurs[t] ||= []).push(f); };
   player.focus = () => { player.focuses++; doc.activeElement = player; };
   reg.player = player;
   reg.canvas = elementRecord("div");
   w.getComputedStyle = () => ({ display: vivante ? "block" : "none" });
   const envoyes = [], touches = [], fermes = { n: 0 };
-  w.setByName = (nom, v) => { touches.push([nom, JSON.parse(v)]); };
+  // setByName(nom, valeur) : la valeur est du JSON pour la plupart des noms, une
+  // chaine brute pour d'autres (« image_quality » recoit « low »).
+  w.setByName = (nom, v) => { let a = v; try { a = JSON.parse(v); } catch { /* chaine brute */ } touches.push([nom, a]); };
+  w.VideoDecoder = class { constructor(o) { this.o = o; } configure() {} decode() {} reset() {} close() {} get decodeQueueSize() { return 0; } };
   w.createImageBitmap = async () => ({ width: dims.w, height: dims.h, close() { fermes.n++; } });
   bac.executer(blocs(html));
   w.RD.ready = prete;
-  w.curConn = { _peerInfo: { version },
+  w.curConn = { _id: "123456789", _peerInfo: { version },
                 _ws: { _websocket: { readyState: 1 }, sendMessage(m) { envoyes.push(m); }, next: async () => null },
-                getRemember: () => true, setRemember() {} };
+                getRemember: () => true, setRemember() {},
+                getOption: (k) => (k === "image-quality" ? qualiteBundle : undefined) };
   doc.activeElement = player;
   // Le bootstrap (400 ms) cree la barre et branche l'ecouteur de collage.
   bac.minuteurs.filter((t) => t.ms === 400 && !t.once).forEach((t) => t.f());
@@ -1127,7 +1137,14 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
     return evite;
   };
   const rejeux = () => bac.minuteurs.filter((t) => t.once && t.ms >= 150 && t.ms <= 2500);
-  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux };
+  const bar = doc.body.children.find((c) => c.id === "rdbar") || null;
+  // [resolution, ajuster, qualite, cadence, codec, ctrl, quitter] : l'ordre de la barre.
+  const [selRes, , qual, fps, cod] = bar ? bar.children : [];
+  const peerInfo = () => w.onGlobalEvent(JSON.stringify({ name: "peer_info" }));
+  const options = () => envoyes.filter((x) => x.misc && x.misc.option).map((x) => x.misc.option);
+  const banniere = () => doc.body.children.find((c) => c.id === "rderror") || null;
+  return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux,
+           bar, qual, fps, cod, selRes, peerInfo, options, banniere };
 }
 const images = (m) => m.envoyes.filter((x) => x.multi_clipboards);
 const jpeg = (mio) => new Blob([new Uint8Array(Math.floor(mio * MIO))], { type: "image/jpeg" });
@@ -1283,4 +1300,157 @@ test("B6 + durcissement : commentaire « champ 28 », et le bloc fichiers refuse
   assert.match(html, /multi_clipboards » , champ 28|multi_clipboards », champ 28/);
   assert.ok(!/champ 27\s*(\n\s*\/\/\s*)?du Message/.test(html), "l'ancien commentaire « champ 27 du Message » est revenu");
   assert.match(html, /if \(!d \|\| !d\.length\) throw new Error\("decompression zstd echouee"\)/);
+});
+
+
+// ====================================================================
+// Reglages memorises, session, reprise : le vrai cablage, un pair fictif.
+// ====================================================================
+const prefsStockees = (m) => JSON.parse(m.bac.stockage.getItem("rd-prefs") || "null");
+
+test("I1 selects-init-from-prefs : les selecteurs demarrent sur les choix memorises", async () => {
+  const m = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, quality: "best", fps: 60, codec: "vp9" }) } });
+  assert.equal(m.qual.value, "best");
+  assert.equal(m.fps.value, "60");
+  assert.equal(m.cod.value, "vp9");
+  assert.equal(m.w.RD.forced, "vp9", "le codec force est pose avant meme la premiere session");
+  const vierge = await montageSortant();
+  assert.equal(vierge.qual.value, "balanced");
+  assert.equal(vierge.cod.value, "auto");
+  assert.equal(vierge.w.RD.forced, "auto");
+});
+
+test("I1 : chaque changement de selecteur est ecrit dans rd-prefs", async () => {
+  const m = await montageSortant();
+  m.qual.value = "low"; m.qual.onchange();
+  m.fps.value = "15"; m.fps.onchange();
+  m.cod.value = "logiciel"; m.cod.onchange();
+  assert.deepEqual(prefsStockees(m), { v: 1, quality: "low", fps: 15, codec: "logiciel" });
+  // Et une nouvelle « page » les retrouve.
+  const relue = await montageSortant({ init: { "rd-prefs": m.bac.stockage.getItem("rd-prefs") } });
+  assert.equal(relue.qual.value, "low"); assert.equal(relue.fps.value, "15"); assert.equal(relue.cod.value, "logiciel");
+});
+
+test("I1 reprise-reapplies-quality-150-fps-codec : chaque session reapplique les reglages", async () => {
+  const m = await montageSortant({ prete: false, init: { "rd-prefs": JSON.stringify({ v: 1, quality: "low", fps: 60, codec: "vp9" }) } });
+  m.peerInfo();
+  assert.ok(m.touches.some(([n, a]) => n === "image_quality" && a === "low"), JSON.stringify(m.touches));
+  let opts = m.options();
+  assert.ok(opts.some((o) => o.custom_image_quality === 150), "le ratio 1.5 part a la session");
+  assert.ok(opts.some((o) => o.custom_fps === 60), "le plafond memorise aussi");
+  assert.equal(m.w.RD.forced, "vp9");
+  // Deuxieme session, sans recharger la page : la reprise passe par window.connect.
+  const avant = { touches: m.touches.length, opts: m.options().length };
+  m.w.connect = () => "connecte";
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());       // protegerConnect
+  m.w.connect();
+  assert.equal(m.w.RD.ready, false, "une nouvelle session n'est pas prete avant son peer_info");
+  m.peerInfo();
+  assert.equal(m.w.RD.ready, true);
+  assert.ok(m.touches.length > avant.touches, "la qualite est reappliquee");
+  assert.ok(m.options().length >= avant.opts + 2, "ratio ET cadence reappliques : le sondage « une fois par page » est parti");
+});
+
+test("I1 ready-false-after-connect-true-after-peer_info", async () => {
+  const m = await montageSortant({ prete: true });
+  m.w.connect = () => 42;
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());
+  assert.equal(m.w.RD.ready, true, "pas de remise a zero avant un connect()");
+  assert.equal(m.w.connect(), 42, "la valeur de retour du bundle est preservee");
+  assert.equal(m.w.RD.ready, false);
+  m.peerInfo();
+  assert.equal(m.w.RD.ready, true);
+});
+
+test("I1 select-synced-from-getOption-when-no-pref : sans preference, on ne pousse rien et on aligne le selecteur", async () => {
+  const m = await montageSortant({ prete: false, qualiteBundle: "best" });
+  m.peerInfo();
+  assert.equal(m.qual.value, "best", "le selecteur dit la qualite reelle, pas « Equilibre »");
+  assert.ok(!m.touches.some(([n]) => n === "image_quality"), "aucune qualite poussee : le bundle envoie deja la sienne");
+  assert.equal(prefsStockees(m), null, "et rien n'est memorise a la place de l'utilisateur");
+  const inconnue = await montageSortant({ prete: false, qualiteBundle: "n'importe quoi" });
+  inconnue.peerInfo();
+  assert.equal(inconnue.qual.value, "balanced");
+});
+
+test("I1 : un codec force memorise qui ne tient pas redevient « auto », et le dit", async () => {
+  const m = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, codec: "h265" }) } });
+  assert.equal(m.w.RD.forced, "h265");
+  m.w.RD.codec = "h265";
+  // Un repli est declenche par la chaine de decodage : on le provoque par le chemin public le plus proche.
+  m.w.__rdFallback && m.w.__rdFallback("configuration impossible");
+  assert.ok(m.w.__rdFallback, "fallbackToSoftware doit etre joignable pour ce test (window.__rdFallback)");
+  assert.equal(m.w.RD.forced, "auto");
+  assert.equal(m.cod.value, "auto");
+  assert.equal(prefsStockees(m).codec, "auto");
+  assert.ok(m.toasts().some((t) => /H265 indisponible/.test(t.texte) && t.erreur), JSON.stringify(m.toasts()));
+});
+
+// ---- la fausse banniere relais, et la reprise parasite
+function relais(m, { pairMort = false } = {}) {
+  const ws = new m.w.WebSocket("wss://h/ws/relay");
+  ws.emettre("open", {});
+  if (!pairMort) ws.emettre("message", {});
+  return ws;
+}
+
+test("I1 no-banner-after-normal-close : la fermeture normale d'une session n'est pas « cle refusee »", async () => {
+  const m = await montageSortant({ prete: false });
+  m.peerInfo();                                          // session etablie
+  const ws = relais(m);
+  ws.emettre("close", { code: 1006, wasClean: false, reason: "" });
+  assert.equal(m.banniere(), null, "RD.ready reste vrai apres la fin de la session");
+
+  // Le veilleur (800 ms) constate la fin de session AVANT que l'evenement « close »
+  // n'arrive (la liaison passe par CLOSING) : ce n'est pas non plus « cle refusee ».
+  const m2 = await montageSortant({ prete: false });
+  m2.peerInfo();
+  let vivante = true;
+  m2.w.getComputedStyle = () => ({ display: vivante ? "block" : "none" });
+  const veilleur = () => m2.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());
+  veilleur();                                            // session vivante : __rdEtait passe a vrai
+  vivante = false;
+  veilleur();                                            // transition « en session » -> « plus en session »
+  assert.equal(m2.w.RD.ready, true, "la fin de session ne remet pas RD.ready a zero");
+  relais(m2).emettre("close", { code: 1006, wasClean: false, reason: "" });
+  assert.equal(m2.banniere(), null);
+});
+
+test("I1 banner-when-relay-closes-before-peer_info / banner-removed-on-peer_info", async () => {
+  const m = await montageSortant({ prete: false });
+  m.peerInfo();
+  m.w.connect = () => 1;
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());
+  m.w.connect();                                         // nouvelle tentative : pas prete
+  const ws = relais(m, { pairMort: true });
+  ws.emettre("close", { code: 1006, wasClean: false, reason: "" });    // en moins de 5 s : hbbr a rejete la cle
+  assert.ok(m.banniere(), "la banniere fonctionne aussi sur une reconnexion (elle etait muette apres la 1re session)");
+  m.peerInfo();                                          // la tentative suivante reussit
+  assert.equal(m.banniere(), null, "une session reussie efface la banniere de l'echec precedent");
+});
+
+test("I1 spurious-reprise-cancelled-while-session-live : la fermeture de la liaison « fichiers » ne relance rien", async () => {
+  const m = await montageSortant({ vivante: true });
+  let connects = 0; m.w.connect = () => { connects++; };
+  const repere = m.bac.minuteurs.length;
+  m.w.__rdReprise();
+  assert.equal(m.bac.minuteurs.slice(repere).filter((t) => t.once && t.ms >= 1000).length, 0,
+    "session vivante : aucune reprise n'est meme planifiee");
+  assert.equal(connects, 0);
+
+  // Session morte : la reprise se planifie ; elle revient a la vie avant l'echeance.
+  let vivante = false;
+  m.w.getComputedStyle = () => ({ display: vivante ? "block" : "none" });
+  const r2 = m.bac.minuteurs.length;
+  m.w.__rdReprise();
+  const t = m.bac.minuteurs.slice(r2).find((x) => x.once && x.ms >= 1000);
+  assert.ok(t, "session morte : une reprise est planifiee");
+  vivante = true; t.f();
+  assert.equal(connects, 0, "la session est revenue entre-temps : connect() n'est pas rappele par-dessus");
+  // Et si elle est bien morte a l'echeance, la reprise a lieu.
+  vivante = false;
+  m.w.__rdReprise();
+  const t2 = m.bac.minuteurs.slice(r2).filter((x) => x.once && x.ms >= 1000).pop();
+  t2.f();
+  assert.equal(connects, 1);
 });
