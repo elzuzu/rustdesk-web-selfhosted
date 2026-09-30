@@ -183,6 +183,19 @@
          border:1px solid rgba(255,255,255,.12);box-shadow:0 2px 10px rgba(0,0,0,.4)}
   .rdtoast.erreur{border-color:#9c2a3c;background:rgba(58,18,26,.96)}
 
+  /* ------------------------------------- dernieres connexions (ecran de login)
+     Le formulaire du bundle donne a TOUT bouton de #connect le style du bouton
+     « Connect » (bleu, 1,2 rem de padding) : la specificite ci-dessous le defait. */
+  #app>#connect #rd-recents{display:flex;flex-wrap:wrap;gap:.35rem;max-width:22rem;
+         margin:0;text-align:left}
+  #app>#connect #rd-recents .rdchip{display:inline-flex;align-items:stretch;
+         border-radius:14px;background:#2a2f38;overflow:hidden}
+  #app>#connect #rd-recents button{margin:0;padding:.2rem .6rem;border:0;border-radius:0;
+         background:transparent;color:#e6e8ec;font-size:.78rem;font-weight:400;cursor:pointer}
+  #app>#connect #rd-recents button:hover,#app>#connect #rd-recents button:focus-visible{background:#3a4150}
+  #app>#connect #rd-recents .rdchip-x{padding:.2rem .45rem;color:#8b94a3}
+  #app>#connect #rd-recents .rdchip-clear{color:#8b94a3;text-decoration:underline;padding:.2rem .3rem}
+
   /* ------------------------------------------------ panneau de fichiers */
   #rdfiles{position:fixed;top:0;right:0;bottom:0;width:min(30rem,92vw);z-index:20;
          display:none;flex-direction:column;
@@ -1961,6 +1974,84 @@ window.onGlobalEvent = function(payload){
   })();
   var ui = {};                       // les <select> de la barre, poses par wireGlobal
 
+  // ----------------------------------------------- dernieres connexions
+  // Dix ID au plus, les plus recents d'abord, sous le champ « Id » de l'ecran de
+  // connexion. On enregistre a peer_info (une session REUSSIE — pas un clic sur
+  // Connect, qui garderait les fautes de frappe), et l'on ne stocke que des
+  // chiffres et des horodatages : « peers » porte les mots de passe memorises,
+  // on n'y touche pas.
+  var recents = (function(){
+    try { return RDLib.recent.create(window.localStorage); }
+    catch(e){ return RDLib.recent.create({ getItem: function(){ return null; }, setItem: function(){}, removeItem: function(){} }); }
+  })();
+
+  function viderNoeud(n){ while (n.firstChild) n.removeChild(n.firstChild); }
+
+  // Tout passe par textContent : un ID vient du stockage, jamais du balisage.
+  function rendreRecents(){
+    var zone = document.getElementById("rd-recents");
+    if (!zone) return;
+    viderNoeud(zone);
+    var liste = recents.list();
+    liste.forEach(function(e){
+      var pastille = document.createElement("span");
+      pastille.className = "rdchip";
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "rdchip-id";
+      b.textContent = RDLib.fmtId(e.id);
+      b.title = "Utiliser cet ID (Suppr pour le retirer de la liste)";
+      b.onclick = function(){ choisirRecent(e.id); };
+      b.addEventListener("keydown", function(ev){
+        if (ev.key === "Delete"){ ev.preventDefault(); retirerRecent(e.id); }
+      });
+      // La croix est reservee a la souris : vingt arrets de tabulation pour dix
+      // ID seraient pire que l'absence de liste. Au clavier : Suppr sur l'ID.
+      var x = document.createElement("button");
+      x.type = "button"; x.className = "rdchip-x"; x.textContent = "×";
+      x.setAttribute("tabindex", "-1"); x.setAttribute("aria-hidden", "true");
+      x.title = "Retirer de la liste";
+      x.onclick = function(){ retirerRecent(e.id); };
+      pastille.appendChild(b); pastille.appendChild(x);
+      zone.appendChild(pastille);
+    });
+    if (liste.length){
+      var eff = document.createElement("button");
+      eff.type = "button"; eff.className = "rdchip-clear"; eff.textContent = "Effacer";
+      eff.title = "Effacer toute la liste";
+      eff.onclick = function(){ recents.clear(); rendreRecents(); };
+      zone.appendChild(eff);
+    }
+  }
+  // Le bundle n'enleve pas les espaces d'un ID : « 123 456 789 » ne serait pas
+  // « 123456789 » pour le serveur. On remplit donc avec les chiffres seuls.
+  function choisirRecent(id){
+    var champ = document.getElementById("id");
+    if (champ) champ.value = id;
+    var go = document.querySelector('#connect button[onclick^="connect"]');
+    if (go && go.focus) go.focus();
+  }
+  function retirerRecent(id){ recents.remove(id); rendreRecents(); }
+  // La ligne des pastilles, sous celle du champ « Id » (le formulaire est un
+  // tableau : Host / Key / Id / Connect). Une seule fois.
+  function poserRecents(champId){
+    if (document.getElementById("rd-recents")) return;
+    var ligneId = champId.parentNode && champId.parentNode.parentNode;
+    if (!ligneId || !ligneId.parentNode) return;
+    var tr = document.createElement("tr"), vide = document.createElement("td"),
+        cel = document.createElement("td"), zone = document.createElement("div");
+    zone.id = "rd-recents";
+    zone.setAttribute("role", "group");
+    zone.setAttribute("aria-label", "Dernières connexions");
+    cel.appendChild(zone); tr.appendChild(vide); tr.appendChild(cel);
+    ligneId.parentNode.insertBefore(tr, ligneId.nextSibling);
+    // Amorcage unique : les ID que le bundle connait deja (« peers », classes par
+    // « tm » — la derniere ecriture d'option, PAS la derniere connexion, donc
+    // approximatif) et le dernier ID saisi, hors ID par defaut du deploiement.
+    try { recents.seedFrom(window.localStorage.getItem("peers"), window.localStorage.getItem("id"), DEFAUT_ID); }
+    catch(e){ console.warn("[historique] amorcage :", e); }
+    rendreRecents();
+  }
+
   function majSelects(p){
     if (ui.qual) ui.qual.value = p.quality || "balanced";
     if (ui.fps && p.fps) ui.fps.value = String(p.fps);
@@ -1991,6 +2082,11 @@ window.onGlobalEvent = function(payload){
     if (p.fps && rdSend({misc:{option:{custom_fps:p.fps}}}))
       console.log("[cadence] plafond a " + p.fps + " i/s (reglage memorise)");
     if (p.quality || p.fps || p.codec) majSelects(p);
+    // Une session reussie : cet ID rejoint la liste de l'ecran de connexion.
+    try{
+      var idSession = window.curConn && window.curConn._id;
+      if (idSession){ recents.add(idSession); rendreRecents(); }
+    }catch(e){ console.warn("[historique]", e); }
     // La barre est repliee par defaut : on dit UNE fois ou elle est passee.
     if (!p.hint && ui.barre && ui.barre.classList.contains("replie")){
       notifier("Réglages de la session (résolution, qualité, fichiers…) : clique sur ⚙ en haut à droite.");
@@ -2431,6 +2527,7 @@ window.onGlobalEvent = function(payload){
       if(host.value !== RD_HOST) host.value = RD_HOST;
     }, 400);
 
+    poserRecents(id);
     console.log("[formulaire] prerempli — ID "+id.value+" (modifiable)");
     return true;
   }

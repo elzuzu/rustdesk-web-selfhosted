@@ -912,7 +912,7 @@ function elementRecord(tag) {
     appendChild(c) { e.children.push(c); c.parent = e; return c; },
     // Comme le vrai DOM : une reference qui n'est pas un enfant DIRECT leve.
     insertBefore(c, ref) {
-      let i = 0;
+      let i = ref === null ? e.children.length : 0;      // null : a la fin, comme le vrai DOM
       if (ref) {
         i = e.children.indexOf(ref);
         if (i < 0) { const err = new Error("NotFoundError : la reference n'est pas un enfant de ce noeud"); err.name = "NotFoundError"; throw err; }
@@ -920,6 +920,9 @@ function elementRecord(tag) {
       e.children.splice(i, 0, c); c.parent = e; return c;
     },
     get firstChild() { return e.children[0] || null; },
+    get parentNode() { return e.parent || null; },
+    get nextSibling() { const p = e.parent; if (!p) return null; const i = p.children.indexOf(e); return p.children[i + 1] || null; },
+    removeChild(c) { const i = e.children.indexOf(c); if (i >= 0) e.children.splice(i, 1); c.parent = null; return c; },
     remove() { if (e.parent) { const i = e.parent.children.indexOf(e); if (i >= 0) e.parent.children.splice(i, 1); } },
     // Selecteurs simples : « button.quit », « .rdfilesbtn », « .rdppbtn[data-kind="image"] » — sur les enfants directs.
     querySelector(sel) {
@@ -1000,7 +1003,7 @@ avecVendor("inbound : next() n'attend pas la conversion (msgLoop et acquittement
   const msg = { multi_clipboards: { clipboards: [
     { format: 21, compress: true, content: trameRLE(2 * MIO), width: 1024, height: 512 } ] } };
   const t = m.w.__rdPpFiltrer(msg);
-  assert.equal(t, msg, "le message est rendu tel quel, synchronement");
+  assert.ok(t === msg, "le message est rendu tel quel, synchronement");
   assert.equal(m.appels.length, 0, "aucun decodage n'a eu lieu sur le chemin de msgLoop");
   assert.deepEqual(plat(boutons(m.barre)), ["Image reçue ⇩"]);
   assert.ok(m.barre.classes.has("attention"));
@@ -1114,18 +1117,38 @@ avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ;
 // distant est retarde selon la taille, et le focus ne se perd plus.
 // ====================================================================
 async function montageSortant({ version = "1.4.2", vivante = true, prete = true, dims = { w: 800, h: 600 },
-                                init = {}, qualiteBundle } = {}) {
+                                init = {}, qualiteBundle, formulaire = false } = {}) {
   const bac = creerBac();
   const w = bac.window, doc = bac.document;
   const reg = {}, ecouteurs = {};
   for (const [k, v] of Object.entries(init)) bac.stockage.setItem(k, v);
   // Un element pose dans <body> (la banniere d'erreur, les retours) se retrouve par son id.
-  doc.getElementById = (id) => reg[id] || doc.body.children.find((c) => c.id === id) || null;
+  // Recherche par id dans tout l'arbre fictif (corps de page et tableau du formulaire).
+  const racines = [doc.body];
+  const trouver = (n, id) => { if (n.id === id) return n; for (const c of n.children || []) { const r = trouver(c, id); if (r) return r; } return null; };
+  doc.getElementById = (id) => reg[id] || racines.map((r) => trouver(r, id)).find(Boolean) || null;
+  // Le formulaire du bundle : <table> Host / Key / Id / Connect.
+  let form = null;
+  if (formulaire) {
+    const table = elementRecord("table"), tbody = elementRecord("tbody");
+    table.appendChild(tbody); racines.push(table);
+    const ligne = (idc, valeur) => {
+      const tr = elementRecord("tr"), td1 = elementRecord("td"), td2 = elementRecord("td"), champ = elementRecord("input");
+      champ.id = idc; champ.value = valeur; td2.appendChild(champ); tr.appendChild(td1); tr.appendChild(td2);
+      tbody.appendChild(tr); reg[idc] = champ; return tr;
+    };
+    ligne("host", ""); ligne("key", ""); const ligneId = ligne("id", "");
+    const trGo = elementRecord("tr"), tdGo = elementRecord("td"), go = elementRecord("button");
+    go.attrs.onclick = "connect();"; go.focuses = 0; go.focus = () => { go.focuses++; };
+    tdGo.appendChild(go); trGo.appendChild(elementRecord("td")); trGo.appendChild(tdGo); tbody.appendChild(trGo);
+    doc.querySelector = (sel) => (/#connect button/.test(sel) ? go : null);
+    form = { table, tbody, ligneId, champId: reg.id, go };
+  }
   doc.addEventListener = (t, f) => { (ecouteurs[t] ||= []).push(f); };
   doc.createElement = elementRecord;
   const player = elementRecord("canvas");
   player.id = "player"; player.ecouteurs = {}; player.focuses = 0;
-  player.parentNode = elementRecord("div");
+  player.parent = elementRecord("div");                    // parentNode : rdcanvas() y insere son canvas
   player.addEventListener = (t, f) => { (player.ecouteurs[t] ||= []).push(f); };
   player.focus = () => { player.focuses++; doc.activeElement = player; };
   reg.player = player;
@@ -1164,8 +1187,11 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   const peerInfo = () => w.onGlobalEvent(JSON.stringify({ name: "peer_info" }));
   const options = () => envoyes.filter((x) => x.misc && x.misc.option).map((x) => x.misc.option);
   const banniere = () => doc.body.children.find((c) => c.id === "rderror") || null;
+  const zone = () => doc.getElementById("rd-recents");
+  const pastilles = () => (zone() ? zone().children : []).filter((c) => c.className === "rdchip");
+  const libelles = () => pastilles().map((c) => c.children[0].textContent);
   return { bac, w, doc, reg, player, ecouteurs, envoyes, touches, fermes, toasts, vider, collerImage, rejeux,
-           bar, qual, fps, cod, selRes, peerInfo, options, banniere };
+           bar, qual, fps, cod, selRes, peerInfo, options, banniere, form, zone, pastilles, libelles };
 }
 const images = (m) => m.envoyes.filter((x) => x.multi_clipboards);
 const jpeg = (mio) => new Blob([new Uint8Array(Math.floor(mio * MIO))], { type: "image/jpeg" });
@@ -1594,4 +1620,108 @@ test("I2 : l'indice de la barre repliee n'apparait qu'a la premiere session", as
   const ouverte = await montageSortant({ prete: false, init: { "rd-prefs": JSON.stringify({ v: 1, bar: "ouverte" }) } });
   ouverte.peerInfo();
   assert.equal(ouverte.toasts().filter((t) => /clique sur ⚙/.test(t.texte)).length, 0);
+});
+
+
+// ====================================================================
+// Dix dernieres connexions (I3) : sous le champ « Id » du formulaire du bundle.
+// ====================================================================
+const recentStocke = (m) => JSON.parse(m.bac.stockage.getItem("rd-recent") || "null");
+const PEERS = JSON.stringify({
+  "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
+
+test("I3 chips-under-id-type-button : une ligne sous « Id », des <button type=button>, un groupe etiquete", async () => {
+  const m = await montageSortant({ formulaire: true, init: { peers: PEERS, id: "444444444" } });
+  const lignes = m.form.tbody.children;
+  const iId = lignes.indexOf(m.form.ligneId);
+  assert.ok(m.zone(), "la zone des pastilles existe");
+  // Comparaison par identite : un assert.equal sur des noeuds fictifs cycliques (parent <-> enfants)
+  // fabriquerait, en cas d'echec, un diff geant qui fige le banc.
+  assert.ok(lignes[iId + 1] && lignes[iId + 1].children[1].children[0] === m.zone(), "juste sous la ligne « Id »");
+  assert.ok(lignes[iId + 2] && lignes[iId + 2].children[1].children[0] === m.form.go, "et avant la ligne « Connect »");
+  assert.equal(m.zone().attrs.role, "group");
+  assert.match(m.zone().attrs["aria-label"], /Dernières connexions/);
+  // Amorcage : dernier ID saisi d'abord, puis peers par « tm » decroissant.
+  assert.deepEqual(plat(m.libelles()), ["444 444 444", "222 222 222", "333 333 333", "111 111 111"]);
+  for (const c of m.pastilles()) {
+    assert.equal(c.children[0].type, "button");
+    assert.equal(c.children[1].type, "button");
+    assert.equal(c.children[1].attrs.tabindex, "-1", "la croix est reservee a la souris");
+    assert.equal(c.children[1].attrs["aria-hidden"], "true");
+  }
+  assert.equal(m.zone().children.at(-1).className, "rdchip-clear");
+});
+
+test("I3 : rien a afficher sans historique, et pas de bouton « Effacer » orphelin", async () => {
+  const m = await montageSortant({ formulaire: true });
+  assert.ok(m.zone());
+  assert.equal(m.zone().children.length, 0);
+  assert.deepEqual(recentStocke(m), { v: 1, ids: [] }, "la cle est ecrite meme vide : un retrait ne sera pas reamorce");
+});
+
+test("I3 click-fills-and-focuses-connect : chiffres seuls dans le champ, focus sur Connect", async () => {
+  const m = await montageSortant({ formulaire: true, init: { peers: PEERS } });
+  m.champId = m.form.champId;
+  m.pastilles()[1].children[0].onclick();                    // « 333 333 333 » (222 puis 333 puis 111)
+  assert.equal(m.form.champId.value, "333333333", "le bundle n'enleve pas les espaces : chiffres seuls");
+  assert.equal(m.form.go.focuses, 1, "le focus va au bouton Connect");
+});
+
+test("I3 x-and-Delete-remove : la croix, la touche Suppr, et « Effacer »", async () => {
+  const m = await montageSortant({ formulaire: true, init: { peers: PEERS } });
+  assert.equal(m.pastilles().length, 3);
+  m.pastilles()[0].children[1].onclick();                     // croix sur 222…
+  assert.deepEqual(plat(m.libelles()), ["333 333 333", "111 111 111"]);
+  let evite = false;
+  m.pastilles()[0].children[0].ecouteurs.keydown.forEach((f) => f({ key: "Delete", preventDefault() { evite = true; } }));
+  assert.equal(evite, true);
+  assert.deepEqual(plat(m.libelles()), ["111 111 111"]);
+  m.pastilles()[0].children[0].ecouteurs.keydown.forEach((f) => f({ key: "a", preventDefault() { throw new Error("pas Suppr"); } }));
+  assert.equal(m.pastilles().length, 1, "une autre touche ne retire rien");
+  // Et le retrait tient apres rechargement (pas de reamorcage).
+  const relue = await montageSortant({ formulaire: true, init: { peers: PEERS, "rd-recent": m.bac.stockage.getItem("rd-recent") } });
+  assert.deepEqual(plat(relue.libelles()), ["111 111 111"]);
+  relue.zone().children.at(-1).onclick();                     // « Effacer »
+  assert.equal(relue.zone().children.length, 0, "liste vide, plus de bouton « Effacer »");
+  assert.deepEqual(recentStocke(relue), { v: 1, ids: [] });
+});
+
+test("I3 recorded-only-after-peer_info / rerender : une session reussie, pas un clic sur Connect", async () => {
+  const m = await montageSortant({ formulaire: true, prete: false });
+  assert.equal(m.pastilles().length, 0);
+  m.w.connect = () => 1;
+  m.bac.minuteurs.filter((t) => t.ms === 300 && !t.once).forEach((t) => t.f());
+  m.w.connect();                                              // un clic sur Connect, sans peer_info
+  assert.equal(m.pastilles().length, 0, "une tentative qui n'aboutit pas n'est pas enregistree");
+  m.peerInfo();                                               // curConn._id = « 123456789 »
+  assert.deepEqual(plat(m.libelles()), ["123 456 789"], "la liste est a jour pour le retour au formulaire");
+  assert.deepEqual(plat(recentStocke(m).ids.map((e) => e.id)), ["123456789"]);
+  // Une autre session la rejoint en tete, sans doublon.
+  m.w.curConn._id = "987654321"; m.peerInfo(); m.w.curConn._id = "123 456 789"; m.peerInfo();
+  assert.deepEqual(plat(m.libelles()), ["123 456 789", "987 654 321"]);
+});
+
+test("I3 cap-10 : dix pastilles au plus, meme avec plus d'entrees", async () => {
+  const ids = {}; for (let i = 0; i < 12; i++) ids[String(100000000 + i)] = { tm: 1000 + i };
+  const m = await montageSortant({ formulaire: true, init: { peers: JSON.stringify(ids) } });
+  assert.equal(m.pastilles().length, 10);
+  assert.equal(m.libelles()[0], "100 000 011", "le plus recent d'abord");
+});
+
+test("I3 xss-ids-render-as-text : un contenu de stockage malveillant ne devient jamais du balisage", async () => {
+  const mauvais = JSON.stringify({ v: 1, ids: [
+    { id: "<img src=x onerror=alert(1)>", t: 9 }, { id: "123456789\"><script>", t: 8 },
+    { id: "555555555", t: 7 }, { id: "12345", t: 6 } ] });
+  const m = await montageSortant({ formulaire: true, init: { "rd-recent": mauvais } });
+  assert.deepEqual(plat(m.libelles()), ["555 555 555"], "seul l'identifiant valide survit");
+  // Statique : la section n'emploie jamais innerHTML.
+  const debut = html.indexOf("// ----------------------------------------------- dernieres connexions");
+  const fin = html.indexOf("window.__rdSessionReady = sessionPrete;");
+  assert.ok(debut > 0 && fin > debut);
+  assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(html.slice(debut, fin)), "textContent uniquement");
+});
+
+test("I3 : la CSS defait le style du bouton « Connect » que le bundle applique a tout bouton de #connect", () => {
+  assert.match(html, /#app>#connect #rd-recents button\{[^}]*background:transparent/);
+  assert.match(html, /#app>#connect #rd-recents \.rdchip-x\{/);
 });
