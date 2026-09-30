@@ -21,8 +21,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Requis par check-syntax.sh, qui refuse de passer sous silence
-      # l'absence de node en integration continue.
+      # Requis par check-syntax.sh et par le banc du gabarit. check-syntax.sh,
+      # lui, se contente d'AVERTIR et de sortir en 0 quand node manque : sans
+      # cette etape, la verification de syntaxe passerait sans rien verifier.
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -159,3 +160,34 @@ jobs:
           test "$code" = "404" || { echo "sources non corrigees servies : $code"; exit 1; }
 
           docker rm -f rdweb-ci
+
+  # Les comportements qui dependent d'un VRAI navigateur : ou le pointeur tombe
+  # (la barre repliee laisse-t-elle passer les clics ?), ce que le ClipboardItem
+  # accepte, le focus, et le vrai formulaire du bundle. Le banc Node les simule ;
+  # celui-ci les mesure. Job separe : un souci de navigateur ne masque pas les
+  # verifications du depot, et inversement.
+  browser-tests:
+    name: Browser tests (Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Extract and patch the bundle
+        run: |
+          ./scripts/extract-assets.sh
+          ./scripts/patch-assets.sh
+
+      # Version epinglee : les navigateurs de Playwright sont lies a sa version.
+      # Ici on utilise le Chrome deja present sur le runner (--channel=chrome), pas
+      # un telechargement de plus.
+      - name: Install Playwright
+        run: npm install --no-save --no-audit --no-fund playwright-core@1.56.1
+
+      - name: Run browser tests
+        run: node scripts/test-browser.mjs --require-browser --channel=chrome

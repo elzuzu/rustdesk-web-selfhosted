@@ -9,24 +9,37 @@
 # Ne touche PAS a ton arborescence : tout se fait sur une copie temporaire, de
 # sorte qu'un .env, un .htpasswd ou un deploiement en place restent intacts.
 #
-# Usage : ./scripts/verify.sh
+# Usage : ./scripts/verify.sh [--sans-docker]
+#
+#   --sans-docker : s'arrete avant la construction des images. Tout le reste
+#     tourne — syntaxe, extraction et correctifs, banc du gabarit, banc
+#     navigateur s'il est disponible — et le format de fil d'authentification est
+#     controle sur le bundle patche lui-meme (la CI le refait DANS l'image). Pour
+#     une machine sans Docker, ou pour une boucle de travail plus courte.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SOURCE=$(pwd)
+SANS_DOCKER=0
+[ "${1:-}" = "--sans-docker" ] && SANS_DOCKER=1
 
 vert()  { printf '\033[32m%s\033[0m\n' "$*"; }
 rouge() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 titre() { printf '\n\033[1m── %s\033[0m\n' "$*"; }
 
 manque=0
-for c in docker python3 tar; do command -v "$c" >/dev/null || { rouge "  ✗ $c manquant"; manque=1; }; done
-docker info >/dev/null 2>&1 || { rouge "  ✗ demon Docker injoignable"; manque=1; }
+for c in python3 tar; do command -v "$c" >/dev/null || { rouge "  ✗ $c manquant"; manque=1; }; done
+if [ "$SANS_DOCKER" -eq 0 ]; then
+  command -v docker >/dev/null || { rouge "  ✗ docker manquant (ou --sans-docker)"; manque=1; }
+  docker info >/dev/null 2>&1 || { rouge "  ✗ demon Docker injoignable (ou --sans-docker)"; manque=1; }
+fi
 [ "$manque" -eq 0 ] || exit 1
 
 T=$(mktemp -d)
 nettoyer() {
-  docker rm -f rdweb-verify >/dev/null 2>&1 || true
-  docker rmi -f rustdesk-web:verify rustdesk-tls:verify >/dev/null 2>&1 || true
+  if [ "$SANS_DOCKER" -eq 0 ]; then
+    docker rm -f rdweb-verify >/dev/null 2>&1 || true
+    docker rmi -f rustdesk-web:verify rustdesk-tls:verify >/dev/null 2>&1 || true
+  fi
   rm -rf "$T"
 }
 trap nettoyer EXIT
@@ -107,6 +120,35 @@ if command -v node >/dev/null 2>&1; then
   vert "  ✓ banc du gabarit"
 else
   rouge "  ⚠ node absent — banc du gabarit ignore (la CI le fait)"
+fi
+
+titre "Banc navigateur"
+# Chromium reel : ignore avec un message si Playwright ou le navigateur manque
+# (la CI, elle, l'exige). NODE_PATH permet de retrouver un Playwright installe
+# globalement (npm root -g).
+if command -v node >/dev/null 2>&1; then
+  NODE_PATH="${NODE_PATH:-$(npm root -g 2>/dev/null || true)}" node scripts/test-browser.mjs
+else
+  rouge "  ⚠ node absent — banc navigateur ignore (la CI le fait)"
+fi
+
+if [ "$SANS_DOCKER" -eq 1 ]; then
+  titre "Format de fil d'authentification, sur le bundle patche"
+  # Sans Docker on ne peut pas lire l'image ; on lit le bundle qui y serait copie.
+  # C'est le meme fichier (le Dockerfile fait « COPY html/ »), mais la CI refait
+  # ce controle DANS l'image, et c'est celui-la qui fait foi.
+  verif_local() {
+    n=$(grep -c -F "$1" html/js/dist/index.js || true)
+    [ "$n" = "$2" ] || { rouge "  ✗ « $1 » : attendu $2, vu $n"; exit 1; }
+    echo "  ✓ « $1 » = $n"
+  }
+  verif_local 'uint32(18).string(u.uuid)'        1
+  verif_local 'uint32(50).string(u.licence_key)' 1
+  verif_local 'uint32(18).string(u.licence_key)' 0
+  titre "Termine (sans Docker)"
+  vert "  Controles passes. Restent pour la CI : les images, l'auth DANS l'image, les sondes HTTP."
+  echo "  Ton arborescence n'a pas ete modifiee."
+  exit 0
 fi
 
 titre "Construction des images"

@@ -1145,6 +1145,7 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
     form = { table, tbody, ligneId, champId: reg.id, go };
   }
   doc.addEventListener = (t, f) => { (ecouteurs[t] ||= []).push(f); };
+  doc.removeEventListener = (t, f) => { const l = ecouteurs[t] || []; const i = l.indexOf(f); if (i >= 0) l.splice(i, 1); };
   doc.createElement = elementRecord;
   const player = elementRecord("canvas");
   player.id = "player"; player.ecouteurs = {}; player.focuses = 0;
@@ -1595,13 +1596,22 @@ test("I2 escape-on-bar-collapses-and-sends-no-input_key : Echap sur la barre, pa
   assert.ok(!m.bar.classes.has("replie"), "un <select> garde Echap pour fermer sa liste");
   clavier({ key: "a", target: { tagName: "BUTTON" } });
   assert.ok(!m.bar.classes.has("replie"));
-  const avantFocus = m.player.focuses;
+  const avantFocus = m.player.focuses, repere = m.bac.minuteurs.length;
   clavier({ key: "Escape", target: { tagName: "BUTTON" } });
   assert.ok(m.bar.classes.has("replie"), "Echap replie");
   assert.equal(prefsStockees(m).bar, "repliee");
-  assert.equal(m.player.focuses, avantFocus + 1, "le focus revient au canvas");
-  assert.equal(m.touches.length, av, "rien n'est envoye au poste distant");
+  assert.equal(m.player.focuses, avantFocus, "le focus ne revient PAS au canvas avant le keyup : le canvas recevrait un keyup sans keydown");
   assert.equal((m.ecouteurs.keydown || []).length, 0, "aucun ecouteur Echap sur le document");
+  // Le keyup d'Echap arrive : alors seulement, le canvas reprend le focus.
+  const keyups = (m.ecouteurs.keyup || []).slice();
+  assert.equal(keyups.length, 1, "un ecouteur keyup ephemere est arme");
+  keyups.forEach((f) => f({ key: "a" }));
+  m.bac.tick(repere);
+  assert.equal(m.player.focuses, avantFocus, "une autre touche ne rend pas le focus");
+  keyups.forEach((f) => f({ key: "Escape" }));
+  m.bac.tick(repere);
+  assert.equal(m.player.focuses, avantFocus + 1, "apres le keyup d'Echap, le canvas reprend le focus");
+  assert.equal(m.touches.length, av, "rien n'est envoye au poste distant");
   // Le canvas, lui, continue de transmettre Echap au poste distant.
   m.player.ecouteurs.keydown.forEach((f) => f({ key: "Escape", preventDefault() {}, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }));
   assert.ok(m.touches.some(([n, a]) => n === "input_key" && /esc/i.test(a.name)), JSON.stringify(m.touches));

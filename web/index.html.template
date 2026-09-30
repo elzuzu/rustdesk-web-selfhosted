@@ -2377,7 +2377,18 @@ window.onGlobalEvent = function(payload){
       var tag = ev.target && String(ev.target.tagName || "").toUpperCase();
       if (ev.key !== "Escape" || tag === "SELECT" || bar.classList.contains("replie")) return;
       fixerBarre(true, true);
-      var c=active(); if(c) c.focus();
+      // Le focus ne revient au canvas qu'APRES le keyup d'Echap : le lui rendre
+      // tout de suite lui ferait recevoir un keyup sans keydown, que le canvas
+      // enverrait au poste distant. (Le bouton replie disparait, le focus tombe
+      // sur <body> : le keyup n'a plus de gestionnaire.) Delai de garde : si le
+      // keyup ne vient jamais, l'ecouteur ne reste pas arme.
+      var rendre = function(e2){
+        if (e2.key !== "Escape") return;
+        document.removeEventListener("keyup", rendre, true);
+        setTimeout(function(){ var c=active(); if(c) c.focus(); }, 0);
+      };
+      document.addEventListener("keyup", rendre, true);
+      setTimeout(function(){ document.removeEventListener("keyup", rendre, true); }, 1500);
     });
     bar.appendChild(handle);
     ui.barre = bar;
