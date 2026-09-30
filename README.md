@@ -38,6 +38,9 @@ that was missing**: the original client wires up display and nothing else.
 | Audio | Opus, with the audio context resumed on first gesture |
 | Zero-downtime deploys | the TLS layer waits for the web container instead of erroring out during a restart |
 | Auto-reconnect | a dropped session retries on its own, with backoff — no fallback to the connect form |
+| Settings | quality, frame-rate cap and codec are **remembered** and reapplied on every session, including after an auto-reconnect |
+| Settings bar | collapses to a small handle: the top-right corner of the remote screen stays clickable |
+| Recent connections | the last ten IDs, under the login field |
 | Screen wake lock | the display never sleeps while a session is live, like YouTube during playback |
 | Metrics | p50/p95/p99 percentiles for latency and decode time, as an overlay |
 | Access | Basic authentication plus a 90-day session cookie |
@@ -132,8 +135,11 @@ Two containers. Configuration and assets are baked into the images; only the
 4. **Version guard** — hbbs OSS does not populate `RelayResponse.version`, so the
    client refused the session. The field is used nowhere else.
 5. **Exposed zstd decoder** — downstream file blocks arrive compressed. The bundle
-   already ships a wasm decoder, but module-scoped; we expose it
-   (`window.__rdUnzstd`) rather than shipping a second one.
+   already ships a wasm decoder, but module-scoped; we expose it rather than
+   shipping a second one, twice over: `window.__rdUnzstd` (the bundle's own
+   function, sized for a 128 KiB file block) and `window.__rdZstdDecoder` (the
+   decoder itself, so the page chooses the destination size — see
+   [Rich clipboard](#rich-clipboard-what-works-and-where)).
 
 ## File transfer
 
@@ -173,26 +179,56 @@ direction.
 
 **Browser → remote.** Paste an image into the session and it lands on the remote
 clipboard instead of the file uploader. This direction needs no permission — the
-`paste` event already carries the bytes — so it works everywhere. Two conditions:
-the peer must run **RustDesk 1.3.0 or later**, the only version that understands
-`multi_clipboards` (the peer version is echoed to the console on every image
-send), and the image must stay under **8 MiB**. Browsers do not always hand over
-PNG: jpeg and webp are re-encoded, because announcing the wrong format would give
-the peer bytes it cannot read.
+`paste` event already carries the bytes — so it works everywhere. Conditions:
 
-**Remote → browser.** A green "Image reçue ⇩" or "Texte reçu ⇩" button appears in
-the settings bar, which reveals itself. You must click it, and that is not an
-oversight: writing to the system clipboard requires recent user activation, and
-Chrome refuses more than roughly a second after the interaction. Posting
-automatically on arrival is therefore bound to fail — Guacamole exposes a
-dedicated area for the same reason. This direction is **Chromium only**: Firefox
-and Safari do not write images to the clipboard, and the refusal is named in the
-console. KasmVNC, the only comparable project to have done this, likewise limits
-its rich clipboard to Chromium.
+- The peer must run **RustDesk 1.3.0 or later**, the only version that understands
+  `multi_clipboards`. A peer known to be older is told so and nothing is sent:
+  otherwise the replayed paste would paste its *previous* clipboard. An unknown
+  version is sent anyway, and logged.
+- The image must fit **8 MiB as PNG**. The limit applies to what is *sent*, not to
+  the source: a JPEG of a few MiB can grow several-fold once re-encoded (browsers
+  do not always hand over PNG, and announcing the wrong format would give the peer
+  bytes it cannot read). Too heavy, the dimensions are reduced — up to three
+  times, never below 64 px — instead of refusing, and a notice says so. Above
+  64 MiB the source is not even decoded.
+- The remote paste (`Cmd+V`) is replayed after 150 ms plus 250 ms per whole MiB,
+  capped at 2.5 s. This is a **heuristic**: the peer must have received and written
+  the image before it is told to paste, and nothing confirms that it has.
+
+The keys that trigger a paste are recognised by their letter, or — under a
+non-Latin layout such as Cyrillic — by the physical key.
+
+**Remote → browser.** A green button per kind — "Image reçue ⇩", "Texte reçu ⇩" —
+appears next to the settings bar's handle, without expanding it. Click it: writing
+to the system clipboard requires, depending on the browser, a recent user
+activation (Safari strictly), so posting automatically on arrival is not
+reliable — Guacamole exposes a dedicated area for the same reason. Decoding and
+conversion to PNG happen in a separate task, never on the message loop (which also
+acknowledges every video frame), and the result is handed to the clipboard as a
+promise, so the click is honoured whether or not the conversion has finished. One
+slot per kind: a text arriving after an image no longer erases it. This direction
+is **Chromium only**: Firefox and Safari do not write images to the clipboard. KasmVNC, the only
+comparable project to have done this, likewise limits its rich clipboard to
+Chromium.
 
 An image arriving over the legacy `clipboard` message is intercepted before the
 bundle, whose branch decodes the payload as text unconditionally — without that,
 it would paste garbage.
+
+**Highly compressible images.** The bundle's own decoder sizes its output at 30×
+the compressed size. Above that ratio — a screenshot of a mostly flat desktop —
+it returns an *empty* result, without raising an error and without logging
+anything, which used to become a blank image pasted silently. The page now reads
+the size from the zstd frame header (or width × height × 4) and treats an empty
+result as an error.
+
+**When an image does not come through.** Every failure now shows a notice at the
+bottom of the page, and the console (`[presse-papier]` lines) says why. A received
+entry is logged as `format 21 (rgba), compress=oui, N o recus -> M o bruts, WxH`:
+that line tells which form the peer actually sends. What cannot be settled from the
+browser: whether the peer writes its clipboard synchronously (the replay delay above
+is a guess), and what the peer does with `custom_image_quality` combined with a
+quality preset.
 
 ### What will never be possible
 
@@ -226,6 +262,31 @@ clipboard, resolution control, remote cursor, and the WebCodecs decoder.
 - **`curConn` is replaced on every connection**, and `reconnect()` reuses the
   instance with a fresh `_ws`. Your overrides must be reapplied.
 
+## Settings, toolbar and login screen
+
+**Remembered settings.** Quality, frame-rate cap and codec are kept in the
+browser (`rd-prefs` in `localStorage`) and reapplied at every session start,
+including after an auto-reconnect — the quality ratio used to be sent once per
+page load. If you never chose a quality, nothing is pushed: the selector shows the
+quality the bundle actually uses. A forced codec that stops working (H265 on a
+machine that lost it) goes back to automatic, with a notice.
+
+**Collapsible bar.** The settings bar is **collapsed by default** to a small ⚙
+handle at the top right, so the remote screen's menu bar and window buttons stay
+clickable. Click the handle to expand; the choice is remembered. A received
+clipboard shows its button without expanding the bar. Limits: the remote canvas
+swallows `Tab`, so the bar is mouse-only; and the handle still covers a few pixels
+of that corner. To go back to the old always-open bar, expand it once.
+
+**Recent connections.** The last ten IDs appear under the ID field, most recent
+first. An entry is recorded when a session **succeeds**, not when you click
+Connect, so typos do not pile up. Clicking one fills the field (digits only — the
+bundle does not strip spaces) and moves focus to Connect; `Del` on a focused entry
+removes it, the × does the same with the mouse, "Effacer" empties the list. Only
+digits and timestamps are stored (`rd-recent`) — never a host, never a password
+(the bundle's own `peers` entry holds the remembered passwords and is left alone).
+The list is seeded once from the IDs the bundle already knew.
+
 ## Codec
 
 The original client declares **no** decoding capability, so the server falls back
@@ -247,13 +308,33 @@ A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
 ## Verifying a change
 
 ```bash
-./scripts/verify.sh
+./scripts/verify.sh                 # the whole chain; needs Docker
+./scripts/verify.sh --sans-docker   # everything except the images
 ```
 
-Runs the whole pipeline — shell syntax, inline JavaScript, asset extraction and
-patching, the authentication wire format **inside the built image**, and a
-container that must actually answer 204 / 401 / 404. It works on a temporary
+`verify.sh` runs the whole pipeline — shell syntax, inline JavaScript, asset
+extraction and patching, the template test bench, the real-browser bench when
+Chromium is available, the authentication wire format **inside the built image**,
+and a container that must actually answer 204 / 401 / 404. It works on a temporary
 copy, so your `.env`, `.htpasswd` and any live deployment are left alone.
+`--sans-docker` stops before the images and checks the wire format on the patched
+bundle itself (CI repeats it inside the image, which is the check that counts).
+
+The two benches can also be run on their own, after `extract-assets.sh` and
+`patch-assets.sh`:
+
+```bash
+node scripts/test-template.mjs --require-vendor          # Node only, no dependency
+NODE_PATH=$(npm root -g) node scripts/test-browser.mjs   # real Chromium, via Playwright
+```
+
+The template bench loads the page's four scripts together in one context, guards
+the contracts other tools read from the page, and exercises the clipboard,
+session and toolbar wiring against a fake DOM, with the bundle's real zstd
+decoder. The browser bench measures what a fake DOM cannot: where the pointer
+actually lands, what the real `ClipboardItem` accepts, focus, and the bundle's real
+login form. Without Playwright or a browser it skips itself with a message;
+`--require-browser` makes it fail instead (CI passes it).
 
 The same steps run in CI, but this does not depend on it: a clone should be
 verifiable offline, and the loop is shorter than pushing to find out.

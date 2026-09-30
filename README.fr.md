@@ -38,6 +38,9 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Audio | Opus, avec réveil du contexte au premier geste |
 | Déploiements sans coupure | la couche TLS patiente pendant un redémarrage du conteneur au lieu d'échouer |
 | Reprise automatique | une session coupée se relance seule, avec délai croissant — pas de retour au formulaire |
+| Réglages | qualité, plafond de cadence et codec sont **mémorisés** et réappliqués à chaque session, reprise automatique comprise |
+| Barre de réglages | se replie en une petite poignée : le coin haut-droit de l'écran distant reste cliquable |
+| Connexions récentes | les dix derniers ID, sous le champ de connexion |
 | Veille écran | l'écran ne se verrouille pas tant qu'une session est active, comme YouTube en lecture |
 | Mesure | percentiles p50/p95/p99 de latence et de décodage, en surimpression |
 | Accès | authentification Basic + cookie de session de 90 jours |
@@ -133,7 +136,11 @@ redémarrages.
    le client refusait alors la session. Le champ n'est utilisé nulle part ailleurs.
 5. **Décodeur zstd exposé** — les blocs de fichiers descendants arrivent
    compressés. Le bundle embarque déjà un décodeur wasm, mais au périmètre du
-   module ; on l'expose (`window.__rdUnzstd`) plutôt que d'en embarquer un second.
+   module ; on l'expose plutôt que d'en embarquer un second, de deux façons :
+   `window.__rdUnzstd` (la fonction du bundle, dimensionnée pour un bloc de fichier
+   de 128 Kio) et `window.__rdZstdDecoder` (le décodeur lui-même, pour que la page
+   choisisse la taille de destination — voir
+   [Presse-papier riche](#presse-papier-riche--ce-qui-marche-et-où)).
 
 ## Transfert de fichiers
 
@@ -176,26 +183,56 @@ portée n'est pas la même selon le sens.
 **Navigateur → poste distant.** Colle une image dans la session : elle part dans
 le presse-papier distant, plus au téléversement. Ce sens ne demande aucune
 permission — l'événement `paste` porte déjà les octets — et fonctionne donc
-partout. Deux conditions : le pair doit être en **RustDesk 1.3.0 ou plus**, seule
-version à comprendre `multi_clipboards` (la version du pair est rappelée dans la
-console à chaque envoi d'image), et l'image doit rester sous **8 Mio**. Un
-navigateur ne fournit pas toujours du PNG : le jpeg et le webp sont reconvertis,
-car annoncer un format faux livrerait au pair des octets illisibles.
+partout. Conditions :
 
-**Poste distant → navigateur.** Un bouton vert « Image reçue ⇩ » ou « Texte reçu
-⇩ » apparaît dans le bandeau de réglages, qui se montre alors de lui-même. Il
-faut cliquer, et ce n'est pas un oubli : écrire dans le presse-papier du système
-exige une activation récente de la page, et Chrome refuse au-delà d'environ une
-seconde après l'interaction. Une pose automatique à la réception est donc
-condamnée à échouer — Guacamole expose une zone dédiée pour la même raison.
-Ce sens est du **Chromium** : Firefox et Safari n'écrivent pas d'image dans le
-presse-papier, et le refus est alors nommé dans la console. KasmVNC, seul projet
-comparable à l'avoir fait, restreint lui aussi son presse-papier riche à
-Chromium.
+- Le pair doit être en **RustDesk 1.3.0 ou plus**, seule version à comprendre
+  `multi_clipboards`. Un pair connu comme plus ancien en est averti et rien n'est
+  envoyé : le collage rejoué collerait sinon son *ancien* presse-papier. Une version
+  inconnue part quand même, et est journalisée.
+- L'image doit tenir dans **8 Mio en PNG**. La limite porte sur ce qui *part*, pas
+  sur la source : un JPEG de quelques Mio peut être plusieurs fois plus lourd une
+  fois reconverti (un navigateur ne fournit pas toujours du PNG, et annoncer un
+  format faux livrerait au pair des octets illisibles). Trop lourde, l'image est
+  réduite — trois fois au plus, jamais sous 64 px — au lieu d'être refusée, et un
+  retour le dit. Au-delà de 64 Mio, la source n'est même pas décodée.
+- Le collage distant (`Cmd+V`) est rejoué après 150 ms plus 250 ms par Mio entier,
+  plafonné à 2,5 s. C'est une **heuristique** : le poste distant doit avoir reçu et
+  écrit l'image avant qu'on lui dise de coller, et rien ne confirme qu'il l'a fait.
+
+La touche de collage se reconnaît à sa lettre, ou — sous une disposition non
+latine comme le cyrillique — à la touche physique.
+
+**Poste distant → navigateur.** Un bouton vert par type — « Image reçue ⇩ »,
+« Texte reçu ⇩ » — apparaît à côté de la poignée de la barre de réglages, sans la
+déplier. Il faut cliquer : écrire dans le presse-papier du système exige, selon les
+navigateurs, une activation récente de la page (Safari l'exige strictement), donc
+une pose automatique à la réception n'est pas fiable — Guacamole expose une zone
+dédiée pour la même raison. Le décodage et la conversion en PNG se font dans une
+tâche à part, jamais sur la boucle de messages (qui acquitte aussi chaque image
+vidéo), et le résultat est confié au presse-papier sous forme de promesse : le clic
+est honoré que la conversion soit terminée ou non. Un emplacement par type : un
+texte arrivant après une image ne l'efface plus. Ce sens est du **Chromium** :
+Firefox et Safari n'écrivent pas d'image dans le presse-papier. KasmVNC, seul projet
+comparable à l'avoir fait, restreint lui aussi son presse-papier riche à Chromium.
 
 Une image venue du poste distant par l'ancien message `clipboard` est
 interceptée avant le bundle, dont la branche décode le contenu en texte sans
 condition — sans cela, elle collerait du charabia.
+
+**Images très compressibles.** Le décodeur du bundle dimensionne sa sortie à 30 fois
+la taille compressée. Au-delà de ce taux — une capture d'un bureau presque uni — il
+rend un résultat *vide*, sans lever d'erreur ni rien journaliser, ce qui devenait
+une image blanche collée en silence. La page lit désormais la taille dans l'en-tête
+de la trame zstd (ou largeur × hauteur × 4) et traite un résultat vide comme une
+erreur.
+
+**Quand une image ne passe pas.** Chaque échec affiche maintenant un message en bas
+de page, et la console (lignes `[presse-papier]`) en donne la cause. Une entrée reçue
+est journalisée ainsi : `format 21 (rgba), compress=oui, N o recus -> M o bruts,
+WxH` — cette ligne dit sous quelle forme le pair envoie réellement. Ce que le
+navigateur ne peut pas trancher : si le pair écrit son presse-papier de façon
+synchrone (le délai de rejeu ci-dessus est une supposition), et ce qu'il fait de
+`custom_image_quality` combiné à un préréglage de qualité.
 
 ### Ce qui ne sera jamais possible
 
@@ -229,6 +266,34 @@ sortant, la résolution, le curseur, et le décodeur WebCodecs.
 - **`curConn` est remplacé à chaque connexion**, et `reconnect()` réutilise
   l'instance avec un `_ws` neuf. Les substitutions doivent être réappliquées.
 
+## Réglages, barre et écran de connexion
+
+**Réglages mémorisés.** La qualité, le plafond de cadence et le codec sont gardés
+dans le navigateur (`rd-prefs`, dans `localStorage`) et réappliqués à chaque début
+de session, reprise automatique comprise — le ratio de qualité n'était envoyé
+qu'une fois par chargement de page. Si tu n'as jamais choisi de qualité, rien n'est
+poussé : le sélecteur affiche celle que le bundle utilise réellement. Un codec
+forcé qui cesse de marcher (H265 sur une machine qui l'a perdu) redevient
+automatique, avec un message.
+
+**Barre repliable.** La barre de réglages est **repliée par défaut** en une petite
+poignée ⚙ en haut à droite : la barre de menus et les boutons de fenêtre du poste
+distant restent cliquables. Un clic sur la poignée la déplie ; le choix est
+mémorisé. Un presse-papier reçu montre son bouton sans déplier la barre. Limites :
+le canvas distant avale `Tab`, la barre ne se manie donc qu'à la souris ; et la
+poignée recouvre encore quelques pixels de ce coin. Pour retrouver l'ancienne barre
+toujours ouverte, déplie-la une fois.
+
+**Connexions récentes.** Les dix derniers ID apparaissent sous le champ ID, le plus
+récent d'abord. Une entrée est enregistrée quand une session **aboutit**, pas au
+clic sur Connect : les fautes de frappe ne s'accumulent pas. Un clic remplit le
+champ (chiffres seuls — le bundle n'enlève pas les espaces) et donne le focus à
+Connect ; `Suppr` sur une entrée focalisée la retire, la croix aussi à la souris,
+« Effacer » vide la liste. Seuls des chiffres et des horodatages sont stockés
+(`rd-recent`) — jamais un hôte, jamais un mot de passe (l'entrée `peers` du bundle
+porte les mots de passe mémorisés et n'est pas touchée). La liste est amorcée une
+seule fois à partir des ID que le bundle connaissait déjà.
+
 ## Codec
 
 Le client d'origine ne déclare **aucune** capacité de décodage : le serveur
@@ -251,14 +316,35 @@ Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logic
 ## Vérifier une modification
 
 ```bash
-./scripts/verify.sh
+./scripts/verify.sh                 # toute la chaîne ; exige Docker
+./scripts/verify.sh --sans-docker   # tout sauf les images
 ```
 
-Rejoue toute la chaîne — syntaxe shell, JavaScript en ligne, extraction et
-correctifs des assets, format de fil d'authentification **dans l'image
-construite**, et un conteneur qui doit réellement répondre 204 / 401 / 404. Tout
-se fait sur une copie temporaire : ton `.env`, ton `.htpasswd` et un éventuel
-déploiement en place ne sont pas touchés.
+`verify.sh` rejoue toute la chaîne — syntaxe shell, JavaScript en ligne, extraction
+et correctifs des assets, banc du gabarit, banc navigateur quand Chromium est
+disponible, format de fil d'authentification **dans l'image construite**, et un
+conteneur qui doit réellement répondre 204 / 401 / 404. Tout se fait sur une copie
+temporaire : ton `.env`, ton `.htpasswd` et un éventuel déploiement en place ne sont
+pas touchés. `--sans-docker` s'arrête avant les images et contrôle le format de fil
+sur le bundle corrigé lui-même (la CI le refait dans l'image, et c'est ce contrôle
+qui fait foi).
+
+Les deux bancs se lancent aussi seuls, après `extract-assets.sh` et
+`patch-assets.sh` :
+
+```bash
+node scripts/test-template.mjs --require-vendor          # Node seul, sans dépendance
+NODE_PATH=$(npm root -g) node scripts/test-browser.mjs   # vrai Chromium, via Playwright
+```
+
+Le banc du gabarit charge ensemble les quatre scripts de la page dans un seul
+contexte, garde les contrats que d'autres outils lisent dans la page, et exerce le
+câblage du presse-papier, de la session et de la barre sur un DOM fictif, avec le
+vrai décodeur zstd du bundle. Le banc navigateur mesure ce qu'un DOM fictif ne peut
+pas : où le pointeur tombe réellement, ce que le vrai `ClipboardItem` accepte, le
+focus, et le vrai formulaire de connexion du bundle. Sans Playwright ni navigateur,
+il s'ignore avec un message ; `--require-browser` le fait échouer à la place (la CI
+le passe).
 
 Les mêmes étapes tournent en intégration continue, mais ce script n'en dépend
 pas : un dépôt cloné doit être vérifiable hors ligne, et la boucle est plus
