@@ -902,12 +902,33 @@ function elementRecord(tag) {
   const e = {
     tag, className: "", attrs: {}, children: [], style: {}, dataset: {},
     textContent: "", title: "", onclick: null,
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    classes: new Set(),
+    classList: {
+      add: (c) => e.classes.add(c), remove: (c) => e.classes.delete(c),
+      contains: (c) => e.classes.has(c),
+      toggle: (c, f) => { const v = f === undefined ? !e.classes.has(c) : !!f; v ? e.classes.add(c) : e.classes.delete(c); return v; },
+    },
     setAttribute(k, v) { e.attrs[k] = v; },
     appendChild(c) { e.children.push(c); c.parent = e; return c; },
-    insertBefore(c) { e.children.unshift(c); c.parent = e; return c; },
+    // Comme le vrai DOM : une reference qui n'est pas un enfant DIRECT leve.
+    insertBefore(c, ref) {
+      let i = 0;
+      if (ref) {
+        i = e.children.indexOf(ref);
+        if (i < 0) { const err = new Error("NotFoundError : la reference n'est pas un enfant de ce noeud"); err.name = "NotFoundError"; throw err; }
+      }
+      e.children.splice(i, 0, c); c.parent = e; return c;
+    },
+    get firstChild() { return e.children[0] || null; },
     remove() { if (e.parent) { const i = e.parent.children.indexOf(e); if (i >= 0) e.parent.children.splice(i, 1); } },
-    querySelector() { return null; }, focus() {},
+    // Selecteurs simples : « button.quit », « .rdfilesbtn », « .rdppbtn[data-kind="image"] » — sur les enfants directs.
+    querySelector(sel) {
+      const m = /^(?:(\w+))?(?:\.([\w-]+))?(?:\[data-kind="(\w+)"\])?$/.exec(sel);
+      if (!m) return null;
+      return e.children.find((c) => (!m[1] || c.tag === m[1]) && (!m[2] || c.className === m[2])
+                                    && (!m[3] || (c.attrs && c.attrs["data-kind"] === m[3]))) || null;
+    },
+    focus() {},
     ecouteurs: {},
     addEventListener(t, f) { (e.ecouteurs[t] ||= []).push(f); },
   };
@@ -1367,7 +1388,9 @@ test("I1 select-synced-from-getOption-when-no-pref : sans preference, on ne pous
   m.peerInfo();
   assert.equal(m.qual.value, "best", "le selecteur dit la qualite reelle, pas « Equilibre »");
   assert.ok(!m.touches.some(([n]) => n === "image_quality"), "aucune qualite poussee : le bundle envoie deja la sienne");
-  assert.equal(prefsStockees(m), null, "et rien n'est memorise a la place de l'utilisateur");
+  const stockees = prefsStockees(m) || {};
+  assert.ok(stockees.quality === undefined && stockees.fps === undefined && stockees.codec === undefined,
+    "et aucun reglage n'est memorise a la place de l'utilisateur (seul l'indice de la barre l'est)");
   const inconnue = await montageSortant({ prete: false, qualiteBundle: "n'importe quoi" });
   inconnue.peerInfo();
   assert.equal(inconnue.qual.value, "balanced");
@@ -1453,4 +1476,122 @@ test("I1 spurious-reprise-cancelled-while-session-live : la fermeture de la liai
   const t2 = m.bac.minuteurs.slice(r2).filter((x) => x.once && x.ms >= 1000).pop();
   t2.f();
   assert.equal(connects, 1);
+});
+
+
+// ====================================================================
+// Barre repliable (I2) : structure, etat, persistance, greffons.
+// ====================================================================
+const ordre = (bar) => bar.children.map((c) => c.className || c.tag);
+
+test("I2 bar-collapsed-by-default : repliee sans preference, poignee derniere enfant", async () => {
+  const m = await montageSortant();
+  assert.ok(m.bar.classes.has("replie"), "repliee par defaut");
+  const h = m.bar.children[m.bar.children.length - 1];
+  assert.equal(h.className, "rdhandle", "la poignee est la derniere enfant");
+  assert.equal(h.attrs["aria-expanded"], "false");
+  assert.equal(h.attrs["aria-controls"], "rdbar");
+  assert.ok(h.attrs["aria-label"] && h.title, "nom accessible");
+  assert.equal(h.type, "button");
+  assert.ok(ordre(m.bar).indexOf("quit") < ordre(m.bar).indexOf("rdhandle"), "quit precede la poignee");
+});
+
+test("I2 expand-on-click-aria-and-persist-across-reload", async () => {
+  const m = await montageSortant();
+  const h = m.bar.children.find((c) => c.className === "rdhandle");
+  h.onclick();
+  assert.ok(!m.bar.classes.has("replie"));
+  assert.equal(h.attrs["aria-expanded"], "true");
+  assert.equal(prefsStockees(m).bar, "ouverte");
+  // Rechargement : elle reste ouverte.
+  const relue = await montageSortant({ init: { "rd-prefs": m.bac.stockage.getItem("rd-prefs") } });
+  assert.ok(!relue.bar.classes.has("replie"), "l'etat ouvert survit au rechargement");
+  // Et on peut la replier, ce qui se memorise aussi.
+  relue.bar.children.find((c) => c.className === "rdhandle").onclick();
+  assert.ok(relue.bar.classes.has("replie"));
+  assert.equal(prefsStockees(relue).bar, "repliee");
+});
+
+test("I2 fichiers-button-before-quit-direct-child : le greffon de B4 garde sa place, la poignee reste derniere", async () => {
+  const m = await montageSortant();
+  const o = ordre(m.bar);
+  assert.ok(o.includes("rdfilesbtn"), "le greffon fichiers s'est greffe : " + o);
+  assert.ok(o.indexOf("rdfilesbtn") < o.indexOf("quit"), "avant Quitter : " + o);
+  assert.equal(o[o.length - 1], "rdhandle", "la poignee reste la derniere : " + o);
+  // Un bouton de presse-papier recu s'insere en TETE, jamais apres la poignee.
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("x") }] } });
+  const o2 = ordre(m.bar);
+  assert.equal(o2[0], "rdppbtn");
+  assert.equal(o2[o2.length - 1], "rdhandle");
+});
+
+test("I2 attention-reveals-ppbtn-when-collapsed : un presse-papier recu ne deplie pas la barre, il montre son bouton", async () => {
+  const m = await montageSortant();
+  assert.ok(m.bar.classes.has("replie"));
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("x") }] } });
+  assert.ok(m.bar.classes.has("replie"), "l'etat replie n'est pas change");
+  assert.ok(m.bar.classes.has("attention"), "la classe transitoire est posee");
+  assert.equal(prefsStockees(m)?.bar, undefined, "et le choix memorise n'est pas touche");
+  // La regle CSS qui rend ce bouton visible et cliquable malgre le repli.
+  assert.match(html, /#rdbar\.replie > :not\(\.rdhandle\):not\(\.rdppbtn\)\{display:none\}/);
+  assert.match(html, /#rdbar\.replie \.rdhandle,#rdbar\.replie \.rdppbtn\{pointer-events:auto\}/);
+});
+
+test("I2 collapsed-click-through (CSS) : le conteneur replie ne recoit plus le pointeur, sans toucher a display", () => {
+  const r = /#rdbar\.replie\{([^}]*)\}/.exec(html);
+  assert.ok(r, "regle #rdbar.replie absente");
+  assert.match(r[1], /pointer-events:none/);
+  assert.match(r[1], /padding:0/);
+  assert.match(r[1], /background:none/);
+  assert.match(r[1], /border:0/);
+  assert.ok(!/display\s*:/.test(r[1]), "#rdbar.replie ne pose pas display : le veilleur le pose en ligne");
+  // Aucune regle CSS ne pose display sur #rdbar lui-meme, hors « none » deja la.
+  const regles = [...html.matchAll(/(^|\n)\s*#rdbar\s*\{([^}]*)\}/g)].map((x) => x[2]);
+  for (const r2 of regles) { const d = /display\s*:\s*(\w+)/.exec(r2); assert.ok(!d || d[1] === "none", "#rdbar ne doit poser que display:none (le veilleur pose flex en ligne)"); }
+});
+
+test("I2 handle-min-24px : la cible tactile de la poignee", () => {
+  const r = /#rdbar \.rdhandle\{([^}]*)\}/.exec(html);
+  assert.ok(r);
+  const px = (prop) => { const m = new RegExp(prop + ":(\\d+)px").exec(r[1]); return m ? +m[1] : 0; };
+  assert.ok(px("min-width") >= 24 && px("min-height") >= 24, r[1]);
+  const c = /#rdbar\.replie \.rdhandle\{([^}]*)\}/.exec(html);
+  assert.ok(c && /width:28px/.test(c[1]) && /height:28px/.test(c[1]), "28 px replie");
+});
+
+test("I2 escape-on-bar-collapses-and-sends-no-input_key : Echap sur la barre, pas sur le document", async () => {
+  const m = await montageSortant();
+  const h = m.bar.children.find((c) => c.className === "rdhandle");
+  h.onclick();                                              // ouverte
+  const av = m.touches.length;
+  const clavier = (e) => m.bar.ecouteurs.keydown.forEach((f) => f({ preventDefault() {}, ...e }));
+  clavier({ key: "Escape", target: { tagName: "SELECT" } });
+  assert.ok(!m.bar.classes.has("replie"), "un <select> garde Echap pour fermer sa liste");
+  clavier({ key: "a", target: { tagName: "BUTTON" } });
+  assert.ok(!m.bar.classes.has("replie"));
+  const avantFocus = m.player.focuses;
+  clavier({ key: "Escape", target: { tagName: "BUTTON" } });
+  assert.ok(m.bar.classes.has("replie"), "Echap replie");
+  assert.equal(prefsStockees(m).bar, "repliee");
+  assert.equal(m.player.focuses, avantFocus + 1, "le focus revient au canvas");
+  assert.equal(m.touches.length, av, "rien n'est envoye au poste distant");
+  assert.equal((m.ecouteurs.keydown || []).length, 0, "aucun ecouteur Echap sur le document");
+  // Le canvas, lui, continue de transmettre Echap au poste distant.
+  m.player.ecouteurs.keydown.forEach((f) => f({ key: "Escape", preventDefault() {}, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }));
+  assert.ok(m.touches.some(([n, a]) => n === "input_key" && /esc/i.test(a.name)), JSON.stringify(m.touches));
+});
+
+test("I2 : l'indice de la barre repliee n'apparait qu'a la premiere session", async () => {
+  const m = await montageSortant({ prete: false });
+  m.peerInfo();
+  const indices = m.toasts().filter((t) => /clique sur ⚙/.test(t.texte));
+  assert.equal(indices.length, 1);
+  assert.equal(prefsStockees(m).hint, true);
+  const relue = await montageSortant({ prete: false, init: { "rd-prefs": m.bac.stockage.getItem("rd-prefs") } });
+  relue.peerInfo();
+  assert.equal(relue.toasts().filter((t) => /clique sur ⚙/.test(t.texte)).length, 0, "plus jamais ensuite");
+  // Barre ouverte : pas d'indice a donner.
+  const ouverte = await montageSortant({ prete: false, init: { "rd-prefs": JSON.stringify({ v: 1, bar: "ouverte" }) } });
+  ouverte.peerInfo();
+  assert.equal(ouverte.toasts().filter((t) => /clique sur ⚙/.test(t.texte)).length, 0);
 });

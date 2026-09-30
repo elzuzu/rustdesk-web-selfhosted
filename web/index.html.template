@@ -102,6 +102,25 @@
   #rdbar button:hover{background:#3a4150}
   #rdbar button.quit{background:#7a2130}
   #rdbar button.quit:hover{background:#9c2a3c}
+  /* Poignee : DERNIERE enfant (order la garde a la fin meme si un greffon
+     ajoute un controle apres elle). Tous les controles restent des enfants
+     DIRECTS de #rdbar : le bloc fichiers fait insertBefore sur button.quit. */
+  #rdbar .rdhandle{order:99;min-width:24px;min-height:24px;padding:.1rem .45rem;
+         font-size:.95rem;line-height:1;background:transparent}
+  #rdbar .rdhandle:hover{background:#3a4150}
+  /* Replie : la barre se reduit a sa poignee. « display » n'est JAMAIS pose ici
+     sur #rdbar (le veilleur le pose en ligne, flex / none) : on masque les
+     enfants. Le conteneur ne recoit plus le pointeur — sans cela, sa boite a
+     padding continuerait de manger les clics destines au poste distant : seuls
+     la poignee et le bouton de presse-papier recu (.rdppbtn, present seulement
+     avec .attention) le reprennent. */
+  #rdbar.replie{padding:0;gap:0;background:none;border:0;backdrop-filter:none;
+         pointer-events:none;opacity:.6}
+  #rdbar.replie:hover,#rdbar.replie:focus-within,#rdbar.replie.attention{opacity:1}
+  #rdbar.replie .rdhandle,#rdbar.replie .rdppbtn{pointer-events:auto}
+  #rdbar.replie > :not(.rdhandle):not(.rdppbtn){display:none}
+  #rdbar.replie .rdhandle{width:28px;height:28px;background:rgba(18,20,24,.55);
+         border-radius:0 0 0 8px}
 
   /* ------------------------------------------- surimpression de telemetrie
      Elle informe, elle n'agit jamais. Elle ne doit donc intercepter ni clic,
@@ -1972,6 +1991,11 @@ window.onGlobalEvent = function(payload){
     if (p.fps && rdSend({misc:{option:{custom_fps:p.fps}}}))
       console.log("[cadence] plafond a " + p.fps + " i/s (reglage memorise)");
     if (p.quality || p.fps || p.codec) majSelects(p);
+    // La barre est repliee par defaut : on dit UNE fois ou elle est passee.
+    if (!p.hint && ui.barre && ui.barre.classList.contains("replie")){
+      notifier("Réglages de la session (résolution, qualité, fichiers…) : clique sur ⚙ en haut à droite.");
+      prefs.set({ hint: true });
+    }
     // Une session reussie efface la banniere d'echec d'une tentative precedente.
     try{ var b = document.getElementById("rderror"); if (b) b.remove(); }catch(_){}
   }
@@ -2228,6 +2252,40 @@ window.onGlobalEvent = function(payload){
 
     var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
     [sel,fit,qual,fps,cod,swp,quit].forEach(function(x){ bar.appendChild(x); });
+
+    // La poignee replie / deplie la barre. Repliee, elle ne laisse a l'ecran
+    // qu'un bouton de 28 px : le reste du coin haut-droit redevient cliquable
+    // sur le poste distant (barre de menus, boutons de fenetre). On deplie au
+    // CLIC, pas au survol : le survol se declencherait precisement en passant la
+    // souris dans ce coin. Le canvas avale Tab : la barre reste a la souris.
+    var handle=document.createElement("button");
+    handle.className="rdhandle"; handle.type="button";
+    handle.setAttribute("aria-controls","rdbar");
+    function majPoignee(){
+      var replie = bar.classList.contains("replie");
+      handle.setAttribute("aria-expanded", replie ? "false" : "true");
+      handle.textContent = replie ? "⚙" : "»";
+      handle.title = replie ? "Afficher les réglages de la session" : "Replier les réglages";
+      handle.setAttribute("aria-label", handle.title);
+    }
+    function fixerBarre(replie, memoriser){
+      bar.classList.toggle("replie", replie);
+      majPoignee();
+      if (memoriser) prefs.set({ bar: replie ? "repliee" : "ouverte" });
+    }
+    handle.onclick=function(){ fixerBarre(!bar.classList.contains("replie"), true); };
+    // Echap replie, MAIS sur la barre seulement : sur le document il se
+    // combinerait avec l'envoi de la touche au poste distant (le canvas
+    // transmet Echap). Un <select> l'utilise pour fermer sa liste : on l'y laisse.
+    bar.addEventListener("keydown", function(ev){
+      var tag = ev.target && String(ev.target.tagName || "").toUpperCase();
+      if (ev.key !== "Escape" || tag === "SELECT" || bar.classList.contains("replie")) return;
+      fixerBarre(true, true);
+      var c=active(); if(c) c.focus();
+    });
+    bar.appendChild(handle);
+    ui.barre = bar;
+    fixerBarre(prefs.get().bar !== "ouverte", false);        // repliee par defaut : rien a migrer
     document.body.appendChild(bar);
     // Un bouton de la barre garde le clavier apres son clic : le focus tombait
     // sur <body>, et le collage restait ignore jusqu'au prochain clic dans
