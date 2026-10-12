@@ -98,6 +98,7 @@ titre "Syntaxe JavaScript du gabarit"
 titre "Extraction et correctifs du bundle"
 ./scripts/extract-assets.sh >/dev/null
 ./scripts/patch-assets.sh
+./scripts/build-web.sh
 
 titre "Rendu de la configuration"
 printf 'admin:$6$rounds=5000$test$salt\n' > .htpasswd
@@ -122,8 +123,8 @@ done
 # Plancher du nombre de tests : un test supprime ou desactive en silence ne doit
 # pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
 # baisser sans raison ecrite dans le commit.
-PLANCHER_GABARIT=123
-PLANCHER_NAVIGATEUR=18
+PLANCHER_GABARIT=141
+PLANCHER_NAVIGATEUR=26
 
 titre "Banc du gabarit"
 # Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.
@@ -209,6 +210,18 @@ attendu() {
 }
 attendu /                        401   # la page exige une authentification
 attendu /js/dist/index.js.orig   404   # les sources non corrigees ne sont pas servies
+attendu /rd-console.js           401   # la console est derriere la meme authentification
+
+# La console avec le cookie de session (jeton de test du rendu ci-dessus) : servie, compressee, revalidee.
+cons=$(curl -s -D - -o /dev/null -H 'Accept-Encoding: gzip' -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/rd-console.js | tr -d '\r')
+echo "$cons" | head -1 | grep -q ' 200' || { rouge "  ✗ /rd-console.js avec cookie : $(echo "$cons" | head -1)"; exit 1; }
+echo "$cons" | grep -qi '^content-type: .*javascript' || { rouge "  ✗ /rd-console.js : type inattendu"; echo "$cons"; exit 1; }
+echo "$cons" | grep -qi '^content-encoding: gzip' || { rouge "  ✗ /rd-console.js n'est pas compresse"; echo "$cons"; exit 1; }
+echo "$cons" | grep -qi '^cache-control: no-cache' || { rouge "  ✗ /rd-console.js : Cache-Control no-cache attendu"; echo "$cons"; exit 1; }
+echo "  ✓ /rd-console.js = 200, javascript, gzip, no-cache"
+cs=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/rd-console.css)
+[ "$cs" = "200 text/css" ] || { rouge "  ✗ /rd-console.css : $cs"; exit 1; }
+echo "  ✓ /rd-console.css = 200 text/css"
 
 titre "Termine"
 vert "  Tous les controles passent."

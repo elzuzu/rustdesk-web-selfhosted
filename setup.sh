@@ -217,6 +217,9 @@ else
   ./scripts/extract-assets.sh
 fi
 ./scripts/patch-assets.sh
+# Console de session (web/js -> html/rd-console.js) : TOUJOURS reconstruite, meme si
+# les assets sont deja la — un rd-console.js perime serait servi sans un mot.
+./scripts/build-web.sh
 cp "$TMPD/index.html" html/index.html
 echo "  ✓ html/index.html"
 

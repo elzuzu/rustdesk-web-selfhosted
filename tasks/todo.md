@@ -18,13 +18,23 @@ Contrainte : **toutes les fonctions existantes conservées et intégrées logiqu
 Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome ./scripts/verify.sh`
 (`playwright-core@1.56.1` installé **hors dépôt**).
 
-## Phase 1 — Socle « console » sans nouvelle fonction (≈ 8 à 10 h)
-- [ ] `scripts/build-web.sh` (node --check par source, IIFE obligatoire, try/catch, concat → `html/rd-console.{js,css}?v=hash`)
-- [ ] 2 balises dans le gabarit + `data-rd` dans `wireGlobal` + `RD.insets` dans `fitCanvas` (seules modifications des blocs existants)
-- [ ] `web/js/00-store.js` (magasin `rd-console`), `web/js/10-shell.js`, `web/css/console.css`
-- [ ] nginx : `location ~ ^/rd-console\.` (`try_files $uri =404`, auth + limit_req + cookie répétés) ; vérifier `gzip_types` / `text/javascript`
-- [ ] Outillage : `check-syntax.sh`, `test-template.mjs` (corpus + sortie de build dans le même contexte vm), `test-browser.mjs` (build + `data-rd`)
-- [ ] Sortie : matrice de non-régression verte, test de repli (console qui échoue → `#rdbar` intact), captures desktop + mobile
+## Phase 1 — Socle « console » sans nouvelle fonction (≈ 8 à 10 h) — FAIT, à relire
+- [x] `scripts/build-web.sh` (node --check, IIFE obligatoire, try/catch par module, sortie `html/rd-console.{js,css}`)
+- [x] Gabarit : 2 balises ; `data-rd` (7 reperes) ; `zoneImage()` — `fitCanvas` et `placerHud` mesurent le conteneur `#canvas`
+- [x] `web/js/00-store.js` (magasin `rd-console`), `01-pure.js` (insets, ligne de statut), `10-shell.js`, `web/css/console.css`
+- [x] nginx : `location ~ ^/rd-console\.(js|css)$` (auth + limit_req + cookie répétés, `try_files =404`, `no-cache`)
+- [x] Outillage : `setup.sh`, `verify.sh`, CI, `test-browser.mjs` appellent `build-web.sh` ; planchers 141 / 26
+- [x] Tests : +18 (Node) et +8 (Chromium) ; repli si la console échoue ; retour arrière si le montage échoue en cours de route
+- [x] Contrôle visuel desktop (barre repliée / dépliée / tiroir ouvert) et mobile 390×844
+- [ ] Contrôle avec un vrai pair (session réelle) — avec l'accord d'Alex
+
+**Écarts assumés par rapport au plan** (corrigés dans le code, pas dans le plan approuvé) :
+- pas de `RD.insets` ni de nom suffixé d'un hash : l'espace est réservé en CSS pur (`--rd-top/left/bottom` sur `<html>`, `#canvas` se cale dedans)
+  et `fitCanvas`/`placerHud` mesurent `#canvas` ; noms de fichiers fixes, revalidés (`no-cache`) — moins de pièces mobiles, même effet.
+- `gzip_types` : vérifié, nginx:alpine (1.31) sert déjà `.js` en `application/javascript` ; rien à corriger. `verify.sh` contrôle le gzip.
+- `RDLib` n'est pas touché (magasin `rd-console` dans `web/js/00-store.js`).
+
+**Limite héritée (non corrigée)** : en chemin logiciel (ogv.js), le HUD et la barre de statut affichent « 0 i/s » faute de compteur de trames (seul le chemin WebCodecs l'alimente).
 
 ## Phase 2A / 2B — Fonctions de session (≈ 18 à 22 h)
 - [ ] A : Poste (Ctrl+Alt+Suppr, verrouiller, redémarrer, confidentialité, bloquer entrées) · plein écran + Keyboard Lock · moniteur ·

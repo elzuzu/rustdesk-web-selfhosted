@@ -73,6 +73,7 @@ jobs:
         run: |
           ./scripts/extract-assets.sh
           ./scripts/patch-assets.sh
+          ./scripts/build-web.sh
 
       - name: Generate CI Configuration
         run: |
@@ -182,6 +183,7 @@ jobs:
         run: |
           ./scripts/extract-assets.sh
           ./scripts/patch-assets.sh
+          ./scripts/build-web.sh
 
       # Version epinglee : les navigateurs de Playwright sont lies a sa version.
       # Ici on utilise le Chrome deja present sur le runner (--channel=chrome), pas

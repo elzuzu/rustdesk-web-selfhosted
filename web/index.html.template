@@ -265,6 +265,7 @@
   #rdmodal .boite button.ok{background:#024eff}
   #rdmodal .boite button.ok.danger{background:#9c2a3c}
 </style>
+<link rel="stylesheet" href="rd-console.css">
 </head>
 <body>
 <div id="app"></div>
@@ -1335,9 +1336,23 @@ window.onGlobalEvent = function(payload){
 
   // Taille d'affichage calculee a la main : conserver le ratio exact evite
   // les bandes noires DANS l'element, qui fausseraient les coordonnees souris.
+  // Zone libre pour l'image : le conteneur du canvas (#canvas), que la console
+  // cale entre ses barres via les variables --rd-* ; a defaut, la fenetre.
+  // Sans console, #canvas occupe tout l'ecran (inset:0) : les deux se confondent.
+  function zoneImage(c){
+    var p = c && c.parentNode, w = window.innerWidth, h = window.innerHeight, l = 0, b = h;
+    if (p && p.clientWidth > 0 && p.clientHeight > 0){
+      w = p.clientWidth; h = p.clientHeight; b = h;
+      if (p.getBoundingClientRect){ var r = p.getBoundingClientRect(); l = r.left; b = r.bottom; }
+    }
+    return { w:w, h:h, left:l, bottom:b };
+  }
+  window.__rdZoneImage = zoneImage;
+
   function fitCanvas(){
     var c = active(); if(!c || !c.width || !c.height) return;
-    var k = Math.min(window.innerWidth/c.width, window.innerHeight/c.height);
+    var z = zoneImage(c);
+    var k = Math.min(z.w/c.width, z.h/c.height);
     c.style.width  = Math.floor(c.width*k)+"px";
     c.style.height = Math.floor(c.height*k)+"px";
     placerHud();
@@ -1357,8 +1372,9 @@ window.onGlobalEvent = function(payload){
     if (!b.height) return;                       // masque : rien a decider
     var c = active();
     var r = (c && c.getBoundingClientRect) ? c.getBoundingClientRect() : null;
-    var hors = !!r && (b.height <= Math.floor(window.innerHeight - r.bottom)
-                    || b.width  <= Math.floor(r.left));
+    var z = zoneImage(c);
+    var hors = !!r && (b.height <= Math.floor(z.bottom - r.bottom)
+                    || b.width  <= Math.floor(r.left - z.left));
     h.classList.toggle("horsimage", hors);
     h.classList.toggle("surimage", !hors);
   }
@@ -2447,6 +2463,10 @@ window.onGlobalEvent = function(payload){
     majSwap();
 
     var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
+    // Reperes stables pour la console (web/js) : elle deplace les six premiers
+    // controles dans son tiroir sans dependre de leur rang dans la barre.
+    [[sel,"resolution"],[fit,"ajuster"],[qual,"qualite"],[fps,"cadence"],[cod,"codec"],[swp,"swap"],[quit,"quitter"]]
+      .forEach(function(p){ p[0].setAttribute("data-rd", p[1]); });
     [sel,fit,qual,fps,cod,swp,quit].forEach(function(x){ bar.appendChild(x); });
 
     // La poignee replie / deplie la barre. Repliee, elle ne laisse a l'ecran
@@ -3648,6 +3668,7 @@ window.onGlobalEvent = function(payload){
   };
 })();
 </script>
+<script defer src="rd-console.js"></script>
 <link rel="modulepreload" href="js/dist/vendor.js">
 </body>
 </html>

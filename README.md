@@ -290,6 +290,19 @@ digits and timestamps are stored (`rd-recent`) — never a host, never a passwor
 (the bundle's own `peers` entry holds the remembered passwords and is left alone).
 The list is seeded once from the IDs the bundle already knew.
 
+**Session console.** Once the bar is expanded, a **⚙ Session** button opens a left
+drawer, *Session settings*, laid out like the GL.iNet GLKVM console: **Video**
+(remote resolution, fit to window, quality, frame-rate cap, codec), **Keyboard**
+(Ctrl ↔ Cmd), **Mouse** (high-frequency pointer events) and **Display** (status
+bar). These are the very same controls as before — moved, not rewritten — so the
+remembered settings and their behaviour are unchanged. A status bar at the bottom
+sums up the HUD (`H.265 1920×1080 / 4664 kbit/s / 60 i/s`); the HUD itself stays.
+The remote image is fitted *between* the bars instead of under them; on a narrow
+screen (< 720 px) the drawer becomes a bottom sheet over the image. Drawer and
+status-bar choices live in `rd-console` (separate from `rd-prefs`). The code is in
+`web/js/` and `web/css/`, assembled into `html/rd-console.js` by
+`scripts/build-web.sh`; if it fails to start, the original bar is left exactly as it was.
+
 ## Codec
 
 The original client declares **no** decoding capability, so the server falls back

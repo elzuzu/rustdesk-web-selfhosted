@@ -22,6 +22,7 @@ import http from "node:http";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const RACINE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -43,6 +44,10 @@ let pw = null;
 for (const nom of ["playwright", "playwright-core"]) { try { pw = require_(nom); break; } catch { /* suivant */ } }
 if (!pw) ignorer("Playwright introuvable (NODE_PATH=$(npm root -g), ou npm i --no-save playwright-core@1.56.1)");
 if (!fs.existsSync(path.join(HTML, "js", "dist", "index.js"))) ignorer("html/ absent — ./scripts/extract-assets.sh && ./scripts/patch-assets.sh");
+// La console (web/js -> html/rd-console.js) est assemblee ICI, a chaque lancement : un fichier perime
+// ferait tester l'ancienne console sans un message.
+try { execFileSync("bash", [path.join(RACINE, "scripts", "build-web.sh")], { stdio: "pipe" }); }
+catch (e) { finir(1, "✗ scripts/build-web.sh a echoue :\n" + String(e.stderr || e.message)); }
 
 // ------------------------------------------------------------ serveur statique
 // La page rendue depuis le gabarit COURANT ; tout le reste vient de html/.
@@ -326,9 +331,10 @@ enTete("Reglages et ecran de connexion — le vrai formulaire du bundle");
 
 await test("selects-init-from-prefs : les selecteurs demarrent sur les choix memorises", async (p) => {
   await p.goto(URL_PAGE);
-  await p.waitForSelector("#rdbar", { state: "attached" });
-  const v = await p.evaluate(() => { const s = [...document.querySelectorAll("#rdbar select")]; return s.map((x) => x.value); });
-  assert.deepEqual(v.slice(1), ["best", "60", "vp9"], JSON.stringify(v));
+  await p.waitForSelector('[data-rd="codec"]', { state: "attached" });
+  // Par repere data-rd, pas par « #rdbar select » : la console deplace ces controles dans son tiroir.
+  const v = await p.evaluate(() => ["qualite", "cadence", "codec"].map((n) => document.querySelector('[data-rd="' + n + '"]').value));
+  assert.deepEqual(v, ["best", "60", "vp9"], JSON.stringify(v));
 }, { init: { "rd-prefs": JSON.stringify({ v: 1, quality: "best", fps: 60, codec: "vp9" }) } });
 
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
@@ -394,6 +400,165 @@ await test("xss-ids-render-as-text : un stockage malveillant ne cree aucun eleme
   assert.deepEqual(s.libelles, ["555 555 555"]);
 }, { init: { "rd-recent": JSON.stringify({ v: 1, ids: [
   { id: "<img src=x onerror=window.__xss=true>", t: 9 }, { id: "555555555", t: 7 } ] }) } });
+
+
+// ------------------------------------------------------------- console de session
+// Le vrai DOM, le vrai pointeur : ce que le banc Node (faux DOM) ne peut pas voir.
+enTete("Console de session — vrai DOM, vrai pointeur");
+
+const NOMS6 = ["resolution", "ajuster", "qualite", "cadence", "codec", "swap"];
+const montee = (p) => p.waitForFunction(() => document.body.classList.contains("rd-console"), null, { timeout: 8000 });
+const ouvrirTiroir = async (p) => {
+  await p.click(".rdhandle");                                       // deplie la barre (repliee par defaut)
+  await p.click("#rdbar .rdsession");
+  await p.waitForFunction(() => !document.getElementById("rddrawer").hidden, null, { timeout: 3000 });
+};
+const grandEcran = (p) => p.evaluate(() => { const c = window.__rdActive(); c.width = 1920; c.height = 1080; window.__rdFit(); });
+
+await test("console-mounts-and-moves-controls : six controles dans le tiroir, les autres restent enfants directs de la barre", async (p) => {
+  await sessionSimulee(p); await montee(p);
+  await p.waitForSelector("#rdbar .rdfilesbtn", { state: "attached", timeout: 8000 });
+  const e = await p.evaluate((noms) => ({
+    tiroir: noms.map((n) => !!document.querySelector('#rddrawer [data-rd="' + n + '"]')),
+    barre: noms.map((n) => !!document.querySelector('#rdbar [data-rd="' + n + '"]')),
+    directs: ["rdsession", "rdfilesbtn", "quit", "rdhandle"].map((c) => { const x = document.querySelector("#rdbar ." + c); return !!x && x.parentNode === document.getElementById("rdbar"); }),
+    sections: [...document.querySelectorAll("#rddrawer details summary")].map((x) => x.textContent),
+    statut: !!document.getElementById("rdstatut"),
+  }), NOMS6);
+  assert.deepEqual(e.tiroir, NOMS6.map(() => true), "les six dans le tiroir : " + JSON.stringify(e));
+  assert.deepEqual(e.barre, NOMS6.map(() => false), "plus aucun dans la barre");
+  assert.deepEqual(e.directs, [true, true, true, true], "session, fichiers, quitter, poignee : enfants directs de #rdbar");
+  assert.deepEqual(e.sections, ["Vidéo", "Clavier", "Souris", "Affichage"]);
+  assert.equal(e.statut, true);
+});
+
+await test("console-moved-controls-still-work : qualite, cadence, codec, Ctrl↔Cmd gardent leurs gestionnaires et leurs reglages memorises", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  await p.selectOption('#rddrawer [data-rd="qualite"]', "best");
+  await p.selectOption('#rddrawer [data-rd="cadence"]', "60");
+  await p.selectOption('#rddrawer [data-rd="codec"]', "vp9");
+  const e = await p.evaluate(() => ({
+    touches: window.__touches.filter(([n]) => n === "image_quality"),
+    option: window.__envoyes.map((m) => m.misc && m.misc.option && m.misc.option.custom_fps).filter(Boolean),
+    prefs: JSON.parse(localStorage.getItem("rd-prefs")), forced: window.RD.forced,
+  }));
+  assert.deepEqual(e.touches, [["image_quality", "best"]], "setByName(image_quality) part toujours");
+  assert.deepEqual(e.option, [60], "custom_fps part toujours");
+  assert.deepEqual([e.prefs.quality, e.prefs.fps, e.prefs.codec], ["best", 60, "vp9"], "rd-prefs ecrit comme avant");
+  assert.equal(e.forced, "vp9");
+  const avant = await p.evaluate(() => localStorage.getItem("rd-swap-ctrl"));
+  await p.click('#rddrawer [data-rd="swap"]');
+  const apres = await p.evaluate(() => localStorage.getItem("rd-swap-ctrl"));
+  assert.notEqual(apres, avant, "Ctrl↔Cmd bascule et se memorise");
+});
+
+await test("console-reserves-space-for-bars : l'image se cale entre barre, tiroir et statut, et rien ne la recouvre", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p);
+  const cadre = () => p.evaluate(() => { const c = document.getElementById("canvas").getBoundingClientRect();
+    return { top: Math.round(c.top), left: Math.round(c.left), bas: Math.round(innerHeight - c.bottom), droite: Math.round(innerWidth - c.right) }; });
+  await p.waitForFunction(() => document.getElementById("rdstatut") && !document.getElementById("rdstatut").hidden, null, { timeout: 3000 });
+  assert.deepEqual(await cadre(), { top: 0, left: 0, bas: 26, droite: 0 }, "defaut : barre repliee, tiroir ferme, statut visible");
+  await p.click(".rdhandle");
+  await p.waitForFunction(() => Math.round(document.getElementById("canvas").getBoundingClientRect().top) === 40, null, { timeout: 3000 });
+  assert.deepEqual(await cadre(), { top: 40, left: 0, bas: 26, droite: 0 }, "barre depliee");
+  await p.click("#rdbar .rdsession");
+  await p.waitForFunction(() => Math.round(document.getElementById("canvas").getBoundingClientRect().left) === 320, null, { timeout: 3000 });
+  assert.deepEqual(await cadre(), { top: 40, left: 320, bas: 26, droite: 0 }, "tiroir ouvert : l'image est poussee");
+  const s = await p.evaluate(() => {
+    const r = (e) => e.getBoundingClientRect(), v = r(window.__rdActive()), b = r(document.getElementById("rdbar")),
+          t = r(document.getElementById("rddrawer")), st = r(document.getElementById("rdstatut"));
+    const cx = v.left + v.width / 2, cy = v.top + v.height / 2, cible = document.elementFromPoint(cx, cy);
+    return { ok: v.top >= b.bottom - 1 && v.left >= t.right - 1 && v.bottom <= st.top + 1, v: [v.left, v.top, v.right, v.bottom], b: b.bottom, t: t.right, st: st.top,
+             centre: cible === window.__rdActive(), cibleTag: cible && (cible.id || cible.tagName),
+             drawerHit: !!document.elementFromPoint(100, 300).closest("#rddrawer"), barHit: !!document.elementFromPoint(100, 10).closest("#rdbar") };
+  });
+  assert.ok(s.ok, "l'image ne chevauche ni la barre, ni le tiroir, ni le statut : " + JSON.stringify(s));
+  assert.ok(s.centre, "le centre de l'image atteint le canvas, pas une barre : " + s.cibleTag);
+  assert.ok(s.drawerHit && s.barHit, "le tiroir et la barre captent bien le pointeur la ou ils sont");
+  await p.click("#rddrawer .rdfermer");
+  await p.waitForFunction(() => Math.round(document.getElementById("canvas").getBoundingClientRect().left) === 0, null, { timeout: 3000 });
+});
+
+await test("console-escape-and-focus : Echap ferme le tiroir sans rien envoyer au poste, et le canvas reprend le clavier", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  await p.focus('#rddrawer [data-rd="ajuster"]');
+  await p.evaluate(() => { window.__touches.length = 0; });
+  await p.keyboard.press("Escape");
+  assert.equal(await p.evaluate(() => document.getElementById("rddrawer").hidden), true, "Echap ferme");
+  assert.equal((await p.evaluate(() => window.__touches.filter(([n]) => n === "input_key"))).length, 0, "rien n'est envoye au poste distant");
+  await p.waitForFunction(() => document.activeElement === window.__rdActive(), null, { timeout: 3000 });
+  await p.keyboard.press("Escape");                                  // le canvas, lui, transmet toujours Echap
+  assert.ok((await p.evaluate(() => window.__touches.filter(([n]) => n === "input_key").length)) >= 1, "Echap sur le canvas part vers le poste");
+  await p.click("#rdbar .rdsession");                                // la barre est deja depliee : on rouvre par le bouton Session
+  await p.waitForFunction(() => !document.getElementById("rddrawer").hidden, null, { timeout: 3000 });
+  await p.click('#rddrawer [data-rd="ajuster"]');                    // un clic sur un bouton du tiroir rend le clavier au canvas
+  await p.waitForFunction(() => document.activeElement === window.__rdActive(), null, { timeout: 3000 });
+});
+
+await test("console-status-bar-and-persistence : le resume du HUD, un interrupteur, et des reglages qui survivent au rechargement", async (p) => {
+  await sessionSimulee(p); await montee(p);
+  await p.evaluate(() => { window.RD.stats.bitrate = 4664; });
+  await p.waitForFunction(() => /4664 kbit\/s/.test(document.querySelector(".rdst-ligne").textContent), null, { timeout: 5000 });
+  const ligne = await p.evaluate(() => document.querySelector(".rdst-ligne").textContent);
+  assert.match(ligne, /^(H\.265|VP9|Logiciel)( \d+×\d+)? \/ 4664 kbit\/s \/ (\d+ i\/s|—)$/, ligne);
+  await ouvrirTiroir(p);
+  await p.uncheck('#rddrawer .rdsec[data-sec="secAffichage"] .rdsw');
+  assert.equal(await p.evaluate(() => document.getElementById("rdstatut").hidden), true, "la barre de statut se masque");
+  const stocke = await p.evaluate(() => JSON.parse(localStorage.getItem("rd-console")));
+  assert.equal(stocke.statut, "masquee"); assert.equal(stocke.drawer, "ouvert");
+  await p.evaluate(() => { const k = localStorage.getItem("rd-console"); localStorage.setItem("__k", k); });
+  await sessionSimulee(p); await montee(p);                          // rechargement
+  await p.waitForFunction(() => !document.getElementById("rddrawer").hidden, null, { timeout: 4000 });
+  assert.equal(await p.evaluate(() => document.getElementById("rdstatut").hidden), true, "reglage restaure : statut masque");
+});
+
+await test("console-failure-falls-back-to-original-bar : une console qui leve laisse la barre d'origine intacte", async (p, ctx) => {
+  await ctx.route("**/rd-console.js", (route) => route.fulfill({ contentType: "text/javascript", body: "throw new Error('console cassee');" }));
+  await sessionSimulee(p);
+  await p.waitForTimeout(1600);
+  const e = await p.evaluate((noms) => ({
+    classe: document.body.classList.contains("rd-console"),
+    barre: noms.map((n) => !!document.querySelector('#rdbar [data-rd="' + n + '"]')),
+    tiroir: !!document.getElementById("rddrawer"), statut: !!document.getElementById("rdstatut"),
+    visible: getComputedStyle(document.getElementById("rdbar")).display !== "none",
+    top: document.documentElement.style.getPropertyValue("--rd-top"),
+  }), NOMS6);
+  assert.equal(e.classe, false, "aucun habillage sans montage reussi");
+  assert.deepEqual(e.barre, NOMS6.map(() => true), "les six controles sont toujours dans la barre");
+  assert.equal(e.tiroir || e.statut, false); assert.equal(e.visible, true); assert.equal(e.top, "");
+});
+
+await test("console-mount-failure-rolls-back : un echec en plein montage remet tout en place", async (p, ctx) => {
+  await ctx.addInitScript(() => {
+    const orig = Element.prototype.insertBefore;
+    Element.prototype.insertBefore = function (n, r) { if (n && n.className === "rdsession") throw new Error("test : echec de montage"); return orig.call(this, n, r); };
+  });
+  const logs = []; p.on("console", (m) => logs.push(m.text()));
+  await sessionSimulee(p);
+  for (let i = 0; i < 40 && !logs.some((l) => /montage abandonne/.test(l)); i++) await p.waitForTimeout(200);
+  assert.ok(logs.some((l) => /montage abandonne/.test(l)), "l'abandon est journalise : " + logs.filter((l) => /console/.test(l)).join(" | "));
+  const e = await p.evaluate((noms) => ({
+    classe: document.body.classList.contains("rd-console"),
+    ordre: [...document.querySelectorAll("#rdbar > [data-rd]")].map((x) => x.getAttribute("data-rd")),
+    parents: noms.map((n) => { const x = document.querySelector('[data-rd="' + n + '"]'); return x && x.parentNode && x.parentNode.id; }),
+    residus: ["rddrawer", "rdstatut"].filter((id) => document.getElementById(id)).concat([...document.querySelectorAll(".rdsession")].map(() => "rdsession")),
+    vars: ["--rd-top", "--rd-left", "--rd-bottom"].map((v) => document.documentElement.style.getPropertyValue(v)),
+  }), NOMS6);
+  assert.equal(e.classe, false);
+  assert.deepEqual(e.parents, NOMS6.map(() => "rdbar"), "les six controles sont revenus dans la barre");
+  assert.deepEqual(e.ordre.slice(0, 6), NOMS6, "dans leur ordre d'origine : " + e.ordre);
+  assert.deepEqual(e.residus, [], "ni tiroir, ni statut, ni bouton orphelin");
+  assert.deepEqual(e.vars, ["", "", ""]);
+});
+
+await test("console-narrow-screen : sur ecran etroit le tiroir est une feuille basse qui ne pousse pas l'image", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
+  const e = await p.evaluate(() => { const t = document.getElementById("rddrawer").getBoundingClientRect(), c = document.getElementById("canvas").getBoundingClientRect();
+    return { largeTiroir: Math.round(t.width), gauche: Math.round(t.left), poussee: Math.round(c.left), hud: getComputedStyle(document.getElementById("rdhud")).display }; });
+  assert.equal(e.largeTiroir, 390, "le tiroir occupe toute la largeur : " + JSON.stringify(e));
+  assert.equal(e.poussee, 0, "l'image n'est pas poussee a gauche");
+  assert.equal(e.hud, "none", "le HUD ne recouvre pas la feuille");
+}, { contexte: { viewport: { width: 390, height: 844 } } });
 
 // ---------------------------------------------------------------------- bilan
 await navigateur.close();

@@ -297,6 +297,20 @@ Connect ; `Suppr` sur une entrée focalisée la retire, la croix aussi à la sou
 porte les mots de passe mémorisés et n'est pas touchée). La liste est amorcée une
 seule fois à partir des ID que le bundle connaissait déjà.
 
+**Console de session.** Une fois la barre dépliée, un bouton **⚙ Session** ouvre un
+tiroir à gauche, *Réglages de session*, présenté comme la console GL.iNet GLKVM :
+**Vidéo** (résolution distante, ajuster à la fenêtre, qualité, plafond d'images par
+seconde, codec), **Clavier** (Ctrl ↔ Cmd), **Souris** (événements pointeur haute
+fréquence) et **Affichage** (barre de statut). Ce sont exactement les mêmes
+contrôles qu'avant — déplacés, pas réécrits — donc les réglages mémorisés et leur
+comportement ne changent pas. Une barre de statut en bas résume le HUD
+(`H.265 1920×1080 / 4664 kbit/s / 60 i/s`) ; le HUD, lui, reste. L'image distante est
+calée *entre* les barres au lieu de passer dessous ; sur un écran étroit (< 720 px)
+le tiroir devient une feuille basse posée sur l'image. Les choix du tiroir et de la
+barre de statut sont dans `rd-console` (distinct de `rd-prefs`). Le code est dans
+`web/js/` et `web/css/`, assemblé en `html/rd-console.js` par `scripts/build-web.sh` ;
+s'il ne démarre pas, la barre d'origine reste exactement comme elle était.
+
 ## Codec
 
 Le client d'origine ne déclare **aucune** capacité de décodage : le serveur

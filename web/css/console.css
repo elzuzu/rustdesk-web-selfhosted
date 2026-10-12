@@ -1,0 +1,77 @@
+/* Console de session — habille #rdbar, ajoute le tiroir et la barre de statut.
+   GENERE dans rd-console.css par scripts/build-web.sh.
+
+   Tout l'habillage de la barre est sous body.rd-console : la console ne pose
+   cette classe qu'APRES un montage reussi (web/js/10-shell.js). Si elle echoue,
+   la page garde exactement l'aspect d'origine.
+
+   Variables posees par la console sur <html> : --rd-top / --rd-left / --rd-bottom,
+   l'espace reserve autour de l'image. #app>#canvas se cale dedans, et le gabarit
+   (fitCanvas, placerHud) mesure ce conteneur et non la fenetre. */
+:root{--rd-top:0px;--rd-left:0px;--rd-bottom:0px;
+      --rd-bar-h:40px;--rd-drawer-w:320px;--rd-status-h:26px}
+
+body.rd-console #app>#canvas{inset:var(--rd-top) 0 var(--rd-bottom) var(--rd-left)}
+body.rd-console #rdhud{left:var(--rd-left);bottom:var(--rd-bottom)}
+body.rd-console #rdfiles{top:var(--rd-top);bottom:var(--rd-bottom)}
+
+/* ------------------------------------------------------------ barre haute
+   #rdbar deplie : pleine largeur, opaque, reservee. Repliee, elle redevient la
+   poignee flottante d'origine (regles #rdbar.replie du gabarit, inchangees). */
+body.rd-console #rdbar:not(.replie){left:0;right:0;height:var(--rd-bar-h);box-sizing:border-box;
+       padding:0 .6rem;gap:.5rem;border:0;border-bottom:1px solid rgba(255,255,255,.08);
+       border-radius:0;background:#14171c;backdrop-filter:none;opacity:1}
+body.rd-console #rdbar .rdsession{order:-1;margin-right:auto;display:inline-flex;
+       align-items:center;gap:.35rem;padding:.3rem .75rem}
+body.rd-console #rdbar .rdsession[aria-expanded="true"]{background:#024eff}
+
+/* -------------------------------------------------------------- tiroir */
+#rddrawer{position:fixed;top:var(--rd-top);bottom:var(--rd-bottom);left:0;width:var(--rd-drawer-w);
+       z-index:9;display:flex;flex-direction:column;box-sizing:border-box;
+       background:#14171c;color:#e6e8ec;border-right:1px solid rgba(255,255,255,.08);
+       font-size:.82rem;overflow:hidden}
+#rddrawer[hidden],#rdstatut[hidden]{display:none!important}
+#rddrawer .rdtete{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;
+       padding:.55rem .75rem;border-bottom:1px solid rgba(255,255,255,.08)}
+#rddrawer .rdtete b{font-size:.9rem}
+#rddrawer .rdcorps{flex:1 1 auto;overflow:auto;padding:.15rem 0}
+#rddrawer details{border-bottom:1px solid rgba(255,255,255,.06)}
+#rddrawer summary{cursor:pointer;padding:.6rem .75rem;font-weight:600;list-style:none;
+       display:flex;align-items:center;gap:.4rem}
+#rddrawer summary::-webkit-details-marker{display:none}
+#rddrawer summary::before{content:"\25B8";color:#8b94a3;font-size:.7rem;transition:transform .12s}
+#rddrawer details[open]>summary::before{transform:rotate(90deg)}
+#rddrawer summary:focus-visible{outline:2px solid #7aa2ff;outline-offset:-2px}
+#rddrawer .rdsec-corps{padding:0 0 .4rem}
+#rddrawer .rdrow{display:flex;align-items:center;justify-content:space-between;gap:.75rem;
+       padding:.3rem .75rem}
+#rddrawer .rdlib{flex:1 1 auto;color:#c4cad4}
+#rddrawer select{padding:.25rem .4rem;font-size:.8rem;border-radius:5px;max-width:11rem;
+       border:1px solid #3a3f47;background:#24272e;color:#e6e8ec}
+#rddrawer button{padding:.25rem .65rem;font-size:.8rem;border-radius:5px;border:0;
+       background:#2a2f38;color:#e6e8ec;cursor:pointer;margin:0}
+#rddrawer button:hover{background:#3a4150}
+#rddrawer button:focus-visible,#rddrawer select:focus-visible,#rddrawer .rdsw:focus-visible{
+       outline:2px solid #7aa2ff;outline-offset:1px}
+#rddrawer .rdsw{width:1.1rem;height:1.1rem;margin:0;accent-color:#024eff;cursor:pointer}
+#rddrawer .rdfermer{background:transparent;font-size:1rem;line-height:1;padding:.15rem .5rem}
+
+/* ----------------------------------------------------- barre de statut */
+#rdstatut{position:fixed;left:0;right:0;bottom:0;height:var(--rd-status-h);z-index:9;
+       display:flex;align-items:center;gap:.6rem;padding:0 .75rem;box-sizing:border-box;
+       background:#14171c;border-top:1px solid rgba(255,255,255,.08);
+       color:#a8b0bd;font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+       white-space:nowrap;overflow:hidden;user-select:none;-webkit-user-select:none}
+#rdstatut .rdpastille{color:#3ecf8e;font-size:.7rem}
+#rdstatut .rdst-etat{margin-left:auto;color:#ffd7a8}
+
+/* Ecran etroit : le tiroir devient une feuille basse qui recouvre l'image au
+   lieu de la pousser (la console ne reserve alors rien a gauche, cf. 01-pure.js). */
+@media (max-width:719px){
+  #rddrawer{top:auto;left:0;right:0;width:auto;max-height:60vh;border-right:0;
+       border-top:1px solid rgba(255,255,255,.08)}
+  body.rd-console #rdbar .rdsession{padding:.3rem .5rem}
+  /* Le HUD (z-index 10) recouvrirait la feuille ; son affichage est pose en ligne
+     par le veilleur du gabarit, d'ou !important. Le resume reste en barre de statut. */
+  body.rd-console.rd-tiroir #rdhud{display:none!important}
+}

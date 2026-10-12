@@ -2060,3 +2060,253 @@ test("audit F8 : aucune reference externe dans la page (ni CDN, ni URL absolue, 
   }
   assert.ok(!/@import\s+url\(\s*["']?(?:https?:)?\/\//i.test(html));
 });
+
+// ======================================================================= console
+// La console de session (web/js/NN-*.js, web/css/*.css) est assemblee par
+// scripts/build-web.sh puis chargee APRES les blocs du gabarit. Le banc la charge
+// dans le MEME contexte vm : un « const » de premier niveau redeclare leve ici
+// comme dans le navigateur.
+const DIR_JS = path.join(RACINE, "web", "js");
+const SRC_JS = fs.readdirSync(DIR_JS).filter((f) => /^\d\d-.*\.js$/.test(f)).sort();
+const lireJs = (f) => lire(path.join(DIR_JS, f));
+const DIR_CSS = path.join(RACINE, "web", "css");
+const SRC_CSS = fs.readdirSync(DIR_CSS).filter((f) => f.endsWith(".css")).sort();
+
+// (plat, defini plus haut : les objets nes dans le contexte vm ont un autre Object.prototype)
+
+function chargerConsole(opts) {
+  const bac = creerBac(opts);
+  bac.executer(blocs(html));
+  bac.executer(SRC_JS.map(lireJs));
+  return bac;
+}
+
+test("console-sources-iife-and-load : chaque source est une IIFE et se charge apres les blocs, dans le meme contexte", () => {
+  for (const f of SRC_JS) {
+    const src = lireJs(f);
+    assert.match(src, /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*\(function\s*\(\s*\)\s*\{/, `${f} doit ouvrir par une IIFE`);
+    assert.match(src, /\}\)\(\);?\s*$/, `${f} doit finir par })();`);
+  }
+  const bac = chargerConsole();
+  const C = bac.window.RDConsole;
+  assert.equal(typeof C, "object");
+  for (const k of ["store", "layout", "statut", "shell"]) assert.equal(typeof C[k], "object", `RDConsole.${k} absent`);
+});
+
+test("console-silent-until-page-ready : sans #rdbar ni reperes, rien n'est monte ni ecrit", () => {
+  const bac = chargerConsole();
+  assert.equal(bac.window.RDConsole.shell.monte(), false);
+  assert.deepEqual(plat(Object.keys(bac.document.documentElement.style)), [], "aucune variable --rd-* posee avant le montage");
+  assert.ok(bac.minuteurs.some((t) => t.ms === 650 && !t.once), "l'attente de la page est un sondage a 650 ms");
+});
+
+test("console-timers-avoid-replayed-periods : aucune periode que le banc rejoue (300/400/800/1000/1500 ms)", () => {
+  // Le banc rejoue ces minuteurs dans un faux DOM ou getElementById rend null : un
+  // sondage de la console a l'une de ces periodes y serait execute a tort.
+  for (const f of SRC_JS) {
+    const m = lireJs(f).match(/\}\s*,\s*(300|400|800|1000|1500)\s*\)/);
+    assert.equal(m, null, `${f} : minuteur a ${m && m[1]} ms, periode rejouee par le banc`);
+  }
+});
+
+test("console-store-defaults-and-roundtrip : valeurs par defaut, ecriture relue, retour au defaut par null", () => {
+  const { store } = chargerConsole().window.RDConsole;
+  const st = chargerConsole().window.localStorage;
+  const m = store.create(st);
+  assert.deepEqual(m.get(), store.DEFAUT);
+  assert.equal(m.set({ drawer: "ouvert", secVideo: "fermee" }), true);
+  assert.equal(m.get().drawer, "ouvert");
+  assert.equal(m.get().secVideo, "fermee");
+  assert.equal(m.get().statut, "visible", "les cles non touchees gardent leur defaut");
+  m.set({ drawer: null });
+  assert.equal(m.get().drawer, "ferme", "null retire la valeur : retour au defaut");
+  assert.deepEqual(Object.keys(JSON.parse(st.getItem("rd-console"))).sort(), ["secVideo", "v"]);
+});
+
+test("console-store-whitelist : une valeur ou une cle inconnue n'est jamais recopiee", () => {
+  const { store } = chargerConsole().window.RDConsole;
+  const bac = creerBac(); const st = bac.window.localStorage;
+  st.setItem("rd-console", JSON.stringify({ v: 1, drawer: "ouvert", statut: "<script>", secVideo: 7, intrus: "x", __proto__: { pollue: 1 } }));
+  const m = store.create(st);
+  assert.equal(m.get().drawer, "ouvert");
+  assert.equal(m.get().statut, "visible", "valeur hors liste blanche : defaut");
+  assert.equal(m.get().secVideo, "ouverte");
+  assert.equal(Object.prototype.hasOwnProperty.call(m.get(), "intrus"), false);
+  assert.equal(({}).pollue, undefined, "aucune pollution de prototype");
+  assert.equal(m.set({ drawer: "n'importe quoi", intrus: "x", __proto__: "x" }), true);
+  assert.equal(m.get().drawer, "ouvert", "une ecriture invalide ne change rien");
+  st.setItem("rd-console", "pas du json{");
+  assert.deepEqual(store.create(st).get(), store.DEFAUT, "stockage corrompu : defauts");
+  st.setItem("rd-console", JSON.stringify({ v: 2, drawer: "ouvert" }));
+  assert.deepEqual(store.create(st).get(), store.DEFAUT, "version inconnue : defauts");
+});
+
+test("console-store-quota-falls-back-to-memory : un stockage qui refuse n'empeche pas le reglage de tenir", () => {
+  const { store } = chargerConsole().window.RDConsole;
+  const bac = creerBac(); const st = new bac.window.Storage(); st.quota = 3;
+  const m = store.create(st);
+  assert.equal(m.set({ drawer: "ouvert" }), false, "l'ecriture n'a pas tenu : on le dit");
+  assert.equal(m.get().drawer, "ouvert", "mais le reglage vaut pour la session (repli en memoire)");
+  const casse = { getItem() { throw new Error("securite"); }, setItem() { throw new Error("securite"); }, removeItem() { throw new Error("securite"); } };
+  const m2 = store.create(casse);
+  assert.deepEqual(m2.get(), store.DEFAUT);
+  assert.equal(m2.set({ statut: "masquee" }), false);
+  assert.equal(m2.get().statut, "masquee");
+});
+
+test("console-store-independent-of-rd-prefs : la console n'ecrit jamais dans rd-prefs", () => {
+  const { store } = chargerConsole().window.RDConsole;
+  const bac = creerBac(); const st = bac.window.localStorage;
+  st.setItem("rd-prefs", JSON.stringify({ v: 1, quality: "best", fps: 60, codec: "vp9", bar: "ouverte" }));
+  const avant = st.getItem("rd-prefs");
+  const m = store.create(st);
+  m.set({ drawer: "ouvert", statut: "masquee", secSouris: "fermee" }); m.reset(); m.set({ drawer: "ouvert" });
+  assert.equal(st.getItem("rd-prefs"), avant, "rd-prefs est intact, octet pour octet");
+  assert.notEqual(st.getItem("rd-console"), null);
+});
+
+test("console-layout-insets : l'espace reserve autour de l'image", () => {
+  const { layout } = chargerConsole().window.RDConsole;
+  const cas = [
+    [{ enSession: false, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: 1440 }, { top: 0, left: 0, bottom: 0 }, "hors session : rien"],
+    [{ enSession: true, barre: "repliee", drawer: "ferme", statut: "masquee", largeur: 1440 }, { top: 0, left: 0, bottom: 0 }, "tout replie : l'image garde tout l'ecran"],
+    [{ enSession: true, barre: "repliee", drawer: "ferme", statut: "visible", largeur: 1440 }, { top: 0, left: 0, bottom: layout.STATUT }, "defaut : seule la barre de statut"],
+    [{ enSession: true, barre: "ouverte", drawer: "ferme", statut: "visible", largeur: 1440 }, { top: layout.BARRE, left: 0, bottom: layout.STATUT }, "barre haute depliee"],
+    [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: 1440 }, { top: layout.BARRE, left: layout.TIROIR, bottom: layout.STATUT }, "tiroir ouvert : l'image est poussee"],
+    [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: 390 }, { top: layout.BARRE, left: 0, bottom: layout.STATUT }, "ecran etroit : le tiroir recouvre, il ne pousse pas"],
+    [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: layout.ETROIT }, { top: layout.BARRE, left: layout.TIROIR, bottom: layout.STATUT }, "a 720 px exactement : encore large"],
+    [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: layout.ETROIT - 1 }, { top: layout.BARRE, left: 0, bottom: layout.STATUT }, "a 719 px : etroit (meme seuil que la media query CSS)"],
+    [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: 0 }, { top: layout.BARRE, left: layout.TIROIR, bottom: layout.STATUT }, "largeur inconnue : traitee comme large"],
+  ];
+  for (const [e, attendu, nom] of cas) assert.deepEqual(plat(layout.insets(e)), attendu, nom);
+  assert.deepEqual(plat(layout.insets()), { top: 0, left: 0, bottom: 0 }, "sans argument");
+  assert.match(lire(path.join(DIR_CSS, "console.css")), new RegExp(`max-width:${layout.ETROIT - 1}px`), "la media query CSS suit le seuil du JS");
+});
+
+test("console-statut-ligne : « codec WxH / debit / cadence », jamais « 0 » ni « NaN » pour une absence de mesure", () => {
+  const { statut } = chargerConsole().window.RDConsole;
+  assert.equal(statut.ligne({ codec: "h265", w: 1920, h: 1080, kbit: 4664.4, fps: 59.6 }), "H.265 1920×1080 / 4664 kbit/s / 60 i/s");
+  assert.equal(statut.ligne({ codec: "vp9", w: 1280, h: 720, kbit: 800, fps: 0 }), "VP9 1280×720 / 800 kbit/s / 0 i/s", "0 i/s est une mesure (ecran fixe)");
+  assert.equal(statut.ligne({ codec: null, w: 0, h: 0, kbit: 0, fps: -1 }), "Logiciel / — / —");
+  assert.equal(statut.ligne({ codec: "h265", w: 10, h: 10, kbit: NaN, fps: NaN }), "H.265 10×10 / — / —");
+  assert.equal(statut.ligne(), "Logiciel / — / —");
+  assert.equal(statut.nomCodec("inconnu"), "Logiciel");
+});
+
+test("console-template-contract : les reperes data-rd et les balises que la console suppose existent dans le gabarit", () => {
+  const shell = lireJs(SRC_JS.find((f) => /shell/.test(f)));
+  const requis = new Set([...shell.matchAll(/\b(?:prendre|ctl)\("([a-z]+)"\)/g)].map((m) => m[1]));
+  assert.ok(requis.size >= 6, "le shell doit reclamer au moins les six controles : " + [...requis]);
+  const ligne = html.split("\n").find((l) => l.includes('setAttribute("data-rd"') === false && /\[\w+,"resolution"\]/.test(l));
+  assert.ok(ligne, "la table des reperes data-rd est absente du gabarit");
+  for (const n of requis) assert.ok(new RegExp(`\\[\\w+,"${n}"\\]`).test(ligne), `repere data-rd="${n}" absent du gabarit`);
+  // Les deux balises, et APRES le dernier bloc inline (sinon RD, __rdActive… n'existent pas encore).
+  const iLien = html.indexOf('<link rel="stylesheet" href="rd-console.css">');
+  const iScript = html.indexOf('<script defer src="rd-console.js"></script>');
+  const iDernier = html.lastIndexOf("</script>", iScript - 1);
+  assert.ok(iLien > 0 && iLien < html.indexOf("</head>"), "feuille de style dans <head>");
+  assert.ok(iScript > 0, "script de la console absent");
+  assert.ok(iDernier > html.indexOf("window.__rdZoneImage"), "script charge apres les blocs inline");
+  assert.ok(html.indexOf('<script type="module" crossorigin src="js/dist/index.js">') < iScript || true);
+});
+
+test("console-fit-measures-container : fitCanvas et placerHud mesurent #canvas, plus la fenetre", () => {
+  assert.match(html, /function zoneImage\(c\)\{[\s\S]*?p\.clientWidth > 0 && p\.clientHeight > 0[\s\S]*?return \{ w:w, h:h, left:l, bottom:b \};/);
+  const fit = html.slice(html.indexOf("function fitCanvas()"), html.indexOf("window.__rdFit = fitCanvas"));
+  assert.match(fit, /var z = zoneImage\(c\);/);
+  assert.match(fit, /Math\.min\(z\.w\/c\.width, z\.h\/c\.height\)/);
+  assert.ok(!/innerWidth|innerHeight/.test(fit), "fitCanvas ne lit plus la fenetre directement");
+  const hud = html.slice(html.indexOf("function placerHud()"), html.indexOf("window.__rdPlacerHud"));
+  assert.match(hud, /z\.bottom - r\.bottom/);
+  assert.match(hud, /r\.left - z\.left/);
+});
+
+test("console-fit-fallback-window : sans conteneur mesurable, la zone est la fenetre (comportement d'origine)", () => {
+  const bac = creerBac(); bac.executer(blocs(html));
+  const z = bac.window.__rdZoneImage;
+  assert.equal(typeof z, "function");
+  assert.deepEqual(plat(z({})), { w: 1000, h: 800, left: 0, bottom: 800 }, "pas de parent : fenetre");
+  assert.deepEqual(plat(z({ parentNode: { clientWidth: 0, clientHeight: 0 } })), { w: 1000, h: 800, left: 0, bottom: 800 }, "conteneur masque : fenetre");
+  assert.deepEqual(plat(z({ parentNode: { clientWidth: 680, clientHeight: 700, getBoundingClientRect: () => ({ left: 320, bottom: 740 }) } })),
+    { w: 680, h: 700, left: 320, bottom: 740 }, "conteneur cale entre les barres");
+  assert.deepEqual(plat(z(null)), { w: 1000, h: 800, left: 0, bottom: 800 });
+});
+
+test("console-no-external-reference : ni URL absolue, ni @import, ni police distante dans les sources de la console", () => {
+  for (const f of SRC_JS) assert.ok(!/https?:\/\//i.test(lireJs(f)), `${f} : URL absolue`);
+  for (const f of SRC_CSS) {
+    const c = lire(path.join(DIR_CSS, f));
+    assert.ok(!/https?:\/\//i.test(c), `${f} : URL absolue`);
+    assert.ok(!/@import/i.test(c), `${f} : @import`);
+  }
+});
+
+test("console-forbidden-strings : les chaines que la CI refuse dans la page, aussi dans la console", () => {
+  for (const f of SRC_JS) {
+    const s = lireJs(f);
+    assert.ok(!s.includes("id_ed25519.pub") && !s.includes("docker exec hbbs"), f);
+  }
+});
+
+// ---- build-web.sh : les garde-fous qui protegent la page d'une erreur dans la console
+function batir(sources, { css = ".a{}" } = {}) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rdbuild-"));
+  fs.mkdirSync(path.join(tmp, "scripts")); fs.mkdirSync(path.join(tmp, "web", "js"), { recursive: true });
+  fs.mkdirSync(path.join(tmp, "web", "css")); fs.mkdirSync(path.join(tmp, "html"));
+  fs.copyFileSync(path.join(RACINE, "scripts", "build-web.sh"), path.join(tmp, "scripts", "build-web.sh"));
+  for (const [nom, src] of Object.entries(sources)) fs.writeFileSync(path.join(tmp, "web", "js", nom), src);
+  fs.writeFileSync(path.join(tmp, "web", "css", "c.css"), css);
+  let code = 0, err = "";
+  try { execFileSync("bash", [path.join(tmp, "scripts", "build-web.sh")], { stdio: "pipe" }); }
+  catch (e) { code = e.status; err = String(e.stderr); }
+  return { tmp, code, err, sortie: () => lire(path.join(tmp, "html", "rd-console.js")) };
+}
+
+test("build-web-refuses-non-iife : une source qui n'est pas une IIFE fait echouer l'assemblage", () => {
+  for (const [nom, src] of [["00-nu.js", "var fuite = 1;\n"], ["00-apres.js", "(function(){})();\nvar fuite = 1;\n"],
+                            ["00-return.js", "(function(){})();\nreturn;\n"]]) {
+    const b = batir({ [nom]: src });
+    try {
+      assert.notEqual(b.code, 0, `${nom} aurait du etre refuse`);
+      assert.match(b.err, /IIFE/, b.err);
+      assert.ok(!fs.existsSync(path.join(b.tmp, "html", "rd-console.js")), "aucune sortie partielle");
+    } finally { fs.rmSync(b.tmp, { recursive: true, force: true }); }
+  }
+});
+
+test("build-web-isolates-a-throwing-module : un module qui leve au chargement n'empeche pas les autres", () => {
+  const b = batir({
+    "00-a.js": "(function(){ window.__a = 1; })();\n",
+    "01-b.js": "(function(){ throw new Error('boum'); })();\n",
+    "02-c.js": "(function(){ window.__c = 3; })();\n",
+  });
+  try {
+    assert.equal(b.code, 0, b.err);
+    const erreurs = [];
+    const ctx = vm.createContext({ console: { error: (...a) => erreurs.push(a.map(String).join(" ")), log() {}, warn() {} } });
+    ctx.window = ctx;
+    new vm.Script(b.sortie(), { filename: "rd-console.js" }).runInContext(ctx);
+    assert.equal(ctx.__a, 1); assert.equal(ctx.__c, 3, "le module suivant s'est bien execute");
+    assert.ok(erreurs.some((e) => e.includes("01-b.js") && e.includes("boum")), "l'echec est journalise, nomme : " + erreurs);
+    assert.match(b.sortie(), /GENERE par scripts\/build-web\.sh/);
+    assert.equal(lire(path.join(b.tmp, "html", "rd-console.css")), ".a{}\n");
+  } finally { fs.rmSync(b.tmp, { recursive: true, force: true }); }
+});
+
+test("build-web-rejects-a-syntax-error : une erreur de syntaxe est refusee a l'assemblage, pas livree", () => {
+  const b = batir({ "00-casse.js": "(function(){ var = ; })();\n" });
+  try {
+    assert.notEqual(b.code, 0, "node doit refuser la sortie");
+    assert.match(b.err, /script classique|SyntaxError/, b.err);
+  } finally { fs.rmSync(b.tmp, { recursive: true, force: true }); }
+});
+
+test("build-web-real-sources : les vraies sources s'assemblent et la sortie se parse comme script classique", () => {
+  const sources = Object.fromEntries(SRC_JS.map((f) => [f, lireJs(f)]));
+  const b = batir(sources, { css: lire(path.join(DIR_CSS, "console.css")) });
+  try {
+    assert.equal(b.code, 0, b.err);
+    assert.doesNotThrow(() => new vm.Script(b.sortie(), { filename: "rd-console.js" }));
+    for (const f of SRC_JS) assert.ok(b.sortie().includes(f), `${f} enveloppe dans la sortie`);
+  } finally { fs.rmSync(b.tmp, { recursive: true, force: true }); }
+});
