@@ -124,7 +124,7 @@ done
 # pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
 # baisser sans raison ecrite dans le commit.
 PLANCHER_GABARIT=141
-PLANCHER_NAVIGATEUR=26
+PLANCHER_NAVIGATEUR=27
 
 titre "Banc du gabarit"
 # Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.

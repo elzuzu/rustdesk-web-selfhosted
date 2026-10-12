@@ -551,6 +551,33 @@ await test("console-mount-failure-rolls-back : un echec en plein montage remet t
   assert.deepEqual(e.vars, ["", "", ""]);
 });
 
+await test("console-mouse-coordinates-stay-exact : l'image calee entre les barres ne decale aucun clic sur le poste distant", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p);
+  // Clic au vrai pointeur a une fraction de l'image, rendu en coordonnees distantes (1920×1080).
+  const cliquer = async (fx, fy) => {
+    const r = await p.evaluate(() => { const b = window.__rdActive().getBoundingClientRect(); return { l: b.left, t: b.top, w: b.width, h: b.height }; });
+    await p.evaluate(() => { window.__touches.length = 0; });
+    await p.mouse.move(r.l + r.w * fx, r.t + r.h * fy); await p.mouse.down(); await p.mouse.up();
+    return p.evaluate(() => window.__touches.filter(([n]) => n === "send_mouse").map(([, v]) => JSON.parse(v)).filter((m) => m.type === "down").pop());
+  };
+  const proche = (m, x, y, nom) => {
+    assert.ok(m, nom + " : aucun clic recu");
+    assert.ok(Math.abs(m.x - x) <= 2 && Math.abs(m.y - y) <= 2, `${nom} : attendu (${x},${y}), recu (${m.x},${m.y})`);
+  };
+  const dispositions = [
+    ["defaut (barre repliee, statut visible)", async () => {}],
+    ["barre depliee + tiroir ouvert", async () => { await ouvrirTiroir(p); await p.waitForTimeout(150); }],
+    ["tiroir ferme, statut masque", async () => {
+      await p.click("#rddrawer .rdfermer"); await p.uncheck('#rddrawer .rdsec[data-sec="secAffichage"] .rdsw').catch(() => {}); }],
+  ];
+  for (const [nom, preparer] of dispositions) {
+    await preparer(); await grandEcran(p);
+    proche(await cliquer(0.5, 0.5), 960, 540, nom + " / centre");
+    proche(await cliquer(0.01, 0.01), 19, 11, nom + " / coin haut-gauche");
+    proche(await cliquer(0.99, 0.99), 1901, 1069, nom + " / coin bas-droit");
+  }
+});
+
 await test("console-narrow-screen : sur ecran etroit le tiroir est une feuille basse qui ne pousse pas l'image", async (p) => {
   await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
   const e = await p.evaluate(() => { const t = document.getElementById("rddrawer").getBoundingClientRect(), c = document.getElementById("canvas").getBoundingClientRect();
