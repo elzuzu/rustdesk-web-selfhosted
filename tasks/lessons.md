@@ -31,3 +31,29 @@
 - **Pourquoi** : la poignée sortait de l'écran à 477 px ; la cause était le formulaire de connexion du bundle (`min-width:22rem`), qui
   dézoomait toute la page. Le banc simulait une session sans masquer ce formulaire, comme le fait la vraie.
 
+## Banc navigateur : attendre le câblage avant de mesurer le focus
+- **Règle** : `sessionSimulee` attend « niveau retenu » puis le câblage de `#rdcanvas` ; `ouvrirTiroir` attend le focus du canvas.
+- **Pourquoi** : la sonde de codec est asynchrone et le gabarit appelle `c.focus()` après coup ; un test qui lisait le focus avant
+  échouait une fois sur dix, sans régression réelle.
+- **Comment l'appliquer** : toute nouvelle aide de banc qui ouvre quelque chose attend l'état final, jamais un `setTimeout`.
+
+## Le banc doit pouvoir se rejouer sans WebCodecs
+- **Règle** : `RD_SANS_VIDEODECODER=1 node scripts/test-browser.mjs` supprime `window.VideoDecoder` ; le banc doit passer des deux façons.
+- **Pourquoi** : le chemin logiciel (WebGL) ne peint pas de contexte 2D : capture possiblement vide, enregistrement vide. Un test
+  qui ne vaut que pour WebCodecs doit le dire.
+
+## Service HTTP maison : HTTP/1.0 et corps toujours lu
+- **Règle** : `http.server` en HTTP/1.0, et vider le corps de requête même quand on répond une erreur avant de le lire.
+- **Pourquoi** : un corps non lu fait réinitialiser la connexion côté nginx (502 au lieu du 4xx attendu).
+
+## macOS : `sed -i` sans suffixe avale la suite
+- **Règle** : `sed -i.bak … && rm *.bak`, ou un petit script Python pour les remplacements multi-lignes.
+- **Pourquoi** : le script `sed` est pris pour le suffixe, et la chaîne `&&` s'arrête sans message clair.
+
+## Masquer les secrets du journal exporté, y compris la forme JSON
+- **Règle** : le masquage couvre les clés base64 longues, les empreintes `abcdefgh…KLMNOP` et `mot de passe|token|jeton` suivis de
+  `:`/`=` avec guillemets optionnels des deux côtés (`{"token": "valeur"}`).
+- **Pourquoi** : le premier jet ratait la forme JSON ; le test `console-aide-masquage` l'a trouvé. Tout nouveau secret = nouveau cas de test.
+
+## Un bouton ajouté dans la barre change les listes attendues des tests
+- **Règle** : après avoir ajouté un bouton de barre (ici « Postes »), chercher les tests qui énumèrent les boutons (`i18n-anglais`).

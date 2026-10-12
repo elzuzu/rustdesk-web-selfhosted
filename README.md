@@ -290,30 +290,90 @@ digits and timestamps are stored (`rd-recent`) — never a host, never a passwor
 (the bundle's own `peers` entry holds the remembered passwords and is left alone).
 The list is seeded once from the IDs the bundle already knew.
 
-**Session console.** Once the bar is expanded, a **Session** button opens a left drawer, *Session
-settings*, laid out like the GL.iNet GLKVM console: **Video** (remote resolution, fit to window,
-quality, frame-rate cap, codec), **Keyboard** (Ctrl becomes Cmd), **Mouse** (high-frequency pointer
-events) and **Display** (theme, status bar). These are the very same controls as before — moved, not
-rewritten — so the remembered settings and their behaviour are unchanged; each now carries a one-line
-explanation. The top bar shows the remote machine's ID, and a status bar at the bottom sums up the
-HUD (`26 ms · H.265 1920×1080 · 4664 kbit/s · 60 i/s`) with a link-health dot (green under 60 ms,
-amber up to 150 ms, red above, from the median round trip); the HUD itself stays. The remote image is
-fitted *between* the bars instead of under them; on a narrow screen (< 720 px) the drawer becomes a
-bottom sheet over the image and the top bar keeps its icons only.
+**Session console and machine list.** See the two sections below.
 
-**Design and accessibility.** Light and dark themes (*Auto* follows the system, or force one in
-*Display*; the remote image area stays black either way), built from `oklch()` tokens with
-`light-dark()`. Text meets 4.5:1 and component borders 3:1 in both themes — the test suite measures it in
-a real browser. Respected: `prefers-reduced-motion`, `prefers-contrast`, forced colours, touch targets of
-44 px on touch screens, safe areas (notches). Switches are native checkboxes (`role="switch"`), the theme
-is an ARIA radio group with arrow keys, every field is named and described. System fonts and inline
-SVG icons only — no external request. The login screen is a responsive card (it used to overflow a
-390 px phone, zooming the whole page out): fields are named for screen readers, **Enter** connects, and
-the cursor lands in the ID field on a mouse (not on a phone, where the keyboard would cover the page).
+## The session console
 
-Drawer, theme and status-bar choices live in `rd-console` (separate from `rd-prefs`). The code is in
-`web/js/` and `web/css/`, assembled into `html/rd-console.js` by `scripts/build-web.sh`; if it fails to
-start, the original bar is left exactly as it was.
+A top bar, a **Session settings** drawer on the left, popovers for tools, and a status bar at the bottom — the layout of
+the GL.iNet GLKVM console, carried over to RustDesk. Every control the client already had is still there, moved (not
+rewritten) into this layout, with its remembered setting and behaviour unchanged. GLKVM is a *reference* for the layout and
+the settings, not a dependency: nothing from GL.iNet runs here, and there is no WebRTC — this client speaks RustDesk's own
+protocol to your hbbs/hbbr.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ⚙ Session  ▭ 123 456 789  ▭ Machines  🔧 Toolbox  ⏻ Machine  ? Help  ⌨ Keyboard │ 📁 Files  ▮ Stats  ⛶ Full screen  ⏏ Quit │
+├───────────────┬──────────────────────────────────────────────────────────────────────────────┤
+│ Session       │                                                                              │
+│ settings      │                         the remote screen                                    │
+│ ▾ Video       │                                                                              │
+│ ▾ Audio       │              (HUD with p50/p95/p99 kept, click-through)                      │
+│ ▾ Keyboard    │                                                                              │
+│ ▾ Mouse       ├──────────────────────────────────────────────────────────────────────────────┤
+│ ▾ Display     │  virtual keyboard (optional)                                                 │
+├───────────────┴──────────────────────────────────────────────────────────────────────────────┤
+│ ● 28 ms  H.265 1920×1080 │ 4664 kbit/s │ 60 i/s   [Relay] [Encrypted]                        │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+The bar is collapsed by default to a small handle (as before); expand it to reach the buttons. The remote image is fitted
+*between* the bars instead of under them. On a narrow screen the drawer becomes a bottom sheet and the bar keeps its icons.
+
+| GLKVM | Here | Notes |
+|---|---|---|
+| Video › Quality, Latency, View | **Quality**, frame-rate cap, **codec**, **View** (fitted / 1:1 with scrolling), remote resolution, fit to window | Transfer (WebRTC/FEC/Native/Direct), Smart mode, EDID, Orientation: not applicable — see below |
+| Audio › Speaker | **Machine sound** (`disable-audio`: the machine stops sending audio) | Microphone and camera: not ported |
+| Keyboard | **Ctrl becomes Cmd**, **virtual keyboard** (AZERTY/QWERTY by language, sticky Ctrl/Alt/Shift/Cmd), Print Screen / Menu / Pause keys | *Bad link mode* is moot: this client sends discrete key events |
+| Mouse | **Absolute / relative** mode with sensitivity, **primary button**, **scroll speed** and **direction** (4 modes), **anti-sleep jiggle**, Back/Forward buttons | Relative mode needs a peer ≥ 1.4.5 (greyed out with the reason otherwise) |
+| Toolbox › Clipboard, Shortcut | Send text (copy to the machine, or **type it out** — useful at a login screen), shortcuts by remote OS plus your own (validated, persisted), **screenshot and video recording** | OCR, Wake-on-LAN, terminal: not ported |
+| Accessories (power) | **Machine** menu: Ctrl+Alt+Del, lock, **restart (two clicks)**, screen picker, privacy mode, block input, lock at session end, shared clipboard, cursor in the image | Greyed out with the reason when the remote OS cannot do it |
+| Toolbar › Switch Port, Fullscreen, Stats, Collapse | **Machines** switcher, **full screen with Keyboard Lock**, **connection statistics** (4 live curves), collapse | There is no packet loss to chart: the link is TCP, a loss shows up as latency |
+| Help › export logs | **Help**: relay test, **log export without any secret**, version and source link | |
+| Settings › Preferences | **Theme** (auto / light / dark), **language** (auto / français / English), status bar, clean full screen | |
+
+**What is deliberately not here**, because it is GLKVM *hardware* or a different transport: Virtual Media (ISO / USB disk),
+Accessories (Fingerbot, ATX board), EDID and USB identity, Apps Center (Tailscale / ZeroTier / NetBird), firmware upgrade,
+USB camera, WebRTC / FEC / Native / Direct transports. And, out of scope for a personal instance: multiple user accounts,
+SSO (LDAP/OIDC), 2FA, audit log, e-mail alerts, invitations.
+
+**Design and accessibility.** Light and dark themes built from `oklch()` tokens with `light-dark()`; text meets 4.5:1 and
+component borders 3:1 in both themes (the test suite measures it in a real browser); `prefers-reduced-motion`,
+`prefers-contrast`, forced colours, 44 px touch targets and safe areas are honoured; switches are native checkboxes
+(`role="switch"`), the theme is an ARIA radio group driven by the arrow keys, every field is named and described; system
+fonts and inline SVG icons only — no external request. A console that fails to start leaves the original bar exactly as it was.
+
+**Where the code is.** `web/js/*.js` and `web/css/console.css`, assembled into `html/rd-console.js` / `rd-console.css` by
+`scripts/build-web.sh` (every source is an IIFE, wrapped in a `try/catch`, and checked as a classic script). The template is
+touched in three small places: seven `data-rd` markers, the `zoneImage()` measurement, and the 1:1 view in `fitCanvas`.
+Console choices live in `rd-console` (separate from `rd-prefs`); your own shortcuts in `rd-raccourcis`.
+
+**Not verified against a real peer** (the benches simulate a session): the relative mouse and the Back/Forward buttons rest
+on the RustDesk peer source (a click acts where the cursor already is; type 5 is the relative move, ±10000, peer ≥ 1.4.5),
+the restart and lock-screen requests, and the effect of privacy mode / block input on a macOS peer. Screenshots and recordings
+come from the page's canvas: on the software decoding fallback (WebGL) a screenshot may be blank and the recording empty.
+
+## Machine list (optional service)
+
+A home page, **My machines**, before the connection form: your machines with a name, note, tags, a favourite star, the time of
+the last connection and — when your hbbs allows it — a green **online** dot; a search box (from four machines); add, edit,
+remove; JSON export and import. In a session, **Machines** switches to another one (it leaves the session, then opens the
+other with its saved password). A machine you connect to is added by itself, named after its host.
+
+It is a **small service of this repository** (`fleet/server.py`, Python standard library, SQLite), **optional**: without it
+the client is exactly what it was — the form and the last ten connections. It never sees a machine password (the browser keeps
+them), has no authentication of its own (it listens only inside Docker, behind nginx's Basic/cookie authentication), and its
+container is read-only, unprivileged and has no published port.
+
+```bash
+./setup.sh                                  # asks "Activer la liste des postes ?" — answer 1
+docker compose --profile fleet up -d        # or by hand
+python3 scripts/online-probe.py 172.17.0.1  # can the service see who is online?
+```
+
+The **online** state comes from hbbs's raw TCP port **21115** (`OnlineRequest`, which hbbs OSS does not serve on the WebSocket
+the browser can speak). If 21115 is filtered, the list still works and shows *unknown* — never "offline": the service does not
+pretend to know. After an hbbs restart every machine looks offline until it re-registers (up to 30 s). Details, API and
+troubleshooting: [docs/FLOTTE.md](docs/FLOTTE.md) (in French).
 
 ## Codec
 
@@ -348,13 +408,18 @@ copy, so your `.env`, `.htpasswd` and any live deployment are left alone.
 `--sans-docker` stops before the images and checks the wire format on the patched
 bundle itself (CI repeats it inside the image, which is the check that counts).
 
-The two benches can also be run on their own, after `extract-assets.sh` and
-`patch-assets.sh`:
+The three suites can also be run on their own, after `extract-assets.sh`, `patch-assets.sh` and
+`build-web.sh`:
 
 ```bash
 node scripts/test-template.mjs --require-vendor          # Node only, no dependency
 NODE_PATH=$(npm root -g) node scripts/test-browser.mjs   # real Chromium, via Playwright
+python3 -I -m unittest discover -s fleet -v              # the machine-list service, against a fake hbbs
 ```
+
+`verify.sh` also refuses a bench that runs fewer tests than its floor (149 / 86 / 19 today), so a test deleted or skipped in
+silence cannot make the check pass. Run the browser bench with and without hardware decoding — it must pass on both paths.
+`RD_TEST_FILTRE=text` runs only the browser tests whose name contains `text`.
 
 The template bench loads the page's five scripts together in one context, guards
 the contracts other tools read from the page, and exercises the clipboard,

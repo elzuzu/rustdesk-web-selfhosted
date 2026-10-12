@@ -49,17 +49,31 @@ Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome .
 - Écarté : réordonner visuellement les lignes du formulaire (casserait l'ordre de tabulation)
 - À faire plus tard : thème « Auto » de la connexion si Alex le veut ; icônes pour la poignée repliée
 
-## Phase 2A / 2B — Fonctions de session (≈ 18 à 22 h)
-- [ ] A : Poste (Ctrl+Alt+Suppr, verrouiller, redémarrer, confidentialité, bloquer entrées) · plein écran + Keyboard Lock · moniteur ·
-      barre de statut · souris (caractérisation d'abord) · vidéo (vue, latence) · audio muet
-- [ ] B : souris relative · rotation (+ `pos()`) · clavier virtuel · raccourcis · statistiques · export · thème · FR/EN · tactile · À propos
+## Phase 2A / 2B — fonctions de session — FAIT
+- [x] Socle : `02-i18n` (FR/EN, parité testée), `08-ui` (widgets), registre du shell (`ajouterLigne/Bouton`, `surMontage`), `99-demarrage`
+- [x] A : menu Poste (Ctrl+Alt+Suppr, verrouiller, redémarrer en 2 clics, écrans, confidentialité, blocage, verrou en fin, presse-papier, curseur),
+      grisé avec raison selon plateforme/version ; plein écran + Keyboard Lock ; statut Relais/Chiffré (`connection_ready`) ; son (`disable-audio`)
+- [x] Entrées : souris relative (type 5, sensibilité), bouton principal, vitesse + sens de molette (le gabarit n'est pas touché : pont `setByName`
+      enveloppé + captures document), Retour/Avance, anti-veille, touches Impr. écran/Menu/Pause
+- [x] B : clavier virtuel (AZERTY/QWERTY, modificateurs collants, sans voler le focus, image calée au-dessus), raccourcis (OS du poste + les vôtres),
+      statistiques (4 courbes), export du journal sans secret, thème, FR/EN, vue 1:1 (3ᵉ retouche du gabarit : `fitCanvas`), À propos + lien source (AGPL 13)
+- [x] C retenus : capture d'écran, enregistrement vidéo
+- Écartés (dit une fois) : rotation (sans usage pour un poste distant, et fausse `pos()`), volume (PCMPlayer interne), micro / OCR / terminal /
+  H264-AV1 / mur d'écrans (non vérifiables sans pair réel ou exigent le patch 6 du bundle ; go/no-go d'Alex), tactile par gestes (le clavier virtuel
+  et les événements souris synthétiques couvrent l'usage)
 
-## Phase 3 — Flotte d'appareils (≈ 13 à 17 h)
-- [ ] 3.0 essai bloquant `scripts/online-probe.py` → hbbs:21115 depuis un conteneur du pont
-- [ ] 3.1 `fleet/` (Python stdlib) · 3.2 nginx (`resolver` + `set $fleet`, zone `rdapi`, CSRF) · 3.3 client · 3.4 exploitation + tests
+## Phase 3 — flotte d'appareils — FAIT
+- [x] 3.0 : vecteurs d'or calculés à la main = vecteurs produits par le code ; faux hbbs TCP dans les tests ; `scripts/online-probe.py`
+- [x] 3.1 `fleet/server.py` (stdlib, SQLite, cache 10 s, validation stricte, CSRF `X-RD` + `Sec-Fetch-Site`) + `fleet/Dockerfile` + 19 tests
+- [x] 3.2 nginx : `location /api/` (zone `rdapi`, `resolver` + variable, `resolver_timeout 2s`) ; compose : profil `fleet`, lecture seule, sans privilège
+- [x] 3.3 client : « Mes postes » (tri, recherche, ajout/modif/retrait, favoris, export/import, auto-ajout), sélecteur « Postes » en session, repli sans service
+- [x] 3.4 `setup.sh` (question, profil, contrôles, 21115 en avertissement seulement), `verify.sh` (tests, image, nginx de bout en bout, service absent), CI, `docs/FLOTTE.md`
+- Non vérifié contre un vrai hbbs (aucun n'était disponible ici) : le cadrage est confirmé par le source de RustDesk et par un faux hbbs ; `online-probe.py` le confirmera chez Alex
 
-## Phase 4 — À la carte (après go/no-go)
-- [ ] enregistrement + capture canvas · H264/AV1 · micro · OCR · mur d'écrans · terminal (si patch 6 accepté)
+## Version finale 1.0.0
+- [x] `VERSION`, `CHANGELOG.md`, READMEs FR/EN, `docs/FLOTTE.md`
+- [ ] Contrôle avec un vrai pair et un vrai hbbs (Alex) — voir « Non vérifié » ci-dessus
+- [ ] Push (décision d'Alex ; publierait aussi `59f9661`)
 
 ## Matrice de non-régression (14 fonctions à protéger)
 Connexion ID/clé/hôte · mot de passe mémorisé · résolution + Ajuster · qualité/cadence/codec mémorisés · Ctrl↔Cmd ·

@@ -297,32 +297,94 @@ Connect ; `Suppr` sur une entrée focalisée la retire, la croix aussi à la sou
 porte les mots de passe mémorisés et n'est pas touchée). La liste est amorcée une
 seule fois à partir des ID que le bundle connaissait déjà.
 
-**Console de session.** Une fois la barre dépliée, un bouton **Session** ouvre un tiroir à
-gauche, *Réglages de session*, présenté comme la console GL.iNet GLKVM : **Vidéo** (résolution
-distante, ajuster à la fenêtre, qualité, plafond d'images par seconde, codec), **Clavier** (Ctrl
-devient Cmd), **Souris** (événements pointeur haute fréquence) et **Affichage** (thème, barre de
-statut). Ce sont exactement les mêmes contrôles qu'avant — déplacés, pas réécrits — donc les réglages
-mémorisés et leur comportement ne changent pas ; chacun porte désormais une explication d'une ligne. La
-barre haute affiche l'ID du poste distant, et une barre de statut en bas résume le HUD
-(`26 ms · H.265 1920×1080 · 4664 kbit/s · 60 i/s`) avec un point de santé de la liaison (vert sous
-60 ms, ambre jusqu'à 150 ms, rouge au-delà, d'après la médiane de l'aller-retour) ; le HUD, lui, reste.
-L'image distante est calée *entre* les barres au lieu de passer dessous ; sur un écran étroit (< 720 px)
-le tiroir devient une feuille basse posée sur l'image et la barre haute ne garde que ses icônes.
+**Console de session et liste des postes.** Voir les deux sections ci-dessous.
 
-**Design et accessibilité.** Thèmes clair et sombre (*Auto* suit le système, ou on en force un dans
-*Affichage* ; la zone de l'image distante reste noire dans les deux), construits avec des jetons
-`oklch()` et `light-dark()`. Le texte atteint 4,5:1 et les bordures de composants 3:1 dans les deux
-thèmes — la suite de tests le mesure dans un vrai navigateur. Respectés : `prefers-reduced-motion`,
-`prefers-contrast`, couleurs forcées, cibles de 44 px sur écran tactile, zones sûres (encoche). Les
-interrupteurs sont des cases natives (`role="switch"`), le thème est un groupe radio ARIA piloté aux
-flèches, chaque champ est nommé et décrit. Polices du système et icônes SVG inline uniquement — aucune
-requête externe. L'écran de connexion est une carte adaptative (il débordait d'un téléphone de 390 px et
-dézoomait toute la page) : champs nommés pour les lecteurs d'écran, **Entrée** connecte, et le curseur
-arrive dans le champ ID à la souris (pas sur téléphone, où le clavier masquerait la page).
+## La console de session
 
-Les choix du tiroir, du thème et de la barre de statut sont dans `rd-console` (distinct de `rd-prefs`).
-Le code est dans `web/js/` et `web/css/`, assemblé en `html/rd-console.js` par `scripts/build-web.sh` ;
-s'il ne démarre pas, la barre d'origine reste exactement comme elle était.
+Une barre haute, un tiroir **Réglages de session** à gauche, des fenêtres flottantes pour les outils et une barre de statut en
+bas — la disposition de la console GL.iNet GLKVM, reprise pour RustDesk. Chaque contrôle que le client avait déjà y est
+toujours, déplacé (pas réécrit) dans cette disposition, avec son réglage mémorisé et son comportement inchangés. GLKVM est une
+*référence* de disposition et de réglages, pas une dépendance : rien de GL.iNet ne tourne ici, et il n'y a pas de WebRTC — ce
+client parle le protocole propre de RustDesk à votre hbbs/hbbr.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ⚙ Session  ▭ 123 456 789  ▭ Postes  🔧 Toolbox  ⏻ Poste  ? Aide  ⌨ Clavier │ 📁 Fichiers  ▮ Stats  ⛶ Plein écran  ⏏ Quitter │
+├───────────────┬──────────────────────────────────────────────────────────────────────────────┤
+│ Réglages de   │                                                                              │
+│ session       │                         l'écran distant                                      │
+│ ▾ Vidéo       │                                                                              │
+│ ▾ Audio       │              (HUD p50/p95/p99 conservé, clics traversants)                   │
+│ ▾ Clavier     │                                                                              │
+│ ▾ Souris      ├──────────────────────────────────────────────────────────────────────────────┤
+│ ▾ Affichage   │  clavier virtuel (facultatif)                                                │
+├───────────────┴──────────────────────────────────────────────────────────────────────────────┤
+│ ● 28 ms  H.265 1920×1080 │ 4664 kbit/s │ 60 i/s   [Relais] [Chiffré]                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+La barre est repliée par défaut en une petite poignée (comme avant) ; dépliez-la pour atteindre les boutons. L'image distante
+est calée *entre* les barres au lieu de passer dessous. Sur un écran étroit, le tiroir devient une feuille basse et la barre
+ne garde que ses icônes.
+
+| GLKVM | Ici | Remarques |
+|---|---|---|
+| Video › Quality, Latency, View | **Qualité**, plafond d'images/s, **codec**, **Vue** (ajustée / 1:1 avec défilement), résolution distante, ajuster à la fenêtre | Transfer (WebRTC/FEC/Native/Direct), mode Smart, EDID, Orientation : sans objet — voir plus bas |
+| Audio › Speaker | **Son du poste** (`disable-audio` : le poste n'envoie plus d'audio) | Micro et caméra : non repris |
+| Keyboard | **Ctrl devient Cmd**, **clavier virtuel** (AZERTY/QWERTY selon la langue, Ctrl/Alt/Maj/Cmd collants), touches Impr. écran / Menu / Pause | Le *Bad link mode* n'a pas lieu d'être : ce client envoie des événements de touche discrets |
+| Mouse | Mode **absolu / relatif** avec sensibilité, **bouton principal**, **vitesse** et **sens** de défilement (4 modes), **anti-veille**, boutons Retour/Avance | Le mode relatif exige un pair ≥ 1.4.5 (grisé avec la raison sinon) |
+| Toolbox › Clipboard, Shortcut | Envoyer du texte (copier vers le poste, ou **le taper** — utile à un écran de connexion), raccourcis selon l'OS du poste et les vôtres (validés, mémorisés), **capture d'écran et enregistrement vidéo** | OCR, Wake-on-LAN, terminal : non repris |
+| Accessories (alimentation) | Menu **Poste** : Ctrl+Alt+Suppr, verrouiller, **redémarrer (deux clics)**, choix de l'écran, confidentialité, blocage des entrées, verrouillage en fin de session, presse-papier partagé, curseur dans l'image | Grisé avec la raison quand l'OS du poste ne sait pas le faire |
+| Toolbar › Switch Port, Fullscreen, Stats, Collapse | Sélecteur de **Postes**, **plein écran avec verrouillage du clavier**, **statistiques de connexion** (4 courbes en direct), replier | Pas de perte de paquets à tracer : la liaison est TCP, une perte se voit en latence |
+| Help › export logs | **Aide** : test du relais, **export du journal sans aucun secret**, version et lien vers la source | |
+| Settings › Preferences | **Thème** (auto / clair / sombre), **langue** (auto / français / English), barre de statut, plein écran épuré | |
+
+**Ce qui n'est volontairement pas là**, parce que c'est du *matériel* GLKVM ou un autre transport : Virtual Media (ISO / disque
+USB), Accessories (Fingerbot, carte ATX), EDID et identité USB, Apps Center (Tailscale / ZeroTier / NetBird), mise à jour du
+firmware, caméra USB, transports WebRTC / FEC / Native / Direct. Et, hors périmètre d'une instance personnelle : comptes
+multiples, SSO (LDAP/OIDC), 2FA, journal d'audit, alertes e-mail, invitations.
+
+**Design et accessibilité.** Thèmes clair et sombre construits avec des jetons `oklch()` et `light-dark()` ; le texte atteint
+4,5:1 et les bordures de composants 3:1 dans les deux thèmes (la suite de tests le mesure dans un vrai navigateur) ;
+`prefers-reduced-motion`, `prefers-contrast`, couleurs forcées, cibles tactiles de 44 px et zones sûres sont respectés ; les
+interrupteurs sont des cases natives (`role="switch"`), le thème est un groupe radio ARIA piloté aux flèches, chaque champ est
+nommé et décrit ; polices du système et icônes SVG inline uniquement — aucune requête externe. Une console qui ne démarre pas
+laisse la barre d'origine exactement comme elle était.
+
+**Où est le code.** `web/js/*.js` et `web/css/console.css`, assemblés en `html/rd-console.js` / `rd-console.css` par
+`scripts/build-web.sh` (chaque source est une IIFE, enveloppée dans un `try/catch`, et vérifiée comme script classique). Le
+gabarit n'est touché qu'à trois endroits : sept repères `data-rd`, la mesure `zoneImage()` et la vue 1:1 dans `fitCanvas`.
+Les choix de la console vivent dans `rd-console` (distinct de `rd-prefs`) ; vos raccourcis dans `rd-raccourcis`.
+
+**Non vérifié sur un vrai pair** (les bancs simulent une session) : la souris relative et les boutons Retour/Avance reposent sur
+le source du pair RustDesk (un clic agit là où est déjà le curseur ; le type 5 est le déplacement relatif, ±10000, pair ≥ 1.4.5),
+les demandes de redémarrage et de verrouillage, et l'effet du mode confidentialité / blocage des entrées sur un pair macOS. Les
+captures et enregistrements viennent du canvas de la page : sur le repli de décodage logiciel (WebGL), une capture peut être
+vide et l'enregistrement aussi.
+
+## Liste des postes (service facultatif)
+
+Une page d'accueil, **Mes postes**, avant le formulaire de connexion : vos postes avec un nom, une note, des étiquettes, une
+étoile d'épinglage, l'heure de la dernière connexion et — quand votre hbbs le permet — un point vert **en ligne** ; une
+recherche (à partir de quatre postes) ; ajout, modification, retrait ; export et import JSON. En session, **Postes** passe à un
+autre (il quitte la session, puis ouvre l'autre avec son mot de passe mémorisé). Un poste auquel vous vous connectez s'ajoute
+tout seul, nommé d'après son hôte.
+
+C'est un **petit service de ce dépôt** (`fleet/server.py`, bibliothèque standard de Python, SQLite), **facultatif** : sans lui, le
+client est exactement ce qu'il était — le formulaire et les dix dernières connexions. Il ne voit jamais de mot de passe de poste
+(le navigateur les garde), n'a pas d'authentification propre (il n'écoute qu'à l'intérieur de Docker, derrière l'authentification
+Basic/cookie de nginx), et son conteneur est en lecture seule, sans privilège, sans port publié.
+
+```bash
+./setup.sh                                  # demande « Activer la liste des postes ? » — répondre 1
+docker compose --profile fleet up -d        # ou à la main
+python3 scripts/online-probe.py 172.17.0.1  # le service voit-il qui est en ligne ?
+```
+
+L'état **en ligne** vient du port TCP brut **21115** de hbbs (`OnlineRequest`, que hbbs OSS ne sert pas sur le WebSocket que le
+navigateur sait parler). Si 21115 est filtré, la liste marche quand même et affiche *inconnu* — jamais « hors ligne » : le
+service ne prétend pas savoir. Après un redémarrage de hbbs, tous les postes paraissent hors ligne le temps de se réenregistrer
+(jusqu'à 30 s). Détails, API et dépannage : [docs/FLOTTE.md](docs/FLOTTE.md).
 
 ## Codec
 
@@ -365,7 +427,12 @@ Les deux bancs se lancent aussi seuls, après `extract-assets.sh` et
 ```bash
 node scripts/test-template.mjs --require-vendor          # Node seul, sans dépendance
 NODE_PATH=$(npm root -g) node scripts/test-browser.mjs   # vrai Chromium, via Playwright
+python3 -I -m unittest discover -s fleet -v              # le service de la liste des postes, contre un faux hbbs
 ```
+
+`verify.sh` refuse aussi un banc qui joue moins de tests que son plancher (149 / 86 / 19 aujourd'hui) : un test supprimé ou
+ignoré en silence ne peut plus faire passer le contrôle. Lancez le banc navigateur avec et sans décodage matériel — il doit
+passer sur les deux chemins. `RD_TEST_FILTRE=texte` ne joue que les tests du navigateur dont le nom contient `texte`.
 
 Le banc du gabarit charge ensemble les cinq scripts de la page dans un seul
 contexte, garde les contrats que d'autres outils lisent dans la page, et exerce le
