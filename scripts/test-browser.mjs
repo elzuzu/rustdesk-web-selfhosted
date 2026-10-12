@@ -165,7 +165,7 @@ await test("hud-sibling-rule-intact : survoler la barre revele la telemetrie", a
 await test("escape-on-bar-collapses-and-sends-no-input_key", async (p) => {
   await sessionSimulee(p);
   await p.click(".rdhandle");                                // ouverte ; le clic rend ensuite le focus au canvas
-  await p.waitForFunction(() => document.activeElement && document.activeElement.id === "player", null, { timeout: 3000 });
+  await p.waitForFunction(() => document.activeElement && document.activeElement === window.__rdActive(), null, { timeout: 3000 });
   await p.focus("#rdbar .quit");                              // le focus est dans la barre (l'utilisateur ne peut pas y tabuler : le canvas avale Tab)
   await p.waitForFunction(() => document.activeElement && document.activeElement.className === "quit", null, { timeout: 3000 });
   await p.evaluate(() => { window.__touches.length = 0; });
@@ -174,7 +174,7 @@ await test("escape-on-bar-collapses-and-sends-no-input_key", async (p) => {
   const touches = await p.evaluate(() => window.__touches.filter(([n]) => n === "input_key"));
   assert.equal(touches.length, 0, "rien n'est envoye au poste distant");
   // Le canvas reprend le focus APRES le keyup d'Echap (un setTimeout de plus) : on l'attend.
-  await p.waitForFunction(() => document.activeElement && document.activeElement.id === "player", null, { timeout: 3000 });
+  await p.waitForFunction(() => document.activeElement && document.activeElement === window.__rdActive(), null, { timeout: 3000 });
   // Le canvas, lui, transmet toujours Echap au poste distant.
   await p.keyboard.press("Escape");
   const apres = await p.evaluate(() => window.__touches.filter(([n]) => n === "input_key").length);
@@ -232,7 +232,7 @@ await test("focus-restored-after-deposit : le bouton ne garde pas le clavier", a
   await p.evaluate(() => window.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: new TextEncoder().encode("bonjour") }] } }));
   await p.click('.rdppbtn[data-kind="text"]');
   await p.waitForFunction(() => !document.querySelector('.rdppbtn[data-kind="text"]'), null, { timeout: 5000 });
-  assert.equal(await p.evaluate(() => document.activeElement && document.activeElement.id), "player");
+  assert.equal(await p.evaluate(() => document.activeElement === window.__rdActive()), true, "le canvas actif reprend le focus");
   assert.equal(await p.evaluate(() => navigator.clipboard.readText()), "bonjour");
 });
 
@@ -280,7 +280,7 @@ async function collerImage(p, expr) {
 await test("paste-accepted-body-focus-in-live-session : le collage marche meme si un bouton a garde le focus", async (p) => {
   await sessionSimulee(p);
   await p.click(".rdhandle");                                  // un clic sur la barre : le canvas reprend le focus
-  await p.waitForFunction(() => document.activeElement && document.activeElement.id === "player", null, { timeout: 3000 });
+  await p.waitForFunction(() => document.activeElement && document.activeElement === window.__rdActive(), null, { timeout: 3000 });
   await p.evaluate(() => document.activeElement.blur());       // focus sur <body>
   assert.equal(await p.evaluate(() => document.activeElement === document.body), true);
   await collerImage(p, `(${imageBruitee})(64, 64)`);
