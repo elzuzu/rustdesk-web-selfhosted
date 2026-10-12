@@ -297,18 +297,31 @@ Connect ; `Suppr` sur une entrée focalisée la retire, la croix aussi à la sou
 porte les mots de passe mémorisés et n'est pas touchée). La liste est amorcée une
 seule fois à partir des ID que le bundle connaissait déjà.
 
-**Console de session.** Une fois la barre dépliée, un bouton **⚙ Session** ouvre un
-tiroir à gauche, *Réglages de session*, présenté comme la console GL.iNet GLKVM :
-**Vidéo** (résolution distante, ajuster à la fenêtre, qualité, plafond d'images par
-seconde, codec), **Clavier** (Ctrl ↔ Cmd), **Souris** (événements pointeur haute
-fréquence) et **Affichage** (barre de statut). Ce sont exactement les mêmes
-contrôles qu'avant — déplacés, pas réécrits — donc les réglages mémorisés et leur
-comportement ne changent pas. Une barre de statut en bas résume le HUD
-(`H.265 1920×1080 / 4664 kbit/s / 60 i/s`) ; le HUD, lui, reste. L'image distante est
-calée *entre* les barres au lieu de passer dessous ; sur un écran étroit (< 720 px)
-le tiroir devient une feuille basse posée sur l'image. Les choix du tiroir et de la
-barre de statut sont dans `rd-console` (distinct de `rd-prefs`). Le code est dans
-`web/js/` et `web/css/`, assemblé en `html/rd-console.js` par `scripts/build-web.sh` ;
+**Console de session.** Une fois la barre dépliée, un bouton **Session** ouvre un tiroir à
+gauche, *Réglages de session*, présenté comme la console GL.iNet GLKVM : **Vidéo** (résolution
+distante, ajuster à la fenêtre, qualité, plafond d'images par seconde, codec), **Clavier** (Ctrl
+devient Cmd), **Souris** (événements pointeur haute fréquence) et **Affichage** (thème, barre de
+statut). Ce sont exactement les mêmes contrôles qu'avant — déplacés, pas réécrits — donc les réglages
+mémorisés et leur comportement ne changent pas ; chacun porte désormais une explication d'une ligne. La
+barre haute affiche l'ID du poste distant, et une barre de statut en bas résume le HUD
+(`26 ms · H.265 1920×1080 · 4664 kbit/s · 60 i/s`) avec un point de santé de la liaison (vert sous
+60 ms, ambre jusqu'à 150 ms, rouge au-delà, d'après la médiane de l'aller-retour) ; le HUD, lui, reste.
+L'image distante est calée *entre* les barres au lieu de passer dessous ; sur un écran étroit (< 720 px)
+le tiroir devient une feuille basse posée sur l'image et la barre haute ne garde que ses icônes.
+
+**Design et accessibilité.** Thèmes clair et sombre (*Auto* suit le système, ou on en force un dans
+*Affichage* ; la zone de l'image distante reste noire dans les deux), construits avec des jetons
+`oklch()` et `light-dark()`. Le texte atteint 4,5:1 et les bordures de composants 3:1 dans les deux
+thèmes — la suite de tests le mesure dans un vrai navigateur. Respectés : `prefers-reduced-motion`,
+`prefers-contrast`, couleurs forcées, cibles de 44 px sur écran tactile, zones sûres (encoche). Les
+interrupteurs sont des cases natives (`role="switch"`), le thème est un groupe radio ARIA piloté aux
+flèches, chaque champ est nommé et décrit. Polices du système et icônes SVG inline uniquement — aucune
+requête externe. L'écran de connexion est une carte adaptative (il débordait d'un téléphone de 390 px et
+dézoomait toute la page) : champs nommés pour les lecteurs d'écran, **Entrée** connecte, et le curseur
+arrive dans le champ ID à la souris (pas sur téléphone, où le clavier masquerait la page).
+
+Les choix du tiroir, du thème et de la barre de statut sont dans `rd-console` (distinct de `rd-prefs`).
+Le code est dans `web/js/` et `web/css/`, assemblé en `html/rd-console.js` par `scripts/build-web.sh` ;
 s'il ne démarre pas, la barre d'origine reste exactement comme elle était.
 
 ## Codec

@@ -10,13 +10,14 @@
   var OK = {
     drawer:       ["ouvert", "ferme"],
     statut:       ["visible", "masquee"],
+    theme:        ["auto", "clair", "sombre"],       // auto = suit le theme du systeme
     secVideo:     ["ouverte", "fermee"],
     secClavier:   ["ouverte", "fermee"],
     secSouris:    ["ouverte", "fermee"],
     secAffichage: ["ouverte", "fermee"]
   };
   var DEFAUT = {
-    drawer: "ferme", statut: "visible",
+    drawer: "ferme", statut: "visible", theme: "auto",
     secVideo: "ouverte", secClavier: "ouverte", secSouris: "ouverte", secAffichage: "ouverte"
   };
   var CLE = "rd-console";

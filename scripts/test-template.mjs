@@ -2233,12 +2233,81 @@ test("console-fit-fallback-window : sans conteneur mesurable, la zone est la fen
 });
 
 test("console-no-external-reference : ni URL absolue, ni @import, ni police distante dans les sources de la console", () => {
-  for (const f of SRC_JS) assert.ok(!/https?:\/\//i.test(lireJs(f)), `${f} : URL absolue`);
+  // Seule exception : l'espace de noms SVG, un identifiant (document.createElementNS), jamais une requete.
+  const sansNsSvg = (src) => src.split("http://www.w3.org/2000/svg").join("");
+  for (const f of SRC_JS) assert.ok(!/https?:\/\//i.test(sansNsSvg(lireJs(f))), `${f} : URL absolue`);
   for (const f of SRC_CSS) {
     const c = lire(path.join(DIR_CSS, f));
     assert.ok(!/https?:\/\//i.test(c), `${f} : URL absolue`);
     assert.ok(!/@import/i.test(c), `${f} : @import`);
   }
+});
+
+test("console-store-theme : « auto » par defaut, trois valeurs, jamais autre chose", () => {
+  const { store } = chargerConsole().window.RDConsole;
+  assert.equal(store.DEFAUT.theme, "auto");
+  assert.deepEqual(plat(store.OK.theme), ["auto", "clair", "sombre"]);
+  const st = creerBac().window.localStorage;
+  const m = store.create(st);
+  for (const v of ["clair", "sombre", "auto"]) { assert.equal(m.set({ theme: v }), true); assert.equal(m.get().theme, v); }
+  m.set({ theme: "rose" }); assert.equal(m.get().theme, "auto", "une valeur inconnue ne change rien (« auto » ici : derniere valeur valide)");
+  st.setItem("rd-console", JSON.stringify({ v: 1, theme: "<img onerror=x>" }));
+  assert.equal(store.create(st).get().theme, "auto", "valeur hors liste blanche : defaut");
+});
+
+test("console-statut-segments-and-sante : les morceaux du resume et les seuils de sante de la liaison", () => {
+  const { statut } = chargerConsole().window.RDConsole;
+  assert.deepEqual(plat(statut.segments({ codec: "h265", w: 1920, h: 1080, kbit: 4664, fps: 60 })), ["H.265 1920×1080", "4664 kbit/s", "60 i/s"]);
+  assert.equal(statut.segments({ codec: "vp9", w: 1, h: 1, kbit: 1, fps: 1 }).join(" / "), statut.ligne({ codec: "vp9", w: 1, h: 1, kbit: 1, fps: 1 }));
+  const cas = [[0, "bonne"], [28, "bonne"], [60, "bonne"], [61, "moyenne"], [150, "moyenne"], [151, "mauvaise"], [4000, "mauvaise"],
+               [-1, "inconnue"], [NaN, "inconnue"], [Infinity, "inconnue"], [null, "inconnue"], [undefined, "inconnue"], ["28", "inconnue"]];
+  for (const [rtt, attendu] of cas) assert.equal(statut.sante(rtt), attendu, `sante(${String(rtt)})`);
+  for (const k of ["bonne", "moyenne", "mauvaise", "inconnue"]) assert.ok(statut.LIBELLE_SANTE[k], "libelle " + k);
+});
+
+test("console-css-constants-match-js : les dimensions declarees en CSS sont celles que le JS reserve", () => {
+  const { layout } = chargerConsole().window.RDConsole;
+  const css = lire(path.join(DIR_CSS, "console.css"));
+  const v = (nom) => Number((css.match(new RegExp(`--${nom}:(\\d+)px`)) || [])[1]);
+  assert.equal(v("rd-bar-h"), layout.BARRE, "--rd-bar-h = layout.BARRE");
+  assert.equal(v("rd-drawer-w"), layout.TIROIR, "--rd-drawer-w = layout.TIROIR");
+  assert.equal(v("rd-status-h"), layout.STATUT, "--rd-status-h = layout.STATUT");
+});
+
+test("console-css-design-system : jetons clair/sombre, theme force, et les preferences d'accessibilite sont traitees", () => {
+  const css = lire(path.join(DIR_CSS, "console.css"));
+  for (const t of ["--rd-bg", "--rd-surface", "--rd-surface-2", "--rd-border", "--rd-text", "--rd-text-2", "--rd-accent", "--rd-focus",
+                   "--rd-danger-text", "--rd-ok", "--rd-warn", "--rd-bad"]) {
+    assert.ok(new RegExp(`${t}:`).test(css), `jeton ${t} absent`);
+  }
+  // Chaque jeton qui change entre themes passe par light-dark() : un seul jeu de valeurs.
+  for (const t of ["--rd-bg", "--rd-surface", "--rd-text", "--rd-text-2", "--rd-border", "--rd-focus", "--rd-ok", "--rd-bad"]) {
+    assert.match(css, new RegExp(`${t}:light-dark\\(`), `${t} doit utiliser light-dark()`);
+  }
+  assert.match(css, /color-scheme:light dark/, "suit le systeme par defaut");
+  assert.match(css, /\[data-rd-theme="clair"\]\{color-scheme:light\}/);
+  assert.match(css, /\[data-rd-theme="sombre"\]\{color-scheme:dark\}/);
+  for (const m of ["prefers-reduced-motion:reduce", "prefers-contrast:more", "forced-colors:active", "pointer:coarse", "max-width:719px", "max-width:639px"]) {
+    assert.ok(css.includes(`@media (${m})`), `@media (${m}) absent`);
+  }
+  assert.match(css, /env\(safe-area-inset-bottom/, "zone sure (encoche, barre d'accueil)");
+  assert.match(css, /@starting-style/, "entree animee, sans JavaScript");
+  assert.ok(!/@layer/.test(css.replace(/\/\*[\s\S]*?\*\//g, "")), "pas de @layer : le CSS du gabarit, hors couche, l'emporterait toujours");
+  // Aucune couleur codee en dur hors jetons, sauf blanc/noir fonctionnels et les mots-cles de forced-colors.
+  const sansJetons = css.replace(/--rd-[a-z0-9-]+:[^;]+;/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const dures = sansJetons.match(/#[0-9a-f]{3,8}\b|rgba?\(/gi) || [];
+  assert.deepEqual(dures.filter((c) => !/^#fff$/i.test(c)), [], "couleur codee en dur hors jetons");
+});
+
+test("console-icons-defined : chaque icone demandee par le shell existe, et aucune n'est orpheline", () => {
+  const shell = lireJs(SRC_JS.find((f) => /shell/.test(f)));
+  const definies = new Set([...shell.slice(shell.indexOf("var ICONES"), shell.indexOf("function icone")).matchAll(/^\s{4}([a-z]+):\s*\[/gm)].map((m) => m[1]));
+  const utilisees = new Set([...shell.matchAll(/\bicone\("([a-z]+)"\)/g)].map((m) => m[1]));
+  [...shell.matchAll(/\["\.[a-z]+", "([a-z]+)"\]/g)].forEach((m) => utilisees.add(m[1]));          // habiller() : [".rdfilesbtn", "dossier"], [".quit", "quitter"]
+  [...shell.matchAll(/section\("[A-Za-z]+", "[^"]+", "([a-z]+)"/g)].forEach((m) => utilisees.add(m[1]));
+  assert.ok(definies.size >= 8, "au moins les icones de base : " + [...definies]);
+  for (const n of utilisees) assert.ok(definies.has(n), `icone « ${n} » demandee mais non definie`);
+  for (const n of definies) assert.ok(utilisees.has(n), `icone « ${n} » definie mais jamais utilisee`);
 });
 
 test("console-forbidden-strings : les chaines que la CI refuse dans la page, aussi dans la console", () => {

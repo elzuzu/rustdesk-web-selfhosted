@@ -290,18 +290,30 @@ digits and timestamps are stored (`rd-recent`) — never a host, never a passwor
 (the bundle's own `peers` entry holds the remembered passwords and is left alone).
 The list is seeded once from the IDs the bundle already knew.
 
-**Session console.** Once the bar is expanded, a **⚙ Session** button opens a left
-drawer, *Session settings*, laid out like the GL.iNet GLKVM console: **Video**
-(remote resolution, fit to window, quality, frame-rate cap, codec), **Keyboard**
-(Ctrl ↔ Cmd), **Mouse** (high-frequency pointer events) and **Display** (status
-bar). These are the very same controls as before — moved, not rewritten — so the
-remembered settings and their behaviour are unchanged. A status bar at the bottom
-sums up the HUD (`H.265 1920×1080 / 4664 kbit/s / 60 i/s`); the HUD itself stays.
-The remote image is fitted *between* the bars instead of under them; on a narrow
-screen (< 720 px) the drawer becomes a bottom sheet over the image. Drawer and
-status-bar choices live in `rd-console` (separate from `rd-prefs`). The code is in
-`web/js/` and `web/css/`, assembled into `html/rd-console.js` by
-`scripts/build-web.sh`; if it fails to start, the original bar is left exactly as it was.
+**Session console.** Once the bar is expanded, a **Session** button opens a left drawer, *Session
+settings*, laid out like the GL.iNet GLKVM console: **Video** (remote resolution, fit to window,
+quality, frame-rate cap, codec), **Keyboard** (Ctrl becomes Cmd), **Mouse** (high-frequency pointer
+events) and **Display** (theme, status bar). These are the very same controls as before — moved, not
+rewritten — so the remembered settings and their behaviour are unchanged; each now carries a one-line
+explanation. The top bar shows the remote machine's ID, and a status bar at the bottom sums up the
+HUD (`26 ms · H.265 1920×1080 · 4664 kbit/s · 60 i/s`) with a link-health dot (green under 60 ms,
+amber up to 150 ms, red above, from the median round trip); the HUD itself stays. The remote image is
+fitted *between* the bars instead of under them; on a narrow screen (< 720 px) the drawer becomes a
+bottom sheet over the image and the top bar keeps its icons only.
+
+**Design and accessibility.** Light and dark themes (*Auto* follows the system, or force one in
+*Display*; the remote image area stays black either way), built from `oklch()` tokens with
+`light-dark()`. Text meets 4.5:1 and component borders 3:1 in both themes — the test suite measures it in
+a real browser. Respected: `prefers-reduced-motion`, `prefers-contrast`, forced colours, touch targets of
+44 px on touch screens, safe areas (notches). Switches are native checkboxes (`role="switch"`), the theme
+is an ARIA radio group with arrow keys, every field is named and described. System fonts and inline
+SVG icons only — no external request. The login screen is a responsive card (it used to overflow a
+390 px phone, zooming the whole page out): fields are named for screen readers, **Enter** connects, and
+the cursor lands in the ID field on a mouse (not on a phone, where the keyboard would cover the page).
+
+Drawer, theme and status-bar choices live in `rd-console` (separate from `rd-prefs`). The code is in
+`web/js/` and `web/css/`, assembled into `html/rd-console.js` by `scripts/build-web.sh`; if it fails to
+start, the original bar is left exactly as it was.
 
 ## Codec
 

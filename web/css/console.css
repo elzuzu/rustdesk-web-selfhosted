@@ -1,77 +1,382 @@
 /* Console de session — habille #rdbar, ajoute le tiroir et la barre de statut.
    GENERE dans rd-console.css par scripts/build-web.sh.
 
-   Tout l'habillage de la barre est sous body.rd-console : la console ne pose
-   cette classe qu'APRES un montage reussi (web/js/10-shell.js). Si elle echoue,
-   la page garde exactement l'aspect d'origine.
+   Tout est sous body.rd-console : la console ne pose cette classe qu'APRES un
+   montage reussi (web/js/10-shell.js). Si elle echoue, la page garde exactement
+   l'aspect d'origine.
+
+   Systeme de design
+   - Jetons en oklch() + light-dark() : un seul jeu de valeurs pour les deux themes.
+     Le theme suit le systeme (« Auto ») ou se force (data-rd-theme sur <body>).
+   - Pas de @layer : le CSS du gabarit n'est pas range en couche, il l'emporterait
+     sur toute regle en couche, quelle que soit la specificite.
+   - Aucune ressource externe : polices du systeme, icones SVG inline.
+   - Mouvement progressif (@starting-style, ::details-content), jamais indispensable.
 
    Variables posees par la console sur <html> : --rd-top / --rd-left / --rd-bottom,
    l'espace reserve autour de l'image. #app>#canvas se cale dedans, et le gabarit
    (fitCanvas, placerHud) mesure ce conteneur et non la fenetre. */
-:root{--rd-top:0px;--rd-left:0px;--rd-bottom:0px;
-      --rd-bar-h:40px;--rd-drawer-w:320px;--rd-status-h:26px}
 
-body.rd-console #app>#canvas{inset:var(--rd-top) 0 var(--rd-bottom) var(--rd-left)}
-body.rd-console #rdhud{left:var(--rd-left);bottom:var(--rd-bottom)}
-body.rd-console #rdfiles{top:var(--rd-top);bottom:var(--rd-bottom)}
+:root{--rd-top:0px;--rd-left:0px;--rd-bottom:0px;
+      /* Memes valeurs que web/js/01-pure.js (layout.BARRE / TIROIR / STATUT) : un test les compare. */
+      --rd-bar-h:48px;--rd-drawer-w:336px;--rd-status-h:30px}
+
+body.rd-console{
+  color-scheme:light dark;
+  --rd-safe-b:env(safe-area-inset-bottom,0px);
+
+  --rd-font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --rd-ease:cubic-bezier(.2,.8,.2,1);
+
+  /* Surfaces : fond de la barre / du tiroir, carte, champ, survol. */
+  --rd-bg:light-dark(oklch(.985 .003 265),oklch(.205 .012 265));
+  --rd-surface:light-dark(oklch(1 0 0),oklch(.245 .013 265));
+  --rd-surface-2:light-dark(oklch(.958 .006 265),oklch(.285 .014 265));
+  --rd-surface-3:light-dark(oklch(.925 .01 265),oklch(.33 .016 265));
+  --rd-border:light-dark(oklch(.2 .02 265/.12),oklch(1 0 0/.1));
+  --rd-border-strong:light-dark(oklch(.2 .02 265/.5),oklch(1 0 0/.4));
+
+  /* Texte : 6:1 au moins sur toutes les surfaces ci-dessus, dans les deux themes. */
+  --rd-text:light-dark(oklch(.24 .02 265),oklch(.95 .005 265));
+  --rd-text-2:light-dark(oklch(.46 .02 265),oklch(.76 .012 265));
+
+  /* Accent : un seul remplissage, blanc dessus (> 4,5:1) ; l'anneau de focus est plus clair en sombre. */
+  --rd-accent:oklch(.54 .21 264);
+  --rd-on-accent:oklch(1 0 0);
+  --rd-focus:light-dark(oklch(.5 .21 264),oklch(.78 .13 264));
+
+  --rd-danger:oklch(.5 .19 25);
+  --rd-danger-text:light-dark(oklch(.46 .19 25),oklch(.8 .14 25));
+
+  /* Sante de la liaison (points, jamais seuls : le texte dit la meme chose). */
+  --rd-ok:light-dark(oklch(.56 .16 155),oklch(.75 .17 155));
+  --rd-warn:light-dark(oklch(.6 .15 65),oklch(.82 .15 85));
+  --rd-bad:light-dark(oklch(.54 .2 25),oklch(.7 .19 25));
+  --rd-warn-text:light-dark(oklch(.45 .12 65),oklch(.85 .12 85));
+
+  --rd-shadow-pop:0 8px 28px oklch(0 0 0/.28),0 1px 3px oklch(0 0 0/.2);
+  --rd-shadow-sheet:0 -10px 32px oklch(0 0 0/.28);
+}
+body.rd-console[data-rd-theme="clair"]{color-scheme:light}
+body.rd-console[data-rd-theme="sombre"]{color-scheme:dark}
+
+/* L'image se cale entre les barres ; le HUD et le panneau de fichiers aussi. */
+body.rd-console #app>#canvas{inset:var(--rd-top) 0 calc(var(--rd-bottom) + var(--rd-safe-b)) var(--rd-left)}
+body.rd-console #rdhud{left:var(--rd-left);bottom:calc(var(--rd-bottom) + var(--rd-safe-b))}
+body.rd-console #rdfiles{top:var(--rd-top);bottom:calc(var(--rd-bottom) + var(--rd-safe-b))}
+
+/* ------------------------------------------------------------ icones */
+body.rd-console .rdico{inline-size:1.0625rem;block-size:1.0625rem;flex:none;fill:none;stroke:currentColor;
+       stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
 
 /* ------------------------------------------------------------ barre haute
    #rdbar deplie : pleine largeur, opaque, reservee. Repliee, elle redevient la
-   poignee flottante d'origine (regles #rdbar.replie du gabarit, inchangees). */
-body.rd-console #rdbar:not(.replie){left:0;right:0;height:var(--rd-bar-h);box-sizing:border-box;
-       padding:0 .6rem;gap:.5rem;border:0;border-bottom:1px solid rgba(255,255,255,.08);
-       border-radius:0;background:#14171c;backdrop-filter:none;opacity:1}
-body.rd-console #rdbar .rdsession{order:-1;margin-right:auto;display:inline-flex;
-       align-items:center;gap:.35rem;padding:.3rem .75rem}
-body.rd-console #rdbar .rdsession[aria-expanded="true"]{background:#024eff}
+   poignee flottante d'origine (regles #rdbar.replie du gabarit, inchangees).
+   Les enfants directs du gabarit (.rdppbtn, .rdfilesbtn, .quit, .rdhandle) gardent
+   leur place dans l'arbre ; seul « order » les range. */
+body.rd-console #rdbar:not(.replie){left:0;right:0;block-size:var(--rd-bar-h);box-sizing:border-box;
+       padding-block:0;
+       padding-inline:max(.75rem,env(safe-area-inset-left)) max(.75rem,env(safe-area-inset-right));
+       gap:.5rem;border:0;border-block-end:1px solid var(--rd-border);border-radius:0;
+       background:var(--rd-bg);backdrop-filter:none;opacity:1;
+       color:var(--rd-text);font:500 .8125rem/1 var(--rd-font)}
+body.rd-console #rdbar:not(.replie) button{display:inline-flex;align-items:center;justify-content:center;gap:.45rem;
+       block-size:2rem;padding:0 .75rem;margin:0;border:1px solid transparent;border-radius:.625rem;
+       background:transparent;color:var(--rd-text);font:inherit;cursor:pointer;
+       transition:background-color .12s,border-color .12s,scale .12s}
+body.rd-console #rdbar:not(.replie) button:hover{background:var(--rd-surface-2)}
+body.rd-console #rdbar:not(.replie) button:active{scale:.97}
+body.rd-console #rdbar:not(.replie) .rdsession{order:-3}
+body.rd-console #rdbar:not(.replie) .rdsession[aria-expanded="true"]{background:var(--rd-accent);color:var(--rd-on-accent)}
+body.rd-console #rdbar:not(.replie) .rdsession[aria-expanded="true"]:hover{
+       background:color-mix(in oklch,var(--rd-accent),black 12%)}
+body.rd-console #rdbar:not(.replie) .rdppbtn{order:-1;color:var(--rd-text);
+       background:color-mix(in oklch,var(--rd-ok) 22%,var(--rd-bg));
+       border-color:color-mix(in oklch,var(--rd-ok) 55%,transparent)}
+body.rd-console #rdbar:not(.replie) .rdppbtn:hover{background:color-mix(in oklch,var(--rd-ok) 32%,var(--rd-bg))}
+body.rd-console #rdbar:not(.replie) .rdfilesbtn{margin-inline-start:auto;background:var(--rd-surface-2);
+       border-color:var(--rd-border)}
+body.rd-console #rdbar:not(.replie) .rdfilesbtn:hover{background:var(--rd-surface-3)}
+body.rd-console #rdbar:not(.replie) button.quit{color:var(--rd-danger-text);
+       background:color-mix(in oklch,var(--rd-danger) 14%,transparent)}
+body.rd-console #rdbar:not(.replie) button.quit:hover{background:color-mix(in oklch,var(--rd-danger) 26%,transparent)}
+body.rd-console #rdbar:not(.replie) .rdhandle{inline-size:2rem;padding:0;font-size:1rem;color:var(--rd-text-2)}
+
+/* Le poste distant : l'emplacement du futur « changer d'appareil ». */
+body.rd-console #rdbar .rdpair{order:-2;display:inline-flex;align-items:center;gap:.45rem;
+       padding:.3125rem .75rem;border:1px solid var(--rd-border);border-radius:999px;
+       background:var(--rd-surface);color:var(--rd-text-2);font:500 .8125rem/1 var(--rd-font);
+       font-variant-numeric:tabular-nums;white-space:nowrap}
+body.rd-console #rdbar .rdpair[hidden]{display:none}
+
+/* Focus : un anneau net, jamais supprime, jamais sur un clic a la souris. */
+body.rd-console #rdbar button:focus-visible,
+body.rd-console #rddrawer :is(button,select,summary,input):focus-visible{
+       outline:2px solid var(--rd-focus);outline-offset:2px}
 
 /* -------------------------------------------------------------- tiroir */
-#rddrawer{position:fixed;top:var(--rd-top);bottom:var(--rd-bottom);left:0;width:var(--rd-drawer-w);
-       z-index:9;display:flex;flex-direction:column;box-sizing:border-box;
-       background:#14171c;color:#e6e8ec;border-right:1px solid rgba(255,255,255,.08);
-       font-size:.82rem;overflow:hidden}
-#rddrawer[hidden],#rdstatut[hidden]{display:none!important}
+#rddrawer{position:fixed;top:var(--rd-top);bottom:calc(var(--rd-bottom) + var(--rd-safe-b));left:0;
+       inline-size:var(--rd-drawer-w);max-inline-size:100vw;z-index:9;
+       display:flex;flex-direction:column;box-sizing:border-box;contain:layout paint;
+       background:var(--rd-bg);color:var(--rd-text);border-inline-end:1px solid var(--rd-border);
+       font:400 .8125rem/1.4 var(--rd-font);overflow:hidden;
+       transition:opacity .18s var(--rd-ease),translate .22s var(--rd-ease),display .22s allow-discrete}
+#rddrawer[hidden]{display:none;opacity:0;translate:-14px 0}
+@starting-style{#rddrawer{opacity:0;translate:-14px 0}}
+
 #rddrawer .rdtete{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;
-       padding:.55rem .75rem;border-bottom:1px solid rgba(255,255,255,.08)}
-#rddrawer .rdtete b{font-size:.9rem}
-#rddrawer .rdcorps{flex:1 1 auto;overflow:auto;padding:.15rem 0}
-#rddrawer details{border-bottom:1px solid rgba(255,255,255,.06)}
-#rddrawer summary{cursor:pointer;padding:.6rem .75rem;font-weight:600;list-style:none;
-       display:flex;align-items:center;gap:.4rem}
+       padding:.75rem .75rem .75rem 1rem;border-block-end:1px solid var(--rd-border)}
+#rddrawer .rdtete b{font-size:.9375rem;font-weight:650;letter-spacing:-.005em}
+#rddrawer .rdcorps{flex:1 1 auto;overflow:auto;overscroll-behavior:contain;padding-block:.25rem;
+       scrollbar-width:thin;scrollbar-color:var(--rd-border-strong) transparent}
+
+#rddrawer details{border-block-end:1px solid var(--rd-border);interpolate-size:allow-keywords}
+#rddrawer summary{display:flex;align-items:center;gap:.65rem;padding:.8rem 1rem;cursor:pointer;
+       list-style:none;user-select:none;-webkit-user-select:none;font-weight:600;
+       transition:background-color .12s}
 #rddrawer summary::-webkit-details-marker{display:none}
-#rddrawer summary::before{content:"\25B8";color:#8b94a3;font-size:.7rem;transition:transform .12s}
-#rddrawer details[open]>summary::before{transform:rotate(90deg)}
-#rddrawer summary:focus-visible{outline:2px solid #7aa2ff;outline-offset:-2px}
-#rddrawer .rdsec-corps{padding:0 0 .4rem}
-#rddrawer .rdrow{display:flex;align-items:center;justify-content:space-between;gap:.75rem;
-       padding:.3rem .75rem}
-#rddrawer .rdlib{flex:1 1 auto;color:#c4cad4}
-#rddrawer select{padding:.25rem .4rem;font-size:.8rem;border-radius:5px;max-width:11rem;
-       border:1px solid #3a3f47;background:#24272e;color:#e6e8ec}
-#rddrawer button{padding:.25rem .65rem;font-size:.8rem;border-radius:5px;border:0;
-       background:#2a2f38;color:#e6e8ec;cursor:pointer;margin:0}
-#rddrawer button:hover{background:#3a4150}
-#rddrawer button:focus-visible,#rddrawer select:focus-visible,#rddrawer .rdsw:focus-visible{
-       outline:2px solid #7aa2ff;outline-offset:1px}
-#rddrawer .rdsw{width:1.1rem;height:1.1rem;margin:0;accent-color:#024eff;cursor:pointer}
-#rddrawer .rdfermer{background:transparent;font-size:1rem;line-height:1;padding:.15rem .5rem}
+#rddrawer summary:hover{background:var(--rd-surface-2)}
+#rddrawer summary .rdico{color:var(--rd-text-2)}
+#rddrawer summary::after{content:"";margin-inline-start:auto;inline-size:.45rem;block-size:.45rem;
+       border-inline-end:1.75px solid var(--rd-text-2);border-block-end:1.75px solid var(--rd-text-2);
+       rotate:-45deg;transition:rotate .18s var(--rd-ease)}
+#rddrawer details[open]>summary::after{rotate:45deg}
+#rddrawer details::details-content{block-size:0;overflow:clip;
+       transition:block-size .22s var(--rd-ease),content-visibility .22s allow-discrete}
+#rddrawer details[open]::details-content{block-size:auto}
+#rddrawer .rdsec-corps{padding:.1rem 0 .6rem}
+
+#rddrawer .rdrow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:1rem;
+       padding:.5rem 1rem;min-block-size:2.75rem}
+#rddrawer .rdtxt{display:grid;gap:.15rem;min-inline-size:0}
+#rddrawer .rdlib{color:var(--rd-text);font-weight:500}
+#rddrawer .rdaide{color:var(--rd-text-2);font-size:.75rem;line-height:1.35}
+
+/* Champs et boutons du tiroir (les originaux du gabarit, deplaces). */
+#rddrawer select,#rddrawer .rdrow>button{block-size:2rem;margin:0;font:inherit;font-weight:500;
+       border-radius:.5rem;color:var(--rd-text);cursor:pointer}
+#rddrawer select{min-inline-size:8.5rem;max-inline-size:11rem;padding:0 .6rem;
+       border:1px solid var(--rd-border-strong);background:var(--rd-surface)}
+#rddrawer .rdrow>button{padding:0 .85rem;border:1px solid var(--rd-border);background:var(--rd-surface-2);
+       transition:background-color .12s,scale .12s}
+#rddrawer .rdrow>button:hover{background:var(--rd-surface-3)}
+#rddrawer .rdrow>button:active{scale:.97}
+#rddrawer [hidden]{display:none!important}                    /* le bouton d'origine que pilote un interrupteur */
+#rddrawer .rdsw-wrap{display:contents}
+#rddrawer .rdfermer{display:inline-grid;place-items:center;inline-size:2rem;block-size:2rem;padding:0;margin:0;
+       border:0;border-radius:.5rem;background:transparent;color:var(--rd-text-2);cursor:pointer;
+       transition:background-color .12s}
+#rddrawer .rdfermer:hover{background:var(--rd-surface-2);color:var(--rd-text)}
+
+/* Interrupteur : case native (clavier, lecteurs d'ecran) habillee en commutateur. */
+#rddrawer .rdsw{appearance:none;-webkit-appearance:none;position:relative;flex:none;margin:0;
+       inline-size:2.5rem;block-size:1.5rem;border-radius:999px;cursor:pointer;
+       background:var(--rd-surface-3);border:1px solid var(--rd-border-strong);
+       transition:background-color .16s,border-color .16s}
+#rddrawer .rdsw::after{content:"";position:absolute;inset-block:.1875rem;inset-inline-start:.1875rem;
+       inline-size:1.0625rem;border-radius:50%;background:var(--rd-text-2);
+       transition:translate .18s var(--rd-ease),background-color .16s}
+#rddrawer .rdsw:checked{background:var(--rd-accent);border-color:transparent}
+#rddrawer .rdsw:checked::after{translate:1rem 0;background:var(--rd-on-accent)}
+#rddrawer .rdsw:active::after{inline-size:1.25rem}
+
+/* Choix exclusif : trois segments, un seul actif. */
+#rddrawer .rdsegmented{display:inline-grid;grid-auto-flow:column;gap:.125rem;padding:.1875rem;
+       border-radius:.625rem;background:var(--rd-surface-2);border:1px solid var(--rd-border)}
+#rddrawer .rdsegmented button{block-size:1.625rem;padding:0 .7rem;margin:0;border:0;border-radius:.4375rem;
+       background:transparent;color:var(--rd-text-2);font:inherit;font-weight:500;cursor:pointer;
+       transition:background-color .14s,color .14s,box-shadow .14s}
+#rddrawer .rdsegmented button:hover{color:var(--rd-text)}
+#rddrawer .rdsegmented button[aria-checked="true"]{background:var(--rd-surface);color:var(--rd-text);
+       box-shadow:0 1px 2px oklch(0 0 0/.18),0 0 0 1px var(--rd-border)}
+
+/* Listes deroulantes personnalisables (Chrome 135+) : memes jetons, memes coins. Ailleurs, natives. */
+@supports (appearance:base-select){
+  #rddrawer select,#rddrawer select::picker(select){appearance:base-select}
+  #rddrawer select{display:inline-flex;align-items:center;justify-content:space-between;gap:.5rem}
+  /* Le chevron est dessine en CSS (comme celui des sections), pas par le triangle par defaut. */
+  #rddrawer select::picker-icon{content:"";flex:none;inline-size:.4375rem;block-size:.4375rem;
+         border-inline-end:1.75px solid var(--rd-text-2);border-block-end:1.75px solid var(--rd-text-2);
+         rotate:45deg;translate:0 -.1rem;transition:rotate .18s var(--rd-ease)}
+  #rddrawer select:open::picker-icon{rotate:225deg;translate:0 .1rem}
+  #rddrawer select::picker(select){margin-block:.25rem;padding:.25rem;border:1px solid var(--rd-border-strong);
+         border-radius:.75rem;background:var(--rd-surface);color:var(--rd-text);box-shadow:var(--rd-shadow-pop)}
+  #rddrawer select option{padding:.4rem .6rem;border-radius:.4375rem}
+  #rddrawer select option:hover,#rddrawer select option:focus-visible{background:var(--rd-surface-2)}
+  #rddrawer select option:checked{background:color-mix(in oklch,var(--rd-accent) 18%,var(--rd-surface));font-weight:600}
+}
 
 /* ----------------------------------------------------- barre de statut */
-#rdstatut{position:fixed;left:0;right:0;bottom:0;height:var(--rd-status-h);z-index:9;
-       display:flex;align-items:center;gap:.6rem;padding:0 .75rem;box-sizing:border-box;
-       background:#14171c;border-top:1px solid rgba(255,255,255,.08);
-       color:#a8b0bd;font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+#rdstatut{position:fixed;inset-inline:0;bottom:0;z-index:9;box-sizing:border-box;
+       block-size:calc(var(--rd-status-h) + var(--rd-safe-b));padding-block-end:var(--rd-safe-b);
+       padding-inline:max(.75rem,env(safe-area-inset-left)) max(.75rem,env(safe-area-inset-right));
+       display:flex;align-items:center;gap:1rem;
+       background:var(--rd-bg);border-block-start:1px solid var(--rd-border);color:var(--rd-text-2);
+       font:500 .75rem/1 var(--rd-font);font-variant-numeric:tabular-nums;
        white-space:nowrap;overflow:hidden;user-select:none;-webkit-user-select:none}
-#rdstatut .rdpastille{color:#3ecf8e;font-size:.7rem}
-#rdstatut .rdst-etat{margin-left:auto;color:#ffd7a8}
+#rdstatut[hidden]{display:none}
+#rdstatut .rdlien{display:inline-flex;align-items:center;gap:.5rem}
+#rdstatut .rddot{inline-size:.5rem;block-size:.5rem;border-radius:50%;background:var(--rd-text-2);
+       transition:background-color .3s,box-shadow .3s}
+#rdstatut .rdlien[data-sante="bonne"] .rddot{background:var(--rd-ok);box-shadow:0 0 0 3px color-mix(in oklch,var(--rd-ok) 26%,transparent)}
+#rdstatut .rdlien[data-sante="moyenne"] .rddot{background:var(--rd-warn);box-shadow:0 0 0 3px color-mix(in oklch,var(--rd-warn) 26%,transparent)}
+#rdstatut .rdlien[data-sante="mauvaise"] .rddot{background:var(--rd-bad);box-shadow:0 0 0 3px color-mix(in oklch,var(--rd-bad) 26%,transparent)}
+#rdstatut .rdrtt{color:var(--rd-text);min-inline-size:3.2em}
+#rdstatut .rdst-ligne{display:inline-flex;align-items:center;min-inline-size:0;overflow:hidden;color:var(--rd-text)}
+#rdstatut .rdseg+.rdseg::before{content:"";display:inline-block;inline-size:1px;block-size:.9em;
+       margin-inline:.75rem;vertical-align:-.1em;background:var(--rd-border-strong)}
+#rdstatut .rdst-etat{margin-inline-start:auto;color:var(--rd-warn-text)}
 
-/* Ecran etroit : le tiroir devient une feuille basse qui recouvre l'image au
-   lieu de la pousser (la console ne reserve alors rien a gauche, cf. 01-pure.js). */
+/* ---------------------------------------- panneau de fichiers et fenetre modale
+   Memes surfaces que la console. Les regles d'origine (gabarit) restent la base : on ne
+   change ici que les couleurs et les coins, jamais la structure. */
+body.rd-console #rdfiles{background:var(--rd-bg);color:var(--rd-text);backdrop-filter:none;
+       border-inline-start:1px solid var(--rd-border);font-family:var(--rd-font);box-shadow:var(--rd-shadow-pop)}
+body.rd-console #rdfiles header,body.rd-console #rdfiles nav{border-color:var(--rd-border)}
+body.rd-console #rdfiles button{background:var(--rd-surface-2);color:var(--rd-text);border-radius:.5rem;
+       transition:background-color .12s}
+body.rd-console #rdfiles button:hover{background:var(--rd-surface-3)}
+body.rd-console #rdfiles button.danger{background:var(--rd-danger);color:#fff}
+body.rd-console #rdfiles button.danger:hover{background:color-mix(in oklch,var(--rd-danger),black 14%)}
+body.rd-console #rdfiles li{border-block-end-color:var(--rd-border)}
+body.rd-console #rdfiles li:hover{background:var(--rd-surface-2)}
+body.rd-console #rdfiles li .actes button{background:transparent}
+body.rd-console #rdfiles :is(.etat,.fil,li .meta,.vide,.job .t em){color:var(--rd-text-2)}
+body.rd-console #rdfiles .fil a{color:var(--rd-focus)}
+body.rd-console #rdfiles .etat.err,body.rd-console #rdfiles .job.ko .t span:first-child{color:var(--rd-danger-text)}
+body.rd-console #rdfiles .files,body.rd-console #rdfiles .job{border-color:var(--rd-border)}
+body.rd-console #rdfiles progress{accent-color:var(--rd-accent)}
+body.rd-console #rdfiles button:focus-visible{outline:2px solid var(--rd-focus);outline-offset:2px}
+body.rd-console #rdmodal .boite{background:var(--rd-bg);color:var(--rd-text);border-color:var(--rd-border-strong);
+       border-radius:.875rem;font-family:var(--rd-font);box-shadow:var(--rd-shadow-pop)}
+body.rd-console #rdmodal .boite input{background:var(--rd-surface);color:var(--rd-text);border-color:var(--rd-border-strong)}
+body.rd-console #rdmodal .boite .avert{color:var(--rd-danger-text)}
+body.rd-console #rdmodal .boite button{background:var(--rd-surface-2);color:var(--rd-text);border-radius:.5rem}
+body.rd-console #rdmodal .boite button.ok{background:var(--rd-accent);color:var(--rd-on-accent)}
+body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);color:#fff}
+
+/* ---------------------------------------------------------------- tactile */
+@media (pointer:coarse){
+  body.rd-console #rdbar:not(.replie) button{min-block-size:2.75rem}
+  #rddrawer .rdrow{min-block-size:3.25rem}
+  #rddrawer select,#rddrawer .rdrow>button{block-size:2.75rem}
+  #rddrawer .rdsegmented button{block-size:2.25rem}
+  #rddrawer .rdsw{inline-size:3rem;block-size:1.75rem}
+  #rddrawer .rdsw::after{inline-size:1.3125rem}
+  #rddrawer .rdsw:checked::after{translate:1.25rem 0}
+  #rddrawer .rdfermer{inline-size:2.75rem;block-size:2.75rem}
+}
+
+/* ---------------------------------------------------------- ecran etroit
+   Le tiroir devient une feuille basse qui recouvre l'image au lieu de la pousser (la console
+   ne reserve alors rien a gauche, cf. 01-pure.js). 719 px : meme seuil que layout.ETROIT - 1. */
 @media (max-width:719px){
-  #rddrawer{top:auto;left:0;right:0;width:auto;max-height:60vh;border-right:0;
-       border-top:1px solid rgba(255,255,255,.08)}
-  body.rd-console #rdbar .rdsession{padding:.3rem .5rem}
-  /* Le HUD (z-index 10) recouvrirait la feuille ; son affichage est pose en ligne
-     par le veilleur du gabarit, d'ou !important. Le resume reste en barre de statut. */
+  #rddrawer{top:auto;bottom:calc(var(--rd-bottom) + var(--rd-safe-b));left:0;right:0;inline-size:auto;
+       max-block-size:min(70dvh,34rem);border-inline-end:0;border-block-start:1px solid var(--rd-border);
+       border-start-start-radius:1rem;border-start-end-radius:1rem;box-shadow:var(--rd-shadow-sheet)}
+  #rddrawer[hidden]{translate:0 18px}
+  @starting-style{#rddrawer{translate:0 18px}}
+  #rddrawer .rdtete{position:relative;padding-block-start:1.25rem}
+  #rddrawer .rdtete::before{content:"";position:absolute;inset-block-start:.5rem;inset-inline:0;margin-inline:auto;
+       inline-size:2.25rem;block-size:.25rem;border-radius:999px;background:var(--rd-border-strong)}
+  /* Le HUD (z-index 10) recouvrirait la feuille ; son affichage est pose en ligne par le veilleur
+     du gabarit, d'ou !important. Le resume reste en barre de statut. */
   body.rd-console.rd-tiroir #rdhud{display:none!important}
+}
+/* Barre haute : les libelles passent en « visuellement masque » (ils restent lus par les lecteurs d'ecran). */
+@media (max-width:639px){
+  body.rd-console #rdbar .rdlbl{position:absolute;inline-size:1px;block-size:1px;margin:-1px;padding:0;
+       overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  body.rd-console #rdbar:not(.replie) button{padding:0 .6rem}
+  body.rd-console #rdbar .rdpair{padding-inline:.6rem}
+}
+
+/* ----------------------------------------------------------- preferences */
+@media (prefers-reduced-motion:reduce){
+  #rddrawer,#rddrawer *,#rdstatut *,body.rd-console #rdbar button{transition-duration:.01ms!important;
+       animation-duration:.01ms!important}
+  #rddrawer[hidden]{translate:0 0}
+  @starting-style{#rddrawer{translate:0 0}}
+}
+@media (prefers-contrast:more){
+  body.rd-console{--rd-border:light-dark(oklch(.2 .02 265/.5),oklch(1 0 0/.55));
+                  --rd-border-strong:light-dark(oklch(.2 .02 265/.75),oklch(1 0 0/.8))}
+}
+@media (forced-colors:active){
+  #rddrawer,#rdstatut,body.rd-console #rdbar:not(.replie),body.rd-console #rdfiles{
+       background:Canvas;color:CanvasText;border-color:CanvasText}
+  #rddrawer .rdsw{border-color:ButtonText;background:ButtonFace}
+  #rddrawer .rdsw:checked{background:Highlight;border-color:Highlight}
+  #rddrawer .rdsw::after{background:ButtonText}
+  #rddrawer .rdsw:checked::after{background:HighlightText}
+  #rddrawer .rdsegmented button[aria-checked="true"]{background:Highlight;color:HighlightText}
+  #rdstatut .rddot{background:CanvasText;box-shadow:none}
+  body.rd-console #rdbar:not(.replie) .rdsession[aria-expanded="true"]{background:Highlight;color:HighlightText}
+}
+
+/* ===================================================== ecran de connexion
+   Le formulaire du bundle (un <table> de trois lignes), son invite de mot de passe et son ecran
+   d'attente, habilles en carte. TOUJOURS sombre : c'est l'ecran d'avant la session, sur le fond
+   sombre de la page ; le theme du tiroir ne s'y applique pas (il n'existe qu'une fois en session).
+   Les memes valeurs que les jetons de la console, cote sombre. Specificite : le gabarit pose
+   « #app>#connect », « #app input » et « #app td » ; chaque regle ci-dessous les surpasse. */
+#app{--lg-bg:oklch(.205 .012 265);--lg-field:oklch(.245 .013 265);--lg-field-2:oklch(.285 .014 265);
+     --lg-border:oklch(1 0 0/.1);--lg-border-strong:oklch(1 0 0/.45);--lg-text:oklch(.95 .005 265);
+     --lg-text-2:oklch(.76 .012 265);--lg-accent:oklch(.54 .21 264);--lg-focus:oklch(.78 .13 264)}
+#app>:is(#connect,#password,#status){box-sizing:border-box;max-inline-size:27rem;
+     margin:clamp(1.25rem,10dvh,6rem) auto 0;padding:1.75rem 1.5rem 1.5rem;
+     border:1px solid var(--lg-border);border-radius:1.25rem;background:var(--lg-bg);color:var(--lg-text);
+     text-align:start!important;font:400 .9375rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+     box-shadow:0 1px 0 oklch(1 0 0/.04) inset,0 28px 70px oklch(0 0 0/.5),0 0 90px oklch(.5 .2 264/.1)}
+#app>:is(#connect,#password,#status)::before{display:block;margin-block-end:1.25rem;
+     font-size:1.25rem;font-weight:650;line-height:1.2;letter-spacing:-.012em}
+#app>#connect::before{content:"Connexion au poste distant"}
+#app>#password::before{content:"Mot de passe du poste"}
+#app>#status::before{content:"Connexion en cours"}
+
+#app>#connect :is(table,tbody,tr,td){display:block!important;inline-size:100%;padding:0;box-sizing:border-box}
+#app>#connect tr{margin-block-end:.9rem}
+#app>#connect td:has(>span){margin-block-end:.3rem;font-size:.75rem;font-weight:600;letter-spacing:.02em;
+     color:var(--lg-text-2)}
+#app>#connect td:empty{display:none!important}
+#app :is(input,#confirm,#cancel,#connect button){font-family:inherit}
+#app>:is(#connect,#password) input{inline-size:100%;min-inline-size:0;box-sizing:border-box;
+     block-size:2.75rem;padding:0 .85rem;border:1px solid var(--lg-border-strong);border-radius:.75rem;
+     background:var(--lg-field);color:var(--lg-text);font-size:1rem;     /* 16 px : iOS ne zoome pas au focus */
+     transition:border-color .14s,box-shadow .14s}
+#app>#connect :is(#host,#key){block-size:2.25rem;font:500 .8125rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+     color:var(--lg-text-2);background:transparent}
+#app>#connect #id{font-size:1.125rem;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.04em}
+#app>:is(#connect,#password) input:focus-visible{outline:none;border-color:var(--lg-focus);
+     box-shadow:0 0 0 3px oklch(.78 .13 264/.28)}
+#app>#connect #rd-recents{max-inline-size:none}
+
+/* Boutons : « Connect » / « Confirm » en accent, « Cancel » en retrait. Seul le bouton direct d'une
+   cellule est touche : les pastilles « dernieres connexions » gardent leur style. */
+#app>#connect td>button,#app>#password #confirm,#app>#password #cancel,#app>#status #cancel{
+     display:inline-flex;align-items:center;justify-content:center;block-size:2.75rem;margin:.35rem 0 0;
+     padding:0 1.25rem;border:1px solid transparent;border-radius:.75rem;font-size:.9375rem;font-weight:600;
+     cursor:pointer;transition:background-color .14s,scale .12s,border-color .14s}
+#app>#connect td>button,#app>#password #confirm{inline-size:100%;background:var(--lg-accent);color:oklch(1 0 0)}
+#app>#password #confirm{inline-size:auto;margin-inline-end:.5rem}
+#app>#password #cancel,#app>#status #cancel{background:var(--lg-field-2);color:var(--lg-text);border-color:var(--lg-border)}
+#app>#connect td>button:hover,#app>#password #confirm:hover{background:oklch(.48 .21 264)}
+#app>#password #cancel:hover,#app>#status #cancel:hover{background:oklch(.33 .016 265)}
+#app>:is(#connect,#password,#status) button:active{scale:.98}
+#app>:is(#connect,#password,#status) button:focus-visible{outline:2px solid var(--lg-focus);outline-offset:2px}
+
+/* Telephone : la carte occupe l'ecran, plus de debordement horizontal (le gabarit imposait 22 rem
+   aux champs, soit 444 px de table pour 390 px d'ecran : toute la page se dezoomait). */
+@media (max-width:480px){
+  #app>:is(#connect,#password,#status){max-inline-size:none;margin:0;min-block-size:100dvh;
+       border:0;border-radius:0;box-shadow:none;
+       padding:max(1.5rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-right)) 1.5rem max(1rem,env(safe-area-inset-left))}
+}
+@media (prefers-reduced-motion:reduce){
+  #app :is(input,button){transition-duration:.01ms!important}
+}
+@media (forced-colors:active){
+  #app>:is(#connect,#password,#status){border-color:CanvasText;background:Canvas;color:CanvasText}
+  #app>:is(#connect,#password) input{border-color:ButtonText;background:Field;color:FieldText}
+  #app>#connect td>button,#app>#password #confirm{background:ButtonFace;color:ButtonText;border-color:ButtonText}
 }

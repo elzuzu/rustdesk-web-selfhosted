@@ -107,6 +107,7 @@ async function sessionSimulee(p, { version = "1.4.2" } = {}) {
       getRemember: () => true, setRemember() {}, getOption: () => undefined };
     const sb = window.setByName; window.setByName = function (n, x) { window.__touches.push([n, x]); try { return sb.apply(this, arguments); } catch (e) { /* pas de vraie session */ } };
     document.getElementById("canvas").style.display = "block";
+    document.getElementById("connect").style.display = "none";          // une vraie session masque le formulaire
     window.RD.ready = true;
   }, version);
   await p.waitForFunction(() => getComputedStyle(document.getElementById("rdbar")).display !== "none", null, { timeout: 5000 });
@@ -447,23 +448,29 @@ await test("console-moved-controls-still-work : qualite, cadence, codec, Ctrl↔
   assert.deepEqual([e.prefs.quality, e.prefs.fps, e.prefs.codec], ["best", 60, "vp9"], "rd-prefs ecrit comme avant");
   assert.equal(e.forced, "vp9");
   const avant = await p.evaluate(() => localStorage.getItem("rd-swap-ctrl"));
-  await p.click('#rddrawer [data-rd="swap"]');
+  // Ctrl↔Cmd : un interrupteur pilote le bouton d'origine, cache dans le tiroir ; l'etat se relit a la source.
+  const sw = '#rddrawer .rdsw[data-pour="swap"]';
+  assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector('#rddrawer [data-rd="swap"]')).display), "none", "le bouton d'origine est masque");
+  assert.equal(await p.isChecked(sw), avant !== "0", "l'interrupteur reflete l'etat memorise");
+  await p.click(sw);
   const apres = await p.evaluate(() => localStorage.getItem("rd-swap-ctrl"));
   assert.notEqual(apres, avant, "Ctrl↔Cmd bascule et se memorise");
+  assert.equal(await p.isChecked(sw), apres !== "0", "et l'interrupteur suit");
 });
 
 await test("console-reserves-space-for-bars : l'image se cale entre barre, tiroir et statut, et rien ne la recouvre", async (p) => {
   await sessionSimulee(p); await montee(p); await grandEcran(p);
+  const K = await p.evaluate(() => ({ b: RDConsole.layout.BARRE, t: RDConsole.layout.TIROIR, s: RDConsole.layout.STATUT }));
   const cadre = () => p.evaluate(() => { const c = document.getElementById("canvas").getBoundingClientRect();
     return { top: Math.round(c.top), left: Math.round(c.left), bas: Math.round(innerHeight - c.bottom), droite: Math.round(innerWidth - c.right) }; });
   await p.waitForFunction(() => document.getElementById("rdstatut") && !document.getElementById("rdstatut").hidden, null, { timeout: 3000 });
-  assert.deepEqual(await cadre(), { top: 0, left: 0, bas: 26, droite: 0 }, "defaut : barre repliee, tiroir ferme, statut visible");
+  assert.deepEqual(await cadre(), { top: 0, left: 0, bas: K.s, droite: 0 }, "defaut : barre repliee, tiroir ferme, statut visible");
   await p.click(".rdhandle");
-  await p.waitForFunction(() => Math.round(document.getElementById("canvas").getBoundingClientRect().top) === 40, null, { timeout: 3000 });
-  assert.deepEqual(await cadre(), { top: 40, left: 0, bas: 26, droite: 0 }, "barre depliee");
+  await p.waitForFunction((n) => Math.round(document.getElementById("canvas").getBoundingClientRect().top) === n, K.b, { timeout: 3000 });
+  assert.deepEqual(await cadre(), { top: K.b, left: 0, bas: K.s, droite: 0 }, "barre depliee");
   await p.click("#rdbar .rdsession");
-  await p.waitForFunction(() => Math.round(document.getElementById("canvas").getBoundingClientRect().left) === 320, null, { timeout: 3000 });
-  assert.deepEqual(await cadre(), { top: 40, left: 320, bas: 26, droite: 0 }, "tiroir ouvert : l'image est poussee");
+  await p.waitForFunction((n) => Math.round(document.getElementById("canvas").getBoundingClientRect().left) === n, K.t, { timeout: 3000 });
+  assert.deepEqual(await cadre(), { top: K.b, left: K.t, bas: K.s, droite: 0 }, "tiroir ouvert : l'image est poussee");
   const s = await p.evaluate(() => {
     const r = (e) => e.getBoundingClientRect(), v = r(window.__rdActive()), b = r(document.getElementById("rdbar")),
           t = r(document.getElementById("rddrawer")), st = r(document.getElementById("rdstatut"));
@@ -498,11 +505,11 @@ await test("console-escape-and-focus : Echap ferme le tiroir sans rien envoyer a
 await test("console-status-bar-and-persistence : le resume du HUD, un interrupteur, et des reglages qui survivent au rechargement", async (p) => {
   await sessionSimulee(p); await montee(p);
   await p.evaluate(() => { window.RD.stats.bitrate = 4664; });
-  await p.waitForFunction(() => /4664 kbit\/s/.test(document.querySelector(".rdst-ligne").textContent), null, { timeout: 5000 });
-  const ligne = await p.evaluate(() => document.querySelector(".rdst-ligne").textContent);
+  await p.waitForFunction(() => /4664 kbit\/s/.test(document.querySelector(".rdst-ligne").getAttribute("data-ligne") || ""), null, { timeout: 5000 });
+  const ligne = await p.evaluate(() => document.querySelector(".rdst-ligne").getAttribute("data-ligne"));
   assert.match(ligne, /^(H\.265|VP9|Logiciel)( \d+×\d+)? \/ 4664 kbit\/s \/ (\d+ i\/s|—)$/, ligne);
   await ouvrirTiroir(p);
-  await p.uncheck('#rddrawer .rdsec[data-sec="secAffichage"] .rdsw');
+  await p.uncheck('#rddrawer .rdsw[data-pour="statut"]');
   assert.equal(await p.evaluate(() => document.getElementById("rdstatut").hidden), true, "la barre de statut se masque");
   const stocke = await p.evaluate(() => JSON.parse(localStorage.getItem("rd-console")));
   assert.equal(stocke.statut, "masquee"); assert.equal(stocke.drawer, "ouvert");
@@ -568,7 +575,7 @@ await test("console-mouse-coordinates-stay-exact : l'image calee entre les barre
     ["defaut (barre repliee, statut visible)", async () => {}],
     ["barre depliee + tiroir ouvert", async () => { await ouvrirTiroir(p); await p.waitForTimeout(150); }],
     ["tiroir ferme, statut masque", async () => {
-      await p.click("#rddrawer .rdfermer"); await p.uncheck('#rddrawer .rdsec[data-sec="secAffichage"] .rdsw').catch(() => {}); }],
+      await p.click("#rddrawer .rdfermer"); await p.uncheck('#rddrawer .rdsw[data-pour="statut"]').catch(() => {}); }],
   ];
   for (const [nom, preparer] of dispositions) {
     await preparer(); await grandEcran(p);
@@ -578,6 +585,208 @@ await test("console-mouse-coordinates-stay-exact : l'image calee entre les barre
   }
 });
 
+// ------------------------------------------------------------------- design
+enTete("Console de session — design, accessibilite, ergonomie");
+
+// Mesure de contraste dans la page : le navigateur convertit lui-meme oklch()/light-dark()/color-mix()
+// en pixels (canvas), on ne reimplemente donc aucune conversion de couleur.
+const MESURE = `(() => {
+  const cv = document.createElement("canvas"); cv.width = cv.height = 1;
+  const cx = cv.getContext("2d", { willReadFrequently: true });
+  const poser = (c, base) => { cx.fillStyle = base; cx.fillRect(0, 0, 1, 1); cx.fillStyle = c; cx.fillRect(0, 0, 1, 1);
+    const d = cx.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2]]; };
+  // Fond opaque d'un element : on remonte jusqu'a un fond plein, puis on compose de haut en bas.
+  const fond = (el) => { const pile = []; for (let e = el; e; e = e.parentElement) { const c = getComputedStyle(e).backgroundColor;
+      pile.push(c); if (/^(rgb|color|oklch|oklab|lab|lch|hsl)\\(/.test(c) && !/\\/ ?0?\\.\\d+\\)|rgba\\(.*,\\s*0?\\.\\d+\\)/.test(c) && c !== "rgba(0, 0, 0, 0)") break; }
+    let base = "#000"; for (const c of pile.reverse()) if (c !== "rgba(0, 0, 0, 0)") base = (() => { const o = poser(c, base); return "rgb(" + o.join(",") + ")"; })(); return base; };
+  const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+  const rapport = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+  const rgb = (c, base) => poser(c, base);
+  return { poser, fond, rapport, rgb, lum };
+})()`;
+
+await test("console-contrast-wcag : texte >= 4,5:1 et composants >= 3:1, en clair comme en sombre", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p);
+  await p.waitForSelector("#rdbar .rdfilesbtn", { state: "attached", timeout: 8000 });
+  await p.evaluate(() => { window.RD.stats.delay = [25, 28, 30]; });
+  await ouvrirTiroir(p);
+  await p.waitForFunction(() => document.querySelector(".rdst-ligne .rdseg"), null, { timeout: 5000 });
+  const mesurer = (theme) => p.evaluate(({ MESURE, theme }) => {
+    document.body.setAttribute("data-rd-theme", theme);
+    // Les couleurs transitent sur 120 a 160 ms : on lit l'etat d'arrivee, pas un instant du trajet.
+    document.getAnimations().forEach((a) => { try { a.finish(); } catch (e) { /* infinie */ } });
+    const M = eval(MESURE), q = (s) => document.querySelector(s);
+    q(".rdst-etat").textContent = "Reprise 1/6";
+    const temp = (jeton) => { const e = document.createElement("i"); e.style.color = "var(--" + jeton + ")"; document.body.appendChild(e);
+      const c = getComputedStyle(e).color; e.remove(); return c; };
+    const texte = (nom, fg, bg, seuil) => { const f = M.fond(bg), c = getComputedStyle(fg).color;
+      return { nom, seuil, r: M.rapport(M.rgb(c, f), M.rgb(f, "#000")), }; };
+    const compo = (nom, couleur, bg, seuil) => { const f = M.fond(bg); return { nom, seuil, r: M.rapport(M.rgb(couleur, f), M.rgb(f, "#000")) }; };
+    const sw = q('#rddrawer .rdsw[data-pour="coalesce"]'), sel = q('#rddrawer select');
+    return [
+      texte("libelle du tiroir", q("#rddrawer .rdlib"), q("#rddrawer"), 4.5),
+      texte("aide du tiroir", q("#rddrawer .rdaide"), q("#rddrawer"), 4.5),
+      texte("titre de section", q("#rddrawer summary"), q("#rddrawer"), 4.5),
+      texte("rtt du statut", q("#rdstatut .rdrtt"), q("#rdstatut"), 4.5),
+      texte("resume du statut", q("#rdstatut .rdst-ligne"), q("#rdstatut"), 4.5),
+      texte("etat de reprise", q("#rdstatut .rdst-etat"), q("#rdstatut"), 4.5),
+      texte("pastille du poste", q("#rdbar .rdpair"), q("#rdbar .rdpair"), 4.5),
+      texte("bouton Session actif", q("#rdbar .rdsession"), q("#rdbar .rdsession"), 4.5),
+      texte("bouton Fichiers", q("#rdbar .rdfilesbtn"), q("#rdbar .rdfilesbtn"), 4.5),
+      texte("bouton Quitter", q("#rdbar .quit"), q("#rdbar .quit"), 4.5),
+      texte("segment inactif", q('.rdsegmented [aria-checked="false"]'), q(".rdsegmented"), 4.5),
+      texte("segment actif", q('.rdsegmented [aria-checked="true"]'), q('.rdsegmented [aria-checked="true"]'), 4.5),
+      texte("liste deroulante", sel, sel, 4.5),
+      compo("bord d'un interrupteur", getComputedStyle(sw).borderTopColor, q("#rddrawer"), 3),
+      compo("bord d'une liste deroulante", getComputedStyle(sel).borderTopColor, q("#rddrawer"), 3),
+      compo("anneau de focus sur la barre", temp("rd-focus"), q("#rdbar"), 3),
+      compo("anneau de focus sur le tiroir", temp("rd-focus"), q("#rddrawer"), 3),
+      compo("point de liaison fluide", temp("rd-ok"), q("#rdstatut"), 3),
+      compo("point de liaison correcte", temp("rd-warn"), q("#rdstatut"), 3),
+      compo("point de liaison lente", temp("rd-bad"), q("#rdstatut"), 3),
+    ];
+  }, { MESURE, theme });
+  for (const theme of ["clair", "sombre"]) {
+    const m = await mesurer(theme);
+    const mauvais = m.filter((x) => !(x.r >= x.seuil));
+    assert.deepEqual(mauvais.map((x) => `${x.nom} : ${x.r.toFixed(2)}:1 < ${x.seuil}`), [], `theme ${theme} — pire : ` +
+      m.slice().sort((a, b) => a.r / a.seuil - b.r / b.seuil).slice(0, 3).map((x) => `${x.nom} ${x.r.toFixed(2)}:1`).join(", "));
+  }
+}, { contexte: { colorScheme: "light" } });
+
+await test("console-theme : « auto » suit le systeme, « clair » et « sombre » le forcent, et le choix survit au rechargement", async (p) => {
+  await sessionSimulee(p); await montee(p);
+  await p.waitForSelector("#rdbar .rdfilesbtn", { state: "attached", timeout: 8000 });
+  const fond = () => p.evaluate(`(() => { const M = ${MESURE}; return M.lum(M.rgb(M.fond(document.getElementById("rddrawer")), "#000")); })()`);
+  await ouvrirTiroir(p);
+  assert.equal(await p.getAttribute("body", "data-rd-theme"), "auto", "defaut : auto");
+  assert.ok(await fond() > 0.5, "systeme clair + auto : tiroir clair");
+  await p.emulateMedia({ colorScheme: "dark" });
+  assert.ok(await fond() < 0.1, "systeme sombre + auto : tiroir sombre");
+  await p.click('.rdsegmented [data-valeur="clair"]');
+  assert.ok(await fond() > 0.5, "« clair » force le clair malgre un systeme sombre");
+  assert.equal(await p.getAttribute('.rdsegmented [data-valeur="clair"]', "aria-checked"), "true");
+  await p.emulateMedia({ colorScheme: "light" });
+  await p.click('.rdsegmented [data-valeur="sombre"]');
+  assert.ok(await fond() < 0.1, "« sombre » force le sombre malgre un systeme clair");
+  assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-console")).theme), "sombre");
+  await sessionSimulee(p); await montee(p);                            // rechargement
+  await p.waitForFunction(() => !document.getElementById("rddrawer").hidden, null, { timeout: 4000 });
+  assert.equal(await p.getAttribute("body", "data-rd-theme"), "sombre", "le choix est restaure");
+  assert.ok(await fond() < 0.1);
+  // La zone de l'image, elle, reste noire dans les deux themes : c'est le poste distant, pas l'interface.
+  assert.equal(await p.evaluate(() => getComputedStyle(document.getElementById("canvas")).backgroundColor), "rgb(0, 0, 0)");
+}, { contexte: { colorScheme: "light" } });
+
+await test("console-keyboard-controls : le contrOle segmente (fleches) et les interrupteurs (Espace) se pilotent au clavier", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  const actif = () => p.evaluate(() => [...document.querySelectorAll(".rdsegmented [role=radio]")].map((b) => b.getAttribute("aria-checked") + ":" + b.tabIndex).join(" "));
+  assert.equal(await actif(), "true:0 false:-1 false:-1", "un seul segment dans l'ordre de tabulation (Auto)");
+  await p.focus('.rdsegmented [aria-checked="true"]');
+  await p.keyboard.press("ArrowRight");
+  assert.equal(await actif(), "false:-1 true:0 false:-1", "fleche droite : « clair »");
+  assert.equal(await p.evaluate(() => document.activeElement.getAttribute("data-valeur")), "clair", "le focus suit le choix");
+  await p.keyboard.press("ArrowLeft"); await p.keyboard.press("ArrowLeft");
+  assert.equal(await p.evaluate(() => document.activeElement.getAttribute("data-valeur")), "sombre", "boucle de « auto » vers « sombre »");
+  assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-console")).theme), "sombre");
+  const sw = '#rddrawer .rdsw[data-pour="coalesce"]';
+  const avant = await p.evaluate(() => window.RD.coalesce);
+  await p.focus(sw); await p.keyboard.press("Space");
+  assert.equal(await p.evaluate(() => window.RD.coalesce), !avant, "Espace bascule l'interrupteur, et le reglage reel");
+  assert.equal(await p.getAttribute(sw, "role"), "switch");
+  assert.equal(await p.evaluate(() => document.querySelector('#rddrawer [data-rd="resolution"]').getAttribute("aria-labelledby") !== null), true, "les champs sont nommes par leur libelle");
+  assert.equal(await p.evaluate(() => { const c = document.querySelector('#rddrawer [data-rd="codec"]'); return !!document.getElementById(c.getAttribute("aria-describedby")); }), true, "et decrits par leur aide");
+});
+
+await test("console-top-bar-and-link : icones et libelles, poste distant, et sante de la liaison mesuree", async (p) => {
+  await sessionSimulee(p); await montee(p);
+  await p.click(".rdhandle");
+  await p.waitForSelector("#rdbar .rdfilesbtn svg", { timeout: 8000 });
+  const e = await p.evaluate(() => ({
+    noms: [".rdsession", ".rdfilesbtn", ".quit"].map((s) => document.querySelector("#rdbar " + s).textContent.trim()),
+    icones: [".rdsession", ".rdfilesbtn", ".quit"].map((s) => !!document.querySelector("#rdbar " + s + " > svg.rdico[aria-hidden=true]")),
+    poste: document.querySelector("#rdbar .rdpair").textContent.trim(), posteVisible: !document.querySelector("#rdbar .rdpair").hidden,
+    directs: [".rdfilesbtn", ".quit"].map((s) => document.querySelector("#rdbar " + s).parentNode === document.getElementById("rdbar")),
+    ordre: [...document.getElementById("rdbar").children].filter((x) => getComputedStyle(x).display !== "none").map((x) => x.className.split(" ")[0] || x.tagName),
+  }));
+  assert.deepEqual(e.noms, ["Session", "Fichiers", "Quitter"], "le texte reste la : nom accessible garanti");
+  assert.deepEqual(e.icones, [true, true, true]);
+  assert.equal(e.poste, "123 456 789"); assert.equal(e.posteVisible, true);
+  assert.deepEqual(e.directs, [true, true], "habiller() ne deplace rien : enfants directs conserves");
+  assert.deepEqual(e.ordre.slice(0, 2), ["rdsession", "rdpair"], "Session puis poste distant : " + e.ordre);
+  assert.equal(e.ordre[e.ordre.length - 1], "rdhandle", "la poignee reste en dernier");
+  const lien = (delais) => p.evaluate((d) => { window.RD.stats.delay = d; return null; }, delais)
+    .then(() => p.waitForFunction((n) => document.querySelector("#rdstatut .rdlien").getAttribute("data-sante") === n, null, { timeout: 4000 }));
+  await p.waitForSelector("#rdstatut:not([hidden])");
+  await p.evaluate(() => { window.RD.stats.delay = [22, 25, 31]; });
+  await p.waitForFunction(() => document.querySelector("#rdstatut .rdlien").getAttribute("data-sante") === "bonne", null, { timeout: 4000 });
+  assert.equal(await p.textContent("#rdstatut .rdrtt"), "25 ms");
+  assert.match(await p.getAttribute("#rdstatut .rdlien", "title"), /25 ms.*fluide/);
+  await p.evaluate(() => { window.RD.stats.delay = [90, 100, 110]; });
+  await p.waitForFunction(() => document.querySelector("#rdstatut .rdlien").getAttribute("data-sante") === "moyenne", null, { timeout: 4000 });
+  await p.evaluate(() => { window.RD.stats.delay = [200, 210, 260]; });
+  await p.waitForFunction(() => document.querySelector("#rdstatut .rdlien").getAttribute("data-sante") === "mauvaise", null, { timeout: 4000 });
+  assert.match(await p.getAttribute("#rdstatut .rdlien", "title"), /lente/);
+  await p.evaluate(() => { window.RD.stats.delay = []; });
+  await p.waitForFunction(() => document.querySelector("#rdstatut .rdlien").getAttribute("data-sante") === "inconnue", null, { timeout: 4000 });
+  assert.equal(await p.textContent("#rdstatut .rdrtt"), "—", "aucune mesure : un tiret, jamais « 0 ms »");
+});
+
+await test("console-reduced-motion : avec « reduire les animations », plus aucune transition notable", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  const d = await p.evaluate(() => { const t = (s) => Math.max(...getComputedStyle(document.querySelector(s)).transitionDuration.split(",").map(parseFloat));
+    return [t("#rddrawer"), t("#rddrawer summary"), t('#rddrawer .rdsw'), t("#rdbar .rdsession")]; });
+  for (const v of d) assert.ok(v < 0.001, "transition de " + v + " s");
+}, { contexte: { reducedMotion: "reduce" } });
+
+await test("console-motion-by-default : sans preference, le tiroir s'anime (entree en fondu et glissement)", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  const t = await p.evaluate(() => getComputedStyle(document.getElementById("rddrawer")).transitionDuration);
+  assert.ok(t.split(",").some((v) => parseFloat(v) >= 0.15), "duree de transition : " + t);
+});
+
+await test("console-forced-colors : en couleurs forcees, bordures et textes suivent les couleurs du systeme", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  const e = await p.evaluate(() => { const d = document.getElementById("rddrawer"), cs = getComputedStyle(d);
+    return { forces: matchMedia("(forced-colors: active)").matches, bord: cs.borderRightColor, texte: cs.color, fond: cs.backgroundColor }; });
+  assert.equal(e.forces, true);
+  assert.equal(e.bord, e.texte, "bordure = CanvasText = texte");
+  assert.notEqual(e.fond, e.texte, "fond et texte restent distincts");
+}, { contexte: { forcedColors: "active" } });
+
+await test("console-touch-targets : sur un ecran tactile, les cibles font au moins 44 px", async (p) => {
+  await sessionSimulee(p); await montee(p);
+  await p.click(".rdhandle");
+  await p.waitForSelector("#rdbar .rdfilesbtn svg", { timeout: 8000 });
+  await p.tap("#rdbar .rdsession");
+  await p.waitForFunction(() => !document.getElementById("rddrawer").hidden, null, { timeout: 3000 });
+  const e = await p.evaluate(() => ({ grossier: matchMedia("(pointer: coarse)").matches,
+    h: Object.fromEntries([["session", "#rdbar .rdsession"], ["fichiers", "#rdbar .rdfilesbtn"], ["quitter", "#rdbar .quit"],
+      ["liste", '#rddrawer [data-rd="qualite"]'], ["ajuster", '#rddrawer [data-rd="ajuster"]'], ["fermer", "#rddrawer .rdfermer"],
+      ["segment", '.rdsegmented [aria-checked="true"]'], ["interrupteur", '#rddrawer .rdsw[data-pour="coalesce"]']]
+      .map(([n, s]) => [n, Math.round(document.querySelector(s).getBoundingClientRect().height)])) }));
+  assert.equal(e.grossier, true, "pointeur grossier detecte");
+  for (const n of ["session", "fichiers", "quitter", "liste", "ajuster", "fermer"]) assert.ok(e.h[n] >= 44, `${n} : ${e.h[n]} px`);
+  assert.ok(e.h.segment >= 36 && e.h.interrupteur >= 28, `segment ${e.h.segment} px, interrupteur ${e.h.interrupteur} px`);
+}, { contexte: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } });
+
+await test("console-bottom-sheet : sur ecran etroit, une feuille posee sur l'image, scrollable, avec poignee", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
+  await p.evaluate(() => document.getAnimations().forEach((a) => { try { a.finish(); } catch (e) { /* infinie */ } }));   // fin du glissement d'entree
+  const e = await p.evaluate(() => { const d = document.getElementById("rddrawer"), r = d.getBoundingClientRect(), c = d.querySelector(".rdcorps"),
+    poignee = getComputedStyle(d.querySelector(".rdtete"), "::before");
+    return { haut: Math.round(r.height), vue: innerHeight, bas: Math.round(innerHeight - r.bottom),
+             defile: c.scrollHeight > c.clientHeight, ov: getComputedStyle(c).overscrollBehaviorY, poignee: poignee.content,
+             rayon: getComputedStyle(d).borderTopLeftRadius, libellesMasques: Math.round(document.querySelector("#rdbar .rdsession .rdlbl").getBoundingClientRect().width) };
+  });
+  assert.ok(e.haut <= e.vue * 0.7 + 1, `feuille <= 70 % de la hauteur : ${e.haut}/${e.vue}`);
+  assert.equal(e.bas, 30, "posee juste au-dessus de la barre de statut");
+  assert.equal(e.defile, true, "le contenu defile dans la feuille");
+  assert.equal(e.ov, "contain", "le defilement ne remonte pas vers la page");
+  assert.notEqual(e.poignee, "none"); assert.notEqual(e.rayon, "0px");
+  assert.ok(e.libellesMasques <= 2, "libelles de la barre haute masques visuellement (mais lisibles par un lecteur d'ecran)");
+}, { contexte: { viewport: { width: 390, height: 844 } } });
+
 await test("console-narrow-screen : sur ecran etroit le tiroir est une feuille basse qui ne pousse pas l'image", async (p) => {
   await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
   const e = await p.evaluate(() => { const t = document.getElementById("rddrawer").getBoundingClientRect(), c = document.getElementById("canvas").getBoundingClientRect();
@@ -586,6 +795,85 @@ await test("console-narrow-screen : sur ecran etroit le tiroir est une feuille b
   assert.equal(e.poussee, 0, "l'image n'est pas poussee a gauche");
   assert.equal(e.hud, "none", "le HUD ne recouvre pas la feuille");
 }, { contexte: { viewport: { width: 390, height: 844 } } });
+
+// ------------------------------------------------------- ecran de connexion
+enTete("Ecran de connexion — carte, accessibilite, telephone");
+const formulaire = async (p) => { await p.goto(URL_PAGE); await p.waitForSelector("#id[data-rdlogin]", { timeout: 15000 }); };
+
+await test("login-no-horizontal-overflow-on-phones : a 360 et 390 px la page ne deborde plus (elle se dezoomait a 477 px)", async (p) => {
+  for (const largeur of [360, 390, 430, 1200]) {
+    await p.setViewportSize({ width: largeur, height: 800 });
+    await formulaire(p);
+    const e = await p.evaluate(() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
+      return { sw: document.documentElement.scrollWidth, iw: innerWidth, id: [r("#id").left, r("#id").right], carte: [r("#connect").left, r("#connect").right],
+               go: Math.round(r("#connect td > button").height), idH: Math.round(r("#id").height), tailleId: parseFloat(getComputedStyle(document.getElementById("id")).fontSize) }; });
+    assert.ok(e.sw <= e.iw, `${largeur} px : scrollWidth ${e.sw} > ${e.iw}`);
+    assert.ok(e.id[0] >= e.carte[0] && e.id[1] <= e.carte[1], `${largeur} px : le champ Id sort de la carte : ${JSON.stringify(e)}`);
+    assert.ok(e.go >= 44 && e.idH >= 44, `${largeur} px : cibles trop petites (Connect ${e.go}, Id ${e.idH})`);
+    assert.ok(e.tailleId >= 16, `${largeur} px : champ a ${e.tailleId} px, iOS zoomerait au focus`);
+  }
+});
+
+await test("login-accessible-names-and-enter : champs nommes, Entree valide la connexion, « Aller » sur le clavier mobile", async (p) => {
+  await formulaire(p);
+  await p.waitForSelector('#id[inputmode="numeric"]', { timeout: 5000 });     // pose par le gabarit a son premier tick (400 ms)
+  const e = await p.evaluate(() => ({ noms: ["host", "key", "id"].map((i) => document.getElementById(i).getAttribute("aria-label")),
+    hint: document.getElementById("id").getAttribute("enterkeyhint"), num: document.getElementById("id").getAttribute("inputmode") }));
+  assert.deepEqual(e.noms, ["Hôte du serveur", "Clé publique du serveur", "ID du poste distant"]);
+  assert.equal(e.hint, "go"); assert.equal(e.num, "numeric", "clavier numerique conserve");
+  await p.evaluate(() => { window.__go = 0; window.connect = function () { window.__go++; }; });
+  await p.waitForTimeout(450);                                   // laisse protegerConnect (300 ms) re-envelopper : il appelle encore notre sonde
+  await p.fill("#id", "123456789");
+  await p.press("#id", "Enter");
+  assert.equal(await p.evaluate(() => window.__go), 1, "Entree dans Id lance la connexion");
+  await p.press("#key", "Enter");
+  assert.equal(await p.evaluate(() => window.__go), 2, "et depuis n'importe quel champ");
+  await p.press("#id", "Shift+Enter"); await p.press("#id", "Control+Enter");
+  assert.equal(await p.evaluate(() => window.__go), 2, "Maj/Ctrl+Entree ne declenchent rien : le raccourci reste a l'utilisateur");
+  await p.click("#connect td > button");
+  assert.equal(await p.evaluate(() => window.__go), 3, "le bouton marche toujours comme avant");
+});
+
+await test("login-focus-follows-pointer-type : le curseur arrive dans Id a la souris", async (p) => {
+  await formulaire(p);
+  assert.equal(await p.evaluate(() => document.activeElement && document.activeElement.id), "id", "pointeur precis : Id est actif");
+});
+await test("login-no-forced-keyboard-on-touch : sur tactile, le clavier a l'ecran n'est pas force", async (p) => {
+  await formulaire(p);
+  assert.equal(await p.evaluate(() => document.activeElement === document.body), true, "aucun champ actif d'office");
+}, { contexte: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } });
+
+await test("login-contrast-and-states : texte >= 4,5:1, bordures >= 3:1, anneau de focus visible, cartes d'attente et de mot de passe", async (p) => {
+  await formulaire(p);
+  const m = await p.evaluate(`(() => { const M = ${MESURE}, q = (s) => document.querySelector(s);
+    const texte = (nom, fg, bg, seuil, pseudo) => { const f = M.fond(bg), c = getComputedStyle(fg, pseudo || null).color; return { nom, seuil, r: M.rapport(M.rgb(c, f), M.rgb(f, "#000")) }; };
+    const bord = (nom, el, bg) => { const f = M.fond(bg); return { nom, seuil: 3, r: M.rapport(M.rgb(getComputedStyle(el).borderTopColor, f), M.rgb(f, "#000")) }; };
+    return [ texte("titre de la carte", q("#connect"), q("#connect"), 4.5, "::before"),
+             texte("etiquette de champ", q("#connect td > span"), q("#connect"), 4.5),
+             texte("ID saisi", q("#id"), q("#id"), 4.5), texte("hote", q("#host"), q("#host"), 4.5), texte("cle", q("#key"), q("#key"), 4.5),
+             texte("bouton Connect", q("#connect td > button"), q("#connect td > button"), 4.5),
+             bord("bord du champ Id", q("#id"), q("#connect")), bord("bord du champ hote", q("#host"), q("#connect")) ]; })()`);
+  const mauvais = m.filter((x) => !(x.r >= x.seuil));
+  assert.deepEqual(mauvais.map((x) => `${x.nom} : ${x.r.toFixed(2)}:1 < ${x.seuil}`), [], "pire : " + m.slice().sort((a, b) => a.r / a.seuil - b.r / b.seuil).slice(0, 3).map((x) => `${x.nom} ${x.r.toFixed(2)}:1`).join(", "));
+  await p.focus("#key"); await p.keyboard.press("Tab");
+  const ombre = await p.evaluate(() => getComputedStyle(document.getElementById("id")).boxShadow);
+  assert.notEqual(ombre, "none", "anneau de focus sur Id");
+  const autres = await p.evaluate(() => { const o = {}; for (const id of ["password", "status"]) { const e = document.getElementById(id); e.style.display = "block";
+      o[id] = { titre: getComputedStyle(e, "::before").content, rayon: getComputedStyle(e).borderTopLeftRadius, largeur: Math.round(e.getBoundingClientRect().width) }; } return o; });
+  assert.equal(autres.password.titre, '"Mot de passe du poste"'); assert.equal(autres.status.titre, '"Connexion en cours"');
+  for (const k of ["password", "status"]) { assert.notEqual(autres[k].rayon, "0px", k + " : carte arrondie"); assert.ok(autres[k].largeur <= 432, k + " : largeur " + autres[k].largeur); }
+});
+
+await test("login-recents-still-under-id : la carte garde les pastilles de dernieres connexions entre Id et Connect", async (p) => {
+  await p.goto(URL_PAGE); await p.waitForSelector("#rd-recents .rdchip-id", { timeout: 15000 });
+  const e = await p.evaluate(() => { const zone = document.getElementById("rd-recents"), r = (x) => x.getBoundingClientRect(),
+      id = document.getElementById("id"), go = document.querySelector("#connect td > button");
+    return { ordre: r(id).bottom <= r(zone).top + 1 && r(zone).bottom <= r(go).top + 1, dans: r(zone).right <= r(document.getElementById("connect")).right && r(zone).left >= r(document.getElementById("connect")).left,
+             libelles: [...zone.querySelectorAll(".rdchip-id")].map((c) => c.textContent) }; });
+  assert.ok(e.ordre, "les pastilles restent sous Id et au-dessus de Connect");
+  assert.ok(e.dans, "et dans la carte");
+  assert.deepEqual(e.libelles, ["222 222 222", "333 333 333", "111 111 111"], "tri par recence conserve");
+}, { init: { peers: JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } }) } });
 
 // ---------------------------------------------------------------------- bilan
 await navigateur.close();

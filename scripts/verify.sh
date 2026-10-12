@@ -123,8 +123,8 @@ done
 # Plancher du nombre de tests : un test supprime ou desactive en silence ne doit
 # pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
 # baisser sans raison ecrite dans le commit.
-PLANCHER_GABARIT=141
-PLANCHER_NAVIGATEUR=27
+PLANCHER_GABARIT=146
+PLANCHER_NAVIGATEUR=42
 
 titre "Banc du gabarit"
 # Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.

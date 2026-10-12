@@ -19,3 +19,15 @@
 - **Règle** : `./scripts/extract-assets.sh && ./scripts/patch-assets.sh` après toute fusion qui touche `assets/` ou `patch-assets.sh`.
 - **Pourquoi** : `html/` est gitignoré et `setup.sh` saute l'extraction s'il existe ; le banc navigateur lit `html/` directement
   (le patch `__rdZstdDecoder` manquait, d'où un échec faussement attribué au code).
+
+## Mesurer un style qui transite : finir les animations d'abord
+- **Règle** : avant de lire une couleur ou une position calculée dans un test, appeler `document.getAnimations().forEach(a => a.finish())`.
+- **Pourquoi** : après un changement de thème, le fond d'un bouton transite sur 120 ms ; lu trop tôt, il donnait un faux contraste de
+  1,03:1. De même une feuille qui glisse affichait 12 px au lieu de 30.
+- **Comment l'appliquer** : tout test de contraste, de position ou de taille après une interaction.
+
+## Un défaut mobile peut venir de l'écran d'avant, pas de la fonction testée
+- **Règle** : sur téléphone, mesurer `document.documentElement.scrollWidth` contre `innerWidth` avant d'accuser le nouveau code.
+- **Pourquoi** : la poignée sortait de l'écran à 477 px ; la cause était le formulaire de connexion du bundle (`min-width:22rem`), qui
+  dézoomait toute la page. Le banc simulait une session sans masquer ce formulaire, comme le fait la vraie.
+

@@ -36,6 +36,19 @@ Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome .
 
 **Limite héritée (non corrigée)** : en chemin logiciel (ogv.js), le HUD et la barre de statut affichent « 0 i/s » faute de compteur de trames (seul le chemin WebCodecs l'alimente).
 
+## Passe design « top-end 2026 » — FAIT (commit à venir)
+- [x] Jetons `oklch()` + `light-dark()` ; thème Auto / Clair / Sombre (`rd-console.theme`) ; zone de l'image toujours noire
+- [x] Icônes SVG inline (jeu cohérent, 24×24, trait 1,75) ; barre haute : Session, poste distant (ID), Fichiers, Quitter
+- [x] Tiroir : aide d'une ligne par réglage, interrupteurs natifs `role="switch"`, groupe radio ARIA, sections animées (`::details-content`)
+- [x] Barre de statut : segments + point de santé de la liaison (seuils 60 / 150 ms, médiane du RTT), `—` si pas de mesure
+- [x] Panneau Fichiers et fenêtre modale re-thémés ; feuille basse mobile avec poignée ; zones sûres ; cibles 44 px en tactile
+- [x] Accessibilité : contraste 4,5:1 / 3:1 mesuré dans les deux thèmes, mouvement réduit, contraste renforcé, couleurs forcées
+- [x] Écran de connexion : carte adaptative (plus de débordement à 390 px), noms ARIA, Entrée valide, `enterkeyhint`, focus selon le pointeur
+- [x] Tests : Node 123 → 146, Chromium 18 → 42 (deux chemins de décodage) ; `verify.sh` complet vert, planchers 146 / 42
+- Écarté : thème de l'écran de connexion suivant le système (exigerait un script avant le premier rendu, flash de thème, gain mince)
+- Écarté : réordonner visuellement les lignes du formulaire (casserait l'ordre de tabulation)
+- À faire plus tard : thème « Auto » de la connexion si Alex le veut ; icônes pour la poignée repliée
+
 ## Phase 2A / 2B — Fonctions de session (≈ 18 à 22 h)
 - [ ] A : Poste (Ctrl+Alt+Suppr, verrouiller, redémarrer, confidentialité, bloquer entrées) · plein écran + Keyboard Lock · moniteur ·
       barre de statut · souris (caractérisation d'abord) · vidéo (vue, latence) · audio muet
