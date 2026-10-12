@@ -39,7 +39,15 @@ if not sources:
 DEBUT = re.compile(r"\A(?:\s|//[^\n]*\n|/\*.*?\*/)*\(function\s*\(\s*\)\s*\{", re.S)
 FIN = re.compile(r"\}\)\(\);?\s*\Z")
 
-parts = ["/* GENERE par scripts/build-web.sh — ne pas editer, voir web/js/ */\n"]
+# Version : le fichier VERSION du depot, suivie du commit s'il y en a un (affichee dans Aide > A propos).
+import subprocess
+try: base = open("VERSION", encoding="utf-8").read().strip() or "dev"
+except OSError: base = "dev"
+try: sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
+except Exception: sha = ""
+version = base + ("+" + sha if sha else "")
+parts = ["/* GENERE par scripts/build-web.sh — ne pas editer, voir web/js/ */\n",
+         "try{ (window.RDConsole = window.RDConsole || {}).version = " + repr(version).replace("'", '"') + "; }catch(e){}\n"]
 for f in sources:
     src = open(f, encoding="utf-8").read()
     if not DEBUT.search(src):

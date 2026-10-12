@@ -66,6 +66,9 @@ jobs:
       # abandonne EN ENTIER par le navigateur, et tout l'etat de l'application
       # tient dans un seul bloc. Une page entierement inerte etait donc
       # publiable sans qu'aucune etape ne s'en apercoive.
+      - name: Fleet service tests
+        run: python3 -I -m unittest discover -s fleet -v
+
       - name: Check inline JavaScript syntax
         run: ./scripts/check-syntax.sh
 

@@ -2100,13 +2100,24 @@ test("console-silent-until-page-ready : sans #rdbar ni reperes, rien n'est monte
   assert.ok(bac.minuteurs.some((t) => t.ms === 650 && !t.once), "l'attente de la page est un sondage a 650 ms");
 });
 
-test("console-timers-avoid-replayed-periods : aucune periode que le banc rejoue (300/400/800/1000/1500 ms)", () => {
-  // Le banc rejoue ces minuteurs dans un faux DOM ou getElementById rend null : un
-  // sondage de la console a l'une de ces periodes y serait execute a tort.
-  for (const f of SRC_JS) {
-    const m = lireJs(f).match(/\}\s*,\s*(300|400|800|1000|1500)\s*\)/);
-    assert.equal(m, null, `${f} : minuteur a ${m && m[1]} ms, periode rejouee par le banc`);
-  }
+test("console-timers-avoid-replayed-periods : aucun setInterval aux periodes que le banc rejoue (300/400/800/1000/1500 ms)", () => {
+  // Le banc rejoue ces battements dans un faux DOM ou getElementById rend null : un sondage de la console a l'une de ces
+  // periodes y serait execute a tort. Les setTimeout ponctuels ne sont pas concernes.
+  const periodes = (src) => {
+    const trouvees = [];
+    for (const m of src.matchAll(/setInterval\(/g)) {
+      let prof = 1, k = m.index + m[0].length, dernier = k;
+      for (; k < src.length && prof > 0; k++) {
+        const ch = src[k];
+        if (ch === "(") prof++; else if (ch === ")") prof--;
+        else if (ch === "," && prof === 1) dernier = k + 1;
+      }
+      const n = Number(src.slice(dernier, k - 1).trim());
+      if (Number.isFinite(n)) trouvees.push(n);
+    }
+    return trouvees;
+  };
+  for (const f of SRC_JS) for (const n of periodes(lireJs(f))) assert.ok(![300, 400, 800, 1000, 1500].includes(n), `${f} : setInterval a ${n} ms, periode rejouee par le banc`);
 });
 
 test("console-store-defaults-and-roundtrip : valeurs par defaut, ecriture relue, retour au defaut par null", () => {
@@ -2178,8 +2189,18 @@ test("console-layout-insets : l'espace reserve autour de l'image", () => {
     [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: layout.ETROIT - 1 }, { top: layout.BARRE, left: 0, bottom: layout.STATUT }, "a 719 px : etroit (meme seuil que la media query CSS)"],
     [{ enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: 0 }, { top: layout.BARRE, left: layout.TIROIR, bottom: layout.STATUT }, "largeur inconnue : traitee comme large"],
   ];
-  for (const [e, attendu, nom] of cas) assert.deepEqual(plat(layout.insets(e)), attendu, nom);
-  assert.deepEqual(plat(layout.insets()), { top: 0, left: 0, bottom: 0 }, "sans argument");
+  const trois = (o) => ({ top: o.top, left: o.left, bottom: o.bottom });
+  for (const [e, attendu, nom] of cas) assert.deepEqual(trois(plat(layout.insets(e))), attendu, nom);
+  assert.deepEqual(trois(plat(layout.insets())), { top: 0, left: 0, bottom: 0 }, "sans argument");
+  // Plein ecran epure : ni tiroir ni statut ; le clavier virtuel, lui, reste reserve (l'image passerait dessous).
+  const base = { enSession: true, barre: "ouverte", drawer: "ouvert", statut: "visible", largeur: 1440 };
+  assert.deepEqual(trois(plat(layout.insets({ ...base, plein: true, pleinMasque: true }))), { top: layout.BARRE, left: 0, bottom: 0 }, "plein ecran epure");
+  assert.deepEqual(trois(plat(layout.insets({ ...base, plein: true, pleinMasque: false }))), { top: layout.BARRE, left: layout.TIROIR, bottom: layout.STATUT }, "plein ecran, barres gardees");
+  const kb = plat(layout.insets({ ...base, clavier: 240 }));
+  assert.equal(kb.bottom, layout.STATUT + 240, "le clavier virtuel s'ajoute au statut"); assert.equal(kb.statutBas, layout.STATUT, "et se pose JUSTE au-dessus du statut");
+  assert.equal(plat(layout.insets({ ...base, statut: "masquee", clavier: 240 })).bottom, 240, "sans statut : le clavier seul");
+  assert.equal(plat(layout.insets({ ...base, clavier: -5 })).bottom, layout.STATUT, "une hauteur negative est ignoree");
+  assert.equal(plat(layout.insets({ ...base, enSession: false, clavier: 240 })).bottom, 0, "hors session : rien");
   assert.match(lire(path.join(DIR_CSS, "console.css")), new RegExp(`max-width:${layout.ETROIT - 1}px`), "la media query CSS suit le seuil du JS");
 });
 
@@ -2234,7 +2255,8 @@ test("console-fit-fallback-window : sans conteneur mesurable, la zone est la fen
 
 test("console-no-external-reference : ni URL absolue, ni @import, ni police distante dans les sources de la console", () => {
   // Seule exception : l'espace de noms SVG, un identifiant (document.createElementNS), jamais une requete.
-  const sansNsSvg = (src) => src.split("http://www.w3.org/2000/svg").join("");
+  // Et le lien vers la source du depot (obligation AGPL art. 13), un LIEN affiche a l'utilisateur, pas une ressource chargee.
+  const sansNsSvg = (src) => src.split("http://www.w3.org/2000/svg").join("").split("https://github.com/elzuzu/rustdesk-web-selfhosted").join("");
   for (const f of SRC_JS) assert.ok(!/https?:\/\//i.test(sansNsSvg(lireJs(f))), `${f} : URL absolue`);
   for (const f of SRC_CSS) {
     const c = lire(path.join(DIR_CSS, f));
@@ -2262,7 +2284,8 @@ test("console-statut-segments-and-sante : les morceaux du resume et les seuils d
   const cas = [[0, "bonne"], [28, "bonne"], [60, "bonne"], [61, "moyenne"], [150, "moyenne"], [151, "mauvaise"], [4000, "mauvaise"],
                [-1, "inconnue"], [NaN, "inconnue"], [Infinity, "inconnue"], [null, "inconnue"], [undefined, "inconnue"], ["28", "inconnue"]];
   for (const [rtt, attendu] of cas) assert.equal(statut.sante(rtt), attendu, `sante(${String(rtt)})`);
-  for (const k of ["bonne", "moyenne", "mauvaise", "inconnue"]) assert.ok(statut.LIBELLE_SANTE[k], "libelle " + k);
+  const i18n = chargerConsole().window.RDConsole.i18n;
+  for (const k of ["bonne", "moyenne", "mauvaise", "inconnue"]) for (const l of ["fr", "en"]) assert.ok(i18n.catalogue(l)["sante." + k], `libelle sante.${k} (${l})`);
 });
 
 test("console-css-constants-match-js : les dimensions declarees en CSS sont celles que le JS reserve", () => {
@@ -2299,15 +2322,101 @@ test("console-css-design-system : jetons clair/sombre, theme force, et les prefe
   assert.deepEqual(dures.filter((c) => !/^#fff$/i.test(c)), [], "couleur codee en dur hors jetons");
 });
 
-test("console-icons-defined : chaque icone demandee par le shell existe, et aucune n'est orpheline", () => {
-  const shell = lireJs(SRC_JS.find((f) => /shell/.test(f)));
-  const definies = new Set([...shell.slice(shell.indexOf("var ICONES"), shell.indexOf("function icone")).matchAll(/^\s{4}([a-z]+):\s*\[/gm)].map((m) => m[1]));
-  const utilisees = new Set([...shell.matchAll(/\bicone\("([a-z]+)"\)/g)].map((m) => m[1]));
-  [...shell.matchAll(/\["\.[a-z]+", "([a-z]+)"\]/g)].forEach((m) => utilisees.add(m[1]));          // habiller() : [".rdfilesbtn", "dossier"], [".quit", "quitter"]
-  [...shell.matchAll(/section\("[A-Za-z]+", "[^"]+", "([a-z]+)"/g)].forEach((m) => utilisees.add(m[1]));
-  assert.ok(definies.size >= 8, "au moins les icones de base : " + [...definies]);
-  for (const n of utilisees) assert.ok(definies.has(n), `icone « ${n} » demandee mais non definie`);
-  for (const n of definies) assert.ok(utilisees.has(n), `icone « ${n} » definie mais jamais utilisee`);
+test("console-icons-defined : chaque icone demandee existe, et aucune n'est orpheline", () => {
+  const ui = lireJs(SRC_JS.find((f) => /ui/.test(f)));
+  const tableau = ui.slice(ui.indexOf("var ICONES"), ui.indexOf("function icone"));
+  const definies = new Set([...tableau.matchAll(/^\s{4}([a-z]+):\s*\[/gm)].map((m) => m[1]));
+  const hors = SRC_JS.map((f) => f === SRC_JS.find((x) => /ui/.test(x)) ? ui.replace(tableau, "") : lireJs(f)).join("\n");
+  assert.ok(definies.size >= 15, "le jeu d'icones : " + [...definies]);
+  // Demandee mais non definie : un appel icone("x") ou ui.icone("x"), ou une icone nommee dans un bouton / une section.
+  const demandees = new Set();
+  for (const m of hors.matchAll(/\bicone\("([a-z]+)"\)/g)) demandees.add(m[1]);
+  for (const m of hors.matchAll(/\bicone:\s*"([a-z]+)"/g)) demandees.add(m[1]);
+  for (const m of hors.matchAll(/\["[a-z]+", "([a-z]+)", \d+\]/g)) demandees.add(m[1]);
+  for (const n of demandees) assert.ok(definies.has(n), `icone « ${n} » demandee mais non definie`);
+  for (const n of definies) assert.ok(hors.includes(`"${n}"`), `icone « ${n} » definie mais jamais utilisee`);
+});
+
+test("console-i18n-parity : memes cles en francais et en anglais, memes {parametres}, et toute cle utilisee existe", () => {
+  const i18n = chargerConsole().window.RDConsole.i18n;
+  const fr = i18n.catalogue("fr"), en = i18n.catalogue("en");
+  const kfr = Object.keys(fr).sort(), ken = Object.keys(en).sort();
+  assert.deepEqual(kfr.filter((k) => !(k in en)), [], "cles francaises sans traduction anglaise");
+  assert.deepEqual(ken.filter((k) => !(k in fr)), [], "cles anglaises sans original francais");
+  const params = (x) => [...String(x).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
+  for (const k of kfr) assert.equal(params(en[k]), params(fr[k]), `${k} : parametres differents`);
+  for (const k of kfr) assert.ok(String(fr[k]).trim() && String(en[k]).trim(), `${k} : texte vide`);
+  // Toute cle citee dans une source (t("...")) existe — sauf les cles composees (« opt.qualite. » + valeur, « sante. » + etat).
+  const citees = new Set();
+  const sansCommentaires = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'])\/\/[^\n]*/g, "$1");
+  for (const f of SRC_JS) for (const m of sansCommentaires(lireJs(f)).matchAll(/\bt\("([a-z0-9_.-]+)"(?!\s*\+)/g)) citees.add(m[1]);
+  assert.ok(citees.size > 20, "au moins vingt textes : " + citees.size);
+  for (const c of citees) assert.ok(c in fr, `cle « ${c} » utilisee mais absente du catalogue`);
+  // Les cles composees (t("rac.p." + id), t("sens." + s)…) : chaque valeur possible a son texte.
+  const I = chargerConsole().window.RDConsole.input;
+  for (const os of ["Windows", "Mac OS", "Linux", ""]) for (const p of I.presets(os)) assert.ok(`rac.p.${p.id}` in fr, `raccourci « ${p.id} » (${os || "inconnu"}) sans texte`);
+  for (const x of I.SENS) assert.ok(`sens.${x}` in fr, `sens.${x}`);
+  for (const x of ["bonne", "moyenne", "mauvaise", "inconnue"]) assert.ok(`sante.${x}` in fr, `sante.${x}`);
+  for (const x of ["balanced", "best", "low"]) assert.ok(`opt.qualite.${x}` in fr, `opt.qualite.${x}`);
+  for (const x of ["auto", "h265", "vp9", "logiciel"]) assert.ok(`opt.codec.${x}` in fr, `opt.codec.${x}`);
+  for (const x of ["auto", "clair", "sombre"]) assert.ok(`theme.${x}` in fr, `theme.${x}`);
+  for (const x of ["auto", "fr", "en"]) assert.ok(`langue.${x}` in fr, `langue.${x}`);
+  for (const x of ["video", "audio", "clavier", "souris", "affichage"]) assert.ok(`sec.${x}` in fr, `sec.${x}`);
+  for (const x of ["invalide", "doublon", "plein"]) assert.ok(`rac.${x}` in fr, `rac.${x}`);
+  assert.equal(i18n.t("cle.inexistante"), "cle.inexistante", "une cle absente rend la cle, jamais d'exception");
+  i18n.definir("en"); assert.equal(i18n.t("sec.video"), "Video"); assert.equal(i18n.t("opt.fps", { n: 30 }), "30 fps max");
+  i18n.definir("fr"); assert.equal(i18n.t("opt.fps", { n: 30 }), "30 i/s max");
+  assert.equal(i18n.detecter("auto"), "fr", "pas de navigator.language : francais"); assert.equal(i18n.detecter("en"), "en"); assert.equal(i18n.detecter("de"), "fr");
+});
+
+test("console-flotte-pure : tri, recherche, etiquettes, temps relatif, comptes, import — la logique de la liste des postes", () => {
+  const F = chargerConsole().window.RDConsole.flotte;
+  const P = [{ id: "111111111", nom: "Éléonore", en_ligne: false, derniere_connexion: 50 }, { id: "222222222", nom: "Zed", en_ligne: true, derniere_connexion: 10, etiquettes: ["maison"], note: "Bureau du fond" },
+             { id: "333333333", favori: true, en_ligne: false }, { id: "444444444", nom: "Alpha", en_ligne: null, derniere_connexion: 99 }];
+  assert.deepEqual(F.trier(P).map((p) => p.id), ["333333333", "222222222", "444444444", "111111111"], "epingles, puis en ligne, puis inconnus, puis hors ligne");
+  assert.deepEqual(F.trier([{ id: "a11111", nom: "b" }, { id: "a22222", nom: "A" }, { id: "a33333", nom: "a" }]).map((p) => p.id), ["a22222", "a33333", "a11111"], "a egalite : nom sans casse, puis ordre d'origine");
+  assert.deepEqual(P.map((p) => p.id), ["111111111", "222222222", "333333333", "444444444"], "trier ne modifie pas la liste d'origine");
+  assert.equal(F.filtrer(P, "eleo").length, 1, "sans accents ni casse"); assert.equal(F.filtrer(P, "  ").length, 4, "rien saisi : tout");
+  assert.equal(F.filtrer(P, "zed maison").length, 1, "tous les mots doivent se retrouver"); assert.equal(F.filtrer(P, "zed alpha").length, 0);
+  assert.equal(F.filtrer(P, "222 222").length, 1, "l'ID se retrouve aussi avec ses espaces d'affichage"); assert.equal(F.filtrer(P, "fond").length, 1, "dans la note");
+  assert.deepEqual(plat(F.etiquettesDepuis("maison, Mac ,MAISON,,")), { ok: true, liste: ["maison", "Mac"] }, "dedoublonnage sans casse, vides ecartes");
+  assert.equal(F.etiquettesDepuis("a,b,c,d,e,f,g,h,i").ok, false, "9 etiquettes : refuse"); assert.equal(F.etiquettesDepuis("x".repeat(25)).ok, false);
+  assert.deepEqual(plat(F.etiquettesDepuis("")), { ok: true, liste: [] });
+  for (const [ts, attendu] of [[0, "jamais"], [null, "jamais"], [4990, "now"], [4900, "min"], [1400, "h"], [-90000, "j"]]) assert.equal(F.relatif(ts, 5000).unite, attendu, String(ts));
+  assert.deepEqual(plat(F.relatif(5000 - 7500, 5000)), { unite: "h", n: 2 }); assert.equal(F.relatif(6000, 5000).unite, "now", "un horodatage futur n'est pas negatif");
+  assert.deepEqual(plat(F.compter(P)), { total: 4, enLigne: 1, etatConnu: true }); assert.equal(F.compter([{ id: "a11111", en_ligne: null }]).etatConnu, false, "tous inconnus : pas de « 0 en ligne »");
+  assert.equal(F.idValide("123456789"), true); for (const mauvais of ["", "1234", "12 34 56", "../x", "a".repeat(33), "-12345", "é12345", null, 123456789]) assert.equal(F.idValide(mauvais), false, String(mauvais));
+  assert.equal(F.normaliserId(" 123 456\t789 "), "123456789"); assert.equal(F.fmtId("123456789"), "123 456 789"); assert.equal(F.fmtId("abcde12345"), "abcde12345");
+  assert.equal(F.nomAffiche({ id: "123456789" }), "123 456 789"); assert.equal(F.nomAffiche({ id: "123456789", nom: "Mac" }), "Mac");
+  assert.equal(F.nomDepuisHote("Mac\nmini\x00 d'Alex ".repeat(8)).length <= 60, true); assert.equal(F.nomDepuisHote(null), "");
+});
+
+test("console-flotte-import : seul ce qui est valide est importe, rien d'autre n'est recopie", () => {
+  const F = chargerConsole().window.RDConsole.flotte;
+  assert.equal(F.importDepuis("pas du json"), null); assert.equal(F.importDepuis('{"x":1}'), null); assert.equal(F.importDepuis("42"), null);
+  const r = plat(F.importDepuis(JSON.stringify({ version: 1, postes: [
+    { id: "123 456 789", nom: "  Mac  ", note: "n", etiquettes: ["a", "A", "b"], favori: true, pirate: "x", en_ligne: true },
+    { id: "123456789" }, { id: "../etc" }, { id: "<img src=x>" }, null, 7, { nom: "sans id" },
+    { id: "987654321", nom: "x".repeat(61), note: "y".repeat(501), etiquettes: "pas une liste", favori: "oui" },
+    { id: "555555555", etiquettes: ["a,b"] }, { id: "666666666", nom: "a\nb" }] })));
+  assert.deepEqual(r.postes[0], { id: "123456789", nom: "Mac", note: "n", etiquettes: ["a", "b"], favori: true }, "normalise, sans champ inconnu ni etat en ligne");
+  assert.deepEqual(r.postes.slice(1).map((p) => p.id), ["987654321", "555555555", "666666666"]);
+  assert.deepEqual(r.postes[1], { id: "987654321" }, "un nom, une note, des etiquettes ou un favori hors limites sont ECARTES, le poste reste");
+  assert.deepEqual(r.postes[3], { id: "666666666" }, "caractere de controle dans le nom : ecarte");
+  assert.equal(r.ignores, 6, "doublon, deux ID invalides, null, nombre, sans id : ignores (les trois derniers gardent leur poste)");
+  const beaucoup = plat(F.importDepuis(JSON.stringify(Array.from({ length: 600 }, (_, i) => ({ id: "id" + String(100000 + i) })))));
+  assert.equal(beaucoup.postes.length, 500, "500 postes au plus"); assert.equal(beaucoup.ignores, 100);
+  assert.equal(plat(F.importDepuis("[]")).postes.length, 0, "une simple liste est acceptee");
+});
+
+test("console-aide-masquage : aucune cle, aucun mot de passe dans un journal exporte", () => {
+  const { aide } = chargerConsole().window.RDConsole;
+  const cle = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP+/=".slice(0, 43) + "=";
+  for (const [entree, interdit] of [[`cle ${cle} fin`, cle], ["resume abcdefgh…KLMNOP (44 car.)", "abcdefgh"], ["password=hunter2 ok", "hunter2"], ['{"token": "s3cr3t-value"}', "s3cr3t"], ["Mot de passe: motdepasse", "motdepasse"]])
+    assert.ok(!aide.masquer(entree).includes(interdit), `« ${entree} » doit etre masque`);
+  assert.equal(aide.masquer("[session] prete — 7 resolutions disponibles"), "[session] prete — 7 resolutions disponibles", "un message ordinaire n'est pas touche");
+  assert.equal(aide.masquer("id 123456789, codec h265, 28 ms"), "id 123456789, codec h265, 28 ms", "ni un ID, ni des chiffres");
+  assert.equal(aide.masquer("/ws/relay et https://hote.exemple/api"), "/ws/relay et https://hote.exemple/api", "ni un chemin");
 });
 
 test("console-forbidden-strings : les chaines que la CI refuse dans la page, aussi dans la console", () => {

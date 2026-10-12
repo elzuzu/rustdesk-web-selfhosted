@@ -7,29 +7,50 @@
 (function(){
   var C = window.RDConsole = window.RDConsole || {};
 
+  // Listes blanches : une valeur hors liste (ancienne version, stockage corrompu) est ignoree.
   var OK = {
     drawer:       ["ouvert", "ferme"],
     statut:       ["visible", "masquee"],
     theme:        ["auto", "clair", "sombre"],       // auto = suit le theme du systeme
+    langue:       ["auto", "fr", "en"],              // auto = suit la langue du navigateur
+    plein:        ["barres", "masquees"],            // en plein ecran : garder statut et tiroir, ou les masquer
+    vue:          ["ajuste", "pixel"],               // image ajustee a la fenetre, ou 1 pixel distant = 1 pixel ecran
+    souris:       ["absolu", "relatif"],
+    bouton:       ["gauche", "droit"],               // bouton principal
+    sens:         ["standard", "vertical", "horizontal", "les-deux"],
+    jiggle:       ["actif", "inactif"],
+    clavierV:     ["ouvert", "ferme"],               // clavier virtuel
     secVideo:     ["ouverte", "fermee"],
+    secAudio:     ["ouverte", "fermee"],
     secClavier:   ["ouverte", "fermee"],
     secSouris:    ["ouverte", "fermee"],
     secAffichage: ["ouverte", "fermee"]
   };
+  // Entiers bornes [min, max].
+  var PLAGES = {
+    taux:   [1, 10],                                 // vitesse de defilement (multiplicateur de crans)
+    sensib: [1, 20]                                  // sensibilite de la souris relative, en dixiemes (10 = 1,0)
+  };
   var DEFAUT = {
-    drawer: "ferme", statut: "visible", theme: "auto",
-    secVideo: "ouverte", secClavier: "ouverte", secSouris: "ouverte", secAffichage: "ouverte"
+    drawer: "ferme", statut: "visible", theme: "auto", langue: "auto", plein: "masquees", vue: "ajuste",
+    souris: "absolu", bouton: "gauche", sens: "standard", jiggle: "inactif", clavierV: "ferme", taux: 1, sensib: 10,
+    secVideo: "ouverte", secAudio: "ouverte", secClavier: "ouverte", secSouris: "ouverte", secAffichage: "ouverte"
   };
   var CLE = "rd-console";
 
   // Une valeur inconnue (ancienne version, stockage corrompu, cle « __proto__ »)
   // est ignoree, jamais recopiee.
+  function valide(k, v){
+    if (Object.prototype.hasOwnProperty.call(OK, k)) return OK[k].indexOf(v) >= 0;
+    if (Object.prototype.hasOwnProperty.call(PLAGES, k)) return typeof v === "number" && v % 1 === 0 && v >= PLAGES[k][0] && v <= PLAGES[k][1];
+    return false;
+  }
   function propre(src){
     var r = {};
     if (!src || typeof src !== "object") return r;
-    Object.keys(OK).forEach(function(k){
+    Object.keys(DEFAUT).forEach(function(k){
       if (!Object.prototype.hasOwnProperty.call(src, k)) return;
-      if (OK[k].indexOf(src[k]) >= 0) r[k] = src[k];
+      if (valide(k, src[k])) r[k] = src[k];
     });
     return r;
   }
@@ -77,5 +98,5 @@
     };
   }
 
-  C.store = { OK: OK, DEFAUT: DEFAUT, create: creer };
+  C.store = { OK: OK, PLAGES: PLAGES, DEFAUT: DEFAUT, create: creer };
 })();

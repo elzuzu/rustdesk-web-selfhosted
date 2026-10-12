@@ -159,6 +159,13 @@ if [ "$RD_TLS_MODE" = "1" ]; then
   [ -n "$RD_ACME_EMAIL" ] || { c_err "L'adresse e-mail est obligatoire pour ACME."; exit 1; }
 fi
 
+titre "Liste des postes (facultatif)"
+echo "  Un petit service ajoute une page d'accueil avec vos postes, leur nom, leurs étiquettes et leur"
+echo "  état EN LIGNE. Il ne voit aucun mot de passe de poste et n'écoute que derrière nginx."
+echo "  Sans lui, le client marche exactement comme avant (formulaire + dernières connexions)."
+demander RD_FLEET "Activer la liste des postes ? (1 = oui, 0 = non)" "0"
+case "$RD_FLEET" in 1) ;; *) RD_FLEET=0 ;; esac
+
 # Le cookie de session est un second facteur d'accès : changer le mot de passe
 # doit invalider les navigateurs déjà autorisés.
 RD_SESSION_TOKEN=${RD_SESSION_TOKEN:-}
@@ -185,6 +192,7 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   echo "RD_TLS_MODE=$(sq "$RD_TLS_MODE")"
   echo "RD_ACME_EMAIL=$(sq "$RD_ACME_EMAIL")"
   echo "RD_SESSION_TOKEN=$(sq "$RD_SESSION_TOKEN")"
+  echo "RD_FLEET=$(sq "$RD_FLEET")"
 } > "$ENV_FILE"
 echo "  ✓ .env"
 
@@ -230,11 +238,18 @@ echo "  ✓ html/index.html"
 
 # ---------------------------------------------------------------- compose
 titre "Construction"
+PROFIL=()
+[ "$RD_FLEET" = "1" ] && PROFIL=(--profile fleet)
 if [ "$RD_TLS_MODE" = "1" ]; then
-  docker compose build && docker compose up -d
+  docker compose ${PROFIL[@]+"${PROFIL[@]}"} build && docker compose ${PROFIL[@]+"${PROFIL[@]}"} up -d
 else
   c_warn "  TLS externe : le service « tls » n'est pas démarré."
-  docker compose build web && docker compose up -d web
+  SERVICES=(web); [ "$RD_FLEET" = "1" ] && SERVICES+=(fleet)
+  docker compose ${PROFIL[@]+"${PROFIL[@]}"} build "${SERVICES[@]}" && docker compose ${PROFIL[@]+"${PROFIL[@]}"} up -d "${SERVICES[@]}"
+fi
+# Un service retire du profil ne s'arrete pas tout seul : on le dit plutot que de le laisser tourner sans que personne le sache.
+if [ "$RD_FLEET" != "1" ] && docker ps --format '{{.Names}}' | grep -qx rustdesk-fleet; then
+  c_warn "  Le service de la liste des postes tourne encore alors qu'il est désactivé : docker compose --profile fleet stop fleet"
 fi
 
 # ------------------------------------------------------------ vérification
@@ -263,6 +278,28 @@ ws=$(curl -s -o /dev/null -w '%{http_code}' -m 5 --http1.1 \
      http://127.0.0.1:8081/ws/id || true)
 if [ "$ws" = "101" ]; then c_ok "  ✓ WebSocket vers hbbs (101)"
 else c_warn "  ⚠ WebSocket : $ws — vérifie RD_BACKEND_HOST et que hbbs écoute sur 21118"; fi
+
+if [ "$RD_FLEET" = "1" ]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/api/health || true)
+  if [ "$code" = "401" ]; then c_ok "  ✓ l'API de la liste des postes exige l'authentification (401)"
+  else c_warn "  ⚠ /api/health sans identifiants : $code"; fi
+  code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RD_WEB_USER:$RD_WEB_PASSWORD" http://127.0.0.1:8081/api/health || true)
+  if [ "$code" = "200" ]; then c_ok "  ✓ le service de la liste des postes répond (200)"
+  else c_warn "  ⚠ /api/health avec identifiants : $code — docker logs rustdesk-fleet"; fi
+  # 21115 n'est JAMAIS un critère de choix de l'hôte : un pare-feu peut le filtrer alors que 21118/21119 passent. On le teste
+  # ICI, depuis le conteneur du service (ce que verra le service), et on ne fait qu'avertir.
+  verdict=$(docker exec rustdesk-fleet python3 -I -c "
+import os, sys
+sys.path.insert(0, '/app')
+import server
+r = server.sonder_hbbs(os.environ['RD_BACKEND_HOST'], 21115, ['000000000'])
+print('ok' if r['000000000'] is not None else 'ko')" 2>/dev/null || echo ko)
+  if [ "$verdict" = "ok" ]; then c_ok "  ✓ hbbs répond sur 21115 : l'état en ligne des postes sera affiché"
+  else
+    c_warn "  ⚠ hbbs ne répond pas sur 21115 depuis le conteneur : la liste marche, SANS la pastille « en ligne »."
+    echo "    Ouvre le port TCP 21115 de hbbs à ce conteneur (pare-feu), ou lance :  python3 scripts/online-probe.py \"$RD_BACKEND_HOST\""
+  fi
+fi
 
 # La vérification qui manquait, et c'est celle qui compte : /ws/id suffisait à
 # déclarer l'installation réussie alors que c'est /ws/relay qui échoue. Une

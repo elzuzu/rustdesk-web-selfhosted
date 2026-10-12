@@ -5,6 +5,8 @@ map_hash_bucket_size 128;   # le jeton de session fait 64 caracteres
 # seconde. Mesure le 2026-09-15 : 130 requetes -> 104 passees, 26 en 429.
 limit_req_zone $binary_remote_addr zone=rdauth:10m rate=60r/m;
 limit_req_status 429;
+# Zone SEPAREE pour l'API de la flotte : un tableau de bord qui se rafraichit ne doit pas puiser dans le seau de l'authentification.
+limit_req_zone $binary_remote_addr zone=rdapi:10m rate=120r/m;
 
 # Journal sur fichier, lu par la prison fail2ban « rustdesk-auth ». fail2ban
 # tourne sur l'hote et ne sait pas lire la sortie standard d'un conteneur.
@@ -92,6 +94,27 @@ server {
         add_header Cache-Control "no-cache";
         add_header X-Content-Type-Options nosniff always;
         try_files $uri =404;
+    }
+
+    # Service « flotte » (liste des postes, etat en ligne) : fleet/server.py, dans un conteneur a part et FACULTATIF.
+    # - meme authentification que le reste (Basic ou cookie de session), zone de debit separee ;
+    # - le nom est resolu A LA REQUETE (variable + resolver Docker) : sans cela nginx REFUSERAIT DE DEMARRER des que le
+    #   conteneur « fleet » est absent ou arrete, et tout le client tomberait avec lui. Absent : 502, et la page retombe
+    #   sur ses dernieres connexions ;
+    # - le service verifie lui-meme X-RD et Sec-Fetch-Site (garde CSRF) ; ici on ne touche a aucun en-tete.
+    location /api/ {
+        limit_req zone=rdapi burst=60 nodelay;
+        auth_basic $rd_realm;
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        resolver_timeout 2s;
+        set $rd_fleet http://fleet:8000;
+        proxy_pass $rd_fleet;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 12s;
+        client_max_body_size 16k;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options nosniff always;
     }
 
     location / {

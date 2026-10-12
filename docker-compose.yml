@@ -25,5 +25,29 @@ services:
     mem_limit: 128m
     restart: unless-stopped
 
+  # Liste des postes et etat en ligne (facultatif : `docker compose --profile fleet up -d`, ou setup.sh qui le propose).
+  # Aucun port publie : seul nginx le joint, derriere l'authentification de la page. Lecture seule, sans privilege.
+  fleet:
+    profiles: ["fleet"]
+    build: ./fleet
+    image: rustdesk-fleet:1.0
+    container_name: rustdesk-fleet
+    environment:
+      RD_BACKEND_HOST: ${RD_BACKEND_HOST:-host.docker.internal}   # le meme hote que le proxy WebSocket vers hbbs/hbbr
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - fleet-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    restart: unless-stopped
+
 volumes:
   caddy-data:
+  fleet-data:

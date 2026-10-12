@@ -12,15 +12,19 @@
   // poignee flotte). Sur un ecran etroit le tiroir recouvre l'image au lieu de
   // la pousser (feuille basse), donc ne reserve rien a gauche.
   //   e = { enSession, barre: "ouverte"|"repliee", drawer: "ouvert"|"ferme",
-  //         statut: "visible"|"masquee", largeur }
+  //         statut: "visible"|"masquee", largeur, plein: bool, pleinMasque: bool, clavier: hauteur du clavier virtuel ouvert (px) }
+  // En plein ecran avec « masquees » : ni tiroir ni statut, le poste distant garde tout l'ecran. Le clavier virtuel, lui,
+  // reste reserve : sans lui l'image passerait dessous.
   function insets(e){
     e = e || {};
-    if (!e.enSession) return { top: 0, left: 0, bottom: 0 };
+    if (!e.enSession) return { top: 0, left: 0, bottom: 0, statutBas: 0 };
     var etroit = e.largeur > 0 && e.largeur < ETROIT;
+    var masque = !!(e.plein && e.pleinMasque);
     return {
       top:    e.barre === "ouverte" ? BARRE : 0,
-      left:   (e.drawer === "ouvert" && !etroit) ? TIROIR : 0,
-      bottom: e.statut === "visible" ? STATUT : 0
+      left:   (e.drawer === "ouvert" && !etroit && !masque) ? TIROIR : 0,
+      bottom: ((e.statut === "visible" && !masque) ? STATUT : 0) + (e.clavier > 0 ? Math.round(e.clavier) : 0),
+      statutBas: (e.statut === "visible" && !masque) ? STATUT : 0     // le clavier virtuel se pose juste au-dessus
     };
   }
 
@@ -51,8 +55,24 @@
     if (typeof rtt !== "number" || !isFinite(rtt) || rtt < 0) return "inconnue";
     return rtt <= 60 ? "bonne" : rtt <= 150 ? "moyenne" : "mauvaise";
   }
-  var LIBELLE_SANTE = { bonne: "liaison fluide", moyenne: "liaison correcte", mauvaise: "liaison lente", inconnue: "liaison non mesuree" };
+
+  // Resume d'une serie de mesures : derniere, min, max, moyenne (null s'il n'y a rien d'exploitable).
+  function resume(a){
+    var v = (Array.isArray(a) ? a : []).filter(function(x){ return typeof x === "number" && isFinite(x); });
+    if (!v.length) return null;
+    var min = v[0], max = v[0], somme = 0;
+    v.forEach(function(x){ if (x < min) min = x; if (x > max) max = x; somme += x; });
+    return { derniere: v[v.length - 1], min: min, max: max, moy: somme / v.length, n: v.length };
+  }
+  // Ajoute une mesure a une serie bornee (les plus anciennes sortent) ; ignore une mesure illisible.
+  function pousser(serie, x, max){
+    if (typeof x !== "number" || !isFinite(x)) return serie;
+    serie.push(x);
+    while (serie.length > (max || 90)) serie.shift();
+    return serie;
+  }
 
   C.layout = { BARRE: BARRE, TIROIR: TIROIR, STATUT: STATUT, ETROIT: ETROIT, insets: insets };
-  C.statut = { nomCodec: nomCodec, segments: segments, ligne: ligneStatut, sante: sante, LIBELLE_SANTE: LIBELLE_SANTE };
+  C.mesures = { resume: resume, pousser: pousser };
+  C.statut = { nomCodec: nomCodec, segments: segments, ligne: ligneStatut, sante: sante };
 })();

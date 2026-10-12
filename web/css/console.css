@@ -17,7 +17,7 @@
    l'espace reserve autour de l'image. #app>#canvas se cale dedans, et le gabarit
    (fitCanvas, placerHud) mesure ce conteneur et non la fenetre. */
 
-:root{--rd-top:0px;--rd-left:0px;--rd-bottom:0px;
+:root{--rd-top:0px;--rd-left:0px;--rd-bottom:0px;--rd-statut-bas:0px;--rd-vkb-h:240px;
       /* Memes valeurs que web/js/01-pure.js (layout.BARRE / TIROIR / STATUT) : un test les compare. */
       --rd-bar-h:48px;--rd-drawer-w:336px;--rd-status-h:30px}
 
@@ -63,7 +63,12 @@ body.rd-console[data-rd-theme="sombre"]{color-scheme:dark}
 /* L'image se cale entre les barres ; le HUD et le panneau de fichiers aussi. */
 body.rd-console #app>#canvas{inset:var(--rd-top) 0 calc(var(--rd-bottom) + var(--rd-safe-b)) var(--rd-left)}
 body.rd-console #rdhud{left:var(--rd-left);bottom:calc(var(--rd-bottom) + var(--rd-safe-b))}
-body.rd-console #rdfiles{top:var(--rd-top);bottom:calc(var(--rd-bottom) + var(--rd-safe-b))}
+body.rd-console #rdfiles{top:var(--rd-top);bottom:calc(var(--rd-statut-bas) + var(--rd-safe-b))}
+
+/* Vue 1:1 : l'image garde sa taille et la zone defile ; les marges automatiques centrent l'image quand elle tient, et
+   l'alignent au bord quand elle deborde (un centrage flex rognerait les deux cotes). */
+body.rd-console[data-rd-vue="pixel"] #app>#canvas{justify-content:flex-start;align-items:flex-start;overflow:auto}
+body.rd-console[data-rd-vue="pixel"] :is(#player,#rdcanvas){margin:auto;max-inline-size:none;max-block-size:none;flex:none}
 
 /* ------------------------------------------------------------ icones */
 body.rd-console .rdico{inline-size:1.0625rem;block-size:1.0625rem;flex:none;fill:none;stroke:currentColor;
@@ -94,10 +99,10 @@ body.rd-console #rdbar:not(.replie) .rdppbtn{order:-1;color:var(--rd-text);
        background:color-mix(in oklch,var(--rd-ok) 22%,var(--rd-bg));
        border-color:color-mix(in oklch,var(--rd-ok) 55%,transparent)}
 body.rd-console #rdbar:not(.replie) .rdppbtn:hover{background:color-mix(in oklch,var(--rd-ok) 32%,var(--rd-bg))}
-body.rd-console #rdbar:not(.replie) .rdfilesbtn{margin-inline-start:auto;background:var(--rd-surface-2);
+body.rd-console #rdbar:not(.replie) .rdfilesbtn{order:50;margin-inline-start:auto;background:var(--rd-surface-2);
        border-color:var(--rd-border)}
 body.rd-console #rdbar:not(.replie) .rdfilesbtn:hover{background:var(--rd-surface-3)}
-body.rd-console #rdbar:not(.replie) button.quit{color:var(--rd-danger-text);
+body.rd-console #rdbar:not(.replie) button.quit{order:90;color:var(--rd-danger-text);
        background:color-mix(in oklch,var(--rd-danger) 14%,transparent)}
 body.rd-console #rdbar:not(.replie) button.quit:hover{background:color-mix(in oklch,var(--rd-danger) 26%,transparent)}
 body.rd-console #rdbar:not(.replie) .rdhandle{inline-size:2rem;padding:0;font-size:1rem;color:var(--rd-text-2)}
@@ -115,7 +120,7 @@ body.rd-console #rddrawer :is(button,select,summary,input):focus-visible{
        outline:2px solid var(--rd-focus);outline-offset:2px}
 
 /* -------------------------------------------------------------- tiroir */
-#rddrawer{position:fixed;top:var(--rd-top);bottom:calc(var(--rd-bottom) + var(--rd-safe-b));left:0;
+#rddrawer{position:fixed;top:var(--rd-top);bottom:calc(var(--rd-statut-bas) + var(--rd-safe-b));left:0;
        inline-size:var(--rd-drawer-w);max-inline-size:100vw;z-index:9;
        display:flex;flex-direction:column;box-sizing:border-box;contain:layout paint;
        background:var(--rd-bg);color:var(--rd-text);border-inline-end:1px solid var(--rd-border);
@@ -206,6 +211,141 @@ body.rd-console #rddrawer :is(button,select,summary,input):focus-visible{
   #rddrawer select option:checked{background:color-mix(in oklch,var(--rd-accent) 18%,var(--rd-surface));font-weight:600}
 }
 
+/* ===================================================== fenetres flottantes (Toolbox, Poste, Statistiques…)
+   Popover natif : couche superieure, fermeture au clic exterieur et a Echap, focus gere par le navigateur.
+   Positionnee sous le bouton qui l'ouvre (le JS pose inset-block-start / inset-inline-start). */
+body.rd-console .rdpop{position:fixed;inset:auto;margin:0;padding:0;box-sizing:border-box;
+       inline-size:min(22rem,calc(100vw - 1rem));max-block-size:calc(100dvh - var(--rd-bar-h) - 1.5rem);overflow:auto;
+       overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--rd-border-strong) transparent;
+       background:var(--rd-bg);color:var(--rd-text);border:1px solid var(--rd-border-strong);border-radius:.875rem;
+       box-shadow:var(--rd-shadow-pop);font:400 .8125rem/1.4 var(--rd-font);
+       transition:opacity .16s var(--rd-ease),translate .18s var(--rd-ease),display .18s allow-discrete,overlay .18s allow-discrete}
+body.rd-console .rdpop[hidden]{display:none}
+@starting-style{body.rd-console .rdpop:popover-open{opacity:0;translate:0 -6px}}
+body.rd-console .rdpop-titre{margin:0;padding:.75rem 1rem;font-size:.9375rem;font-weight:650;letter-spacing:-.005em;
+       border-block-end:1px solid var(--rd-border)}
+body.rd-console .rdpop-sous{margin:0;padding:.75rem 1rem .25rem;font-size:.6875rem;font-weight:650;letter-spacing:.06em;
+       text-transform:uppercase;color:var(--rd-text-2)}
+body.rd-console .rdpop-corps{padding-block-end:.5rem}
+body.rd-console .rdpop .rdrow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:1rem;
+       padding:.45rem 1rem;min-block-size:2.5rem}
+body.rd-console .rdpop .rdtxt{display:grid;gap:.15rem;min-inline-size:0}
+body.rd-console .rdpop .rdlib{font-weight:500}
+body.rd-console .rdpop .rdaide{color:var(--rd-text-2);font-size:.75rem;line-height:1.35}
+body.rd-console .rdpop :is(button,input,select,textarea,summary):focus-visible{outline:2px solid var(--rd-focus);outline-offset:2px}
+
+/* Boutons d'action des fenetres. */
+body.rd-console .rdactions{display:grid;gap:.375rem;padding:.25rem 1rem .5rem}
+body.rd-console .rdbtn{display:inline-flex;align-items:center;gap:.55rem;block-size:2.25rem;padding:0 .85rem;margin:0;
+       border:1px solid var(--rd-border);border-radius:.625rem;background:var(--rd-surface-2);color:var(--rd-text);
+       font:500 .8125rem/1 var(--rd-font);cursor:pointer;text-align:start;
+       transition:background-color .12s,border-color .12s,scale .12s}
+body.rd-console .rdbtn:hover:not(:disabled){background:var(--rd-surface-3)}
+body.rd-console .rdbtn:active:not(:disabled){scale:.98}
+body.rd-console .rdbtn:disabled{opacity:.55;cursor:not-allowed}
+body.rd-console .rdbtn-danger{background:var(--rd-danger);border-color:transparent;color:#fff}
+body.rd-console .rdbtn-danger:hover:not(:disabled){background:color-mix(in oklch,var(--rd-danger),black 14%)}
+body.rd-console .rdbtn .rdico{color:var(--rd-text-2)}
+body.rd-console .rdbtn-danger .rdico{color:inherit}
+body.rd-console [data-indisponible]{opacity:.6}
+
+/* Choix de l'ecran du poste. */
+body.rd-console .rdecrans{display:grid;gap:.25rem;padding:.25rem 1rem .5rem}
+body.rd-console .rdecran{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.6rem;padding:.5rem .65rem;margin:0;
+       border:1px solid var(--rd-border);border-radius:.625rem;background:transparent;color:var(--rd-text);
+       font:500 .8125rem/1.2 var(--rd-font);cursor:pointer;text-align:start;transition:background-color .12s,border-color .12s}
+body.rd-console .rdecran:hover{background:var(--rd-surface-2)}
+body.rd-console .rdecran[aria-checked="true"]{border-color:var(--rd-accent);background:color-mix(in oklch,var(--rd-accent) 14%,var(--rd-bg))}
+body.rd-console .rdecran-dim{color:var(--rd-text-2);font-variant-numeric:tabular-nums}
+body.rd-console .rdecran .rdico{color:var(--rd-text-2)}
+
+/* Interrupteurs et curseurs dans les fenetres : memes composants que le tiroir. */
+body.rd-console .rdpop .rdsw{appearance:none;-webkit-appearance:none;position:relative;flex:none;margin:0;inline-size:2.5rem;block-size:1.5rem;
+       border-radius:999px;cursor:pointer;background:var(--rd-surface-3);border:1px solid var(--rd-border-strong);
+       transition:background-color .16s,border-color .16s}
+body.rd-console .rdpop .rdsw::after{content:"";position:absolute;inset-block:.1875rem;inset-inline-start:.1875rem;inline-size:1.0625rem;
+       border-radius:50%;background:var(--rd-text-2);transition:translate .18s var(--rd-ease),background-color .16s}
+body.rd-console .rdpop .rdsw:checked{background:var(--rd-accent);border-color:transparent}
+body.rd-console .rdpop .rdsw:checked::after{translate:1rem 0;background:var(--rd-on-accent)}
+body.rd-console .rdpop .rdsw:disabled{opacity:.5;cursor:not-allowed}
+
+/* ============================================================= clavier virtuel
+   Pose au-dessus de la barre de statut ; l'image se cale au-dessus de lui (--rd-bottom l'inclut). */
+#rdvkb{position:fixed;left:var(--rd-left);right:0;bottom:calc(var(--rd-statut-bas) + var(--rd-safe-b));z-index:9;
+       box-sizing:border-box;block-size:var(--rd-vkb-h);display:flex;flex-direction:column;gap:4px;
+       padding:8px max(.5rem,env(safe-area-inset-right)) 8px max(.5rem,env(safe-area-inset-left));
+       background:var(--rd-bg);border-block-start:1px solid var(--rd-border);color:var(--rd-text);font:500 .75rem/1 var(--rd-font);
+       user-select:none;-webkit-user-select:none;touch-action:manipulation}
+#rdvkb[hidden]{display:none}
+#rdvkb .rdkb-rang{display:flex;gap:4px;flex:1 1 0;min-block-size:0;max-inline-size:60rem;inline-size:100%;margin-inline:auto}
+#rdvkb .rdkb-fonction .rdkey{font-size:.6875rem}
+#rdvkb .rdkey{min-inline-size:0;margin:0;padding:0;border:1px solid var(--rd-border);border-radius:.4375rem;
+       background:var(--rd-surface-2);color:var(--rd-text);font:inherit;cursor:pointer;
+       transition:background-color .1s,scale .1s}
+#rdvkb .rdkey:hover{background:var(--rd-surface-3)}
+#rdvkb .rdkey:active{scale:.94;background:var(--rd-accent);color:var(--rd-on-accent)}
+#rdvkb .rdkey[aria-pressed="true"]{background:var(--rd-accent);border-color:transparent;color:var(--rd-on-accent)}
+#rdvkb .rdkey:focus-visible{outline:2px solid var(--rd-focus);outline-offset:1px}
+body.rd-console #rdbar .rdtool[aria-pressed="true"]{background:color-mix(in oklch,var(--rd-accent) 20%,transparent)}
+@media (pointer:coarse){:root{--rd-vkb-h:300px}}
+@media (max-width:719px){#rdvkb{left:0}}
+
+/* ===================================================== Toolbox, statistiques, aide */
+body.rd-console .rdtb-bloc{display:grid;gap:.5rem;padding:.5rem 1rem}
+body.rd-console .rdtb-bloc>label{font-weight:500}
+body.rd-console .rdtb-aide{margin:0;padding:.25rem 1rem .5rem;color:var(--rd-text-2);font-size:.75rem;line-height:1.4}
+body.rd-console .rdtb-bloc .rdtb-aide{padding-inline:0}
+body.rd-console .rdtexte{inline-size:100%;box-sizing:border-box;resize:vertical;min-block-size:4.5rem;max-block-size:12rem;padding:.55rem .7rem;
+       border:1px solid var(--rd-border-strong);border-radius:.625rem;background:var(--rd-surface);color:var(--rd-text);
+       font:400 .8125rem/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+body.rd-console .rdtb-rangee{display:grid;grid-template-columns:1fr 1fr;gap:.375rem}
+body.rd-console .rdrac{display:grid;grid-template-columns:1fr 1fr;gap:.375rem;padding:.25rem 1rem .5rem}
+body.rd-console .rdbtn-rac{justify-content:center;text-align:center;min-block-size:2.25rem;block-size:auto;padding-block:.4rem;line-height:1.2}
+body.rd-console .rdrac-perso{display:grid;gap:.375rem;padding:0 1rem}
+body.rd-console .rdpop-sous2{margin:.25rem 0 0;font-size:.6875rem;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--rd-text-2)}
+body.rd-console .rdrac-ligne{display:grid;grid-template-columns:1fr auto;gap:.375rem}
+body.rd-console .rdx{display:inline-grid;place-items:center;inline-size:2.25rem;block-size:2.25rem;padding:0;margin:0;border:1px solid var(--rd-border);
+       border-radius:.625rem;background:transparent;color:var(--rd-text-2);cursor:pointer}
+body.rd-console .rdx:hover{background:var(--rd-surface-2);color:var(--rd-danger-text)}
+body.rd-console .rdx:focus-visible{outline:2px solid var(--rd-focus);outline-offset:2px}
+body.rd-console .rdrac-saisie{display:grid;grid-template-columns:1fr auto;gap:.375rem;padding:.5rem 1rem 0}
+body.rd-console .rdchamp{min-inline-size:0;block-size:2.25rem;padding:0 .7rem;border:1px solid var(--rd-border-strong);border-radius:.625rem;
+       background:var(--rd-surface);color:var(--rd-text);font:500 .8125rem/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+body.rd-console .rdrac-erreur{margin:0;padding:.25rem 1rem .5rem;color:var(--rd-danger-text);font-size:.75rem}
+body.rd-console .rdrac-erreur[hidden]{display:none}
+body.rd-console .rdpop :is(.rdtexte,.rdchamp):focus-visible{outline:2px solid var(--rd-focus);outline-offset:1px}
+
+body.rd-console .rdstats{display:grid;gap:.25rem;padding:.5rem 1rem 0}
+body.rd-console .rdstat{display:grid;gap:.25rem;padding:.5rem 0;border-block-end:1px solid var(--rd-border)}
+body.rd-console .rdstat-tete{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem}
+body.rd-console .rdstat-nom{font-weight:500;color:var(--rd-text-2)}
+body.rd-console .rdstat-val{font:600 1rem/1.2 var(--rd-font);font-variant-numeric:tabular-nums;color:var(--rd-text)}
+body.rd-console .rdstat-cv{display:block;inline-size:100%;block-size:3.25rem;border-radius:.375rem;background:var(--rd-surface)}
+body.rd-console .rdstat-pied{color:var(--rd-text-2);font-size:.6875rem;font-variant-numeric:tabular-nums}
+
+body.rd-console .rdaide-resultat{margin:.25rem 1rem 0;padding:.5rem .7rem;border-radius:.5rem;background:var(--rd-surface-2);color:var(--rd-text)}
+body.rd-console .rdaide-resultat[hidden]{display:none}
+body.rd-console .rdaide-resultat[data-niveau="ok"]{background:color-mix(in oklch,var(--rd-ok) 18%,var(--rd-bg))}
+body.rd-console .rdaide-resultat[data-niveau="alerte"]{background:color-mix(in oklch,var(--rd-warn) 20%,var(--rd-bg))}
+body.rd-console .rdaide-resultat[data-niveau="erreur"]{background:color-mix(in oklch,var(--rd-danger) 20%,var(--rd-bg))}
+body.rd-console .rdapropos{display:grid;grid-template-columns:auto 1fr;gap:.25rem 1rem;margin:0;padding:.25rem 1rem}
+body.rd-console .rdapropos dt{color:var(--rd-text-2)}
+body.rd-console .rdapropos dd{margin:0;font-variant-numeric:tabular-nums}
+body.rd-console .rdapropos a{color:var(--rd-focus);text-underline-offset:.15em}
+
+/* Curseur : la plage native, habillee, et sa valeur lisible. */
+#rddrawer .rdrange{display:inline-flex;align-items:center;gap:.6rem}
+#rddrawer .rdslider{inline-size:6.5rem;margin:0;accent-color:var(--rd-accent);cursor:pointer}
+#rddrawer .rdval{min-inline-size:2.4em;text-align:end;color:var(--rd-text);font-weight:500;font-variant-numeric:tabular-nums}
+#rddrawer [data-indisponible] .rdlib{color:var(--rd-text-2)}
+
+/* Barre de statut : etiquettes de liaison. */
+#rdstatut .rdtags{display:inline-flex;align-items:center;gap:.4rem}
+#rdstatut .rdtag{display:inline-flex;align-items:center;padding:.1875rem .5rem;border:1px solid var(--rd-border-strong);border-radius:999px;
+       color:var(--rd-text-2);font-size:.6875rem;font-weight:600;letter-spacing:.02em}
+#rdstatut .rdtag-ok{color:var(--rd-ok);border-color:color-mix(in oklch,var(--rd-ok) 55%,transparent)}
+#rdstatut .rdtag-alerte{color:var(--rd-warn-text);border-color:color-mix(in oklch,var(--rd-warn) 65%,transparent)}
+
 /* ----------------------------------------------------- barre de statut */
 #rdstatut{position:fixed;inset-inline:0;bottom:0;z-index:9;box-sizing:border-box;
        block-size:calc(var(--rd-status-h) + var(--rd-safe-b));padding-block-end:var(--rd-safe-b);
@@ -271,7 +411,7 @@ body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);col
    Le tiroir devient une feuille basse qui recouvre l'image au lieu de la pousser (la console
    ne reserve alors rien a gauche, cf. 01-pure.js). 719 px : meme seuil que layout.ETROIT - 1. */
 @media (max-width:719px){
-  #rddrawer{top:auto;bottom:calc(var(--rd-bottom) + var(--rd-safe-b));left:0;right:0;inline-size:auto;
+  #rddrawer{top:auto;bottom:calc(var(--rd-statut-bas) + var(--rd-safe-b));left:0;right:0;inline-size:auto;
        max-block-size:min(70dvh,34rem);border-inline-end:0;border-block-start:1px solid var(--rd-border);
        border-start-start-radius:1rem;border-start-end-radius:1rem;box-shadow:var(--rd-shadow-sheet)}
   #rddrawer[hidden]{translate:0 18px}
@@ -320,7 +460,7 @@ body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);col
    sombre de la page ; le theme du tiroir ne s'y applique pas (il n'existe qu'une fois en session).
    Les memes valeurs que les jetons de la console, cote sombre. Specificite : le gabarit pose
    « #app>#connect », « #app input » et « #app td » ; chaque regle ci-dessous les surpasse. */
-#app{--lg-bg:oklch(.205 .012 265);--lg-field:oklch(.245 .013 265);--lg-field-2:oklch(.285 .014 265);
+:is(#app,.rdfl-dlg){--lg-bg:oklch(.205 .012 265);--lg-field:oklch(.245 .013 265);--lg-field-2:oklch(.285 .014 265);
      --lg-border:oklch(1 0 0/.1);--lg-border-strong:oklch(1 0 0/.45);--lg-text:oklch(.95 .005 265);
      --lg-text-2:oklch(.76 .012 265);--lg-accent:oklch(.54 .21 264);--lg-focus:oklch(.78 .13 264)}
 #app>:is(#connect,#password,#status){box-sizing:border-box;max-inline-size:27rem;
@@ -379,4 +519,106 @@ body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);col
   #app>:is(#connect,#password,#status){border-color:CanvasText;background:Canvas;color:CanvasText}
   #app>:is(#connect,#password) input{border-color:ButtonText;background:Field;color:FieldText}
   #app>#connect td>button,#app>#password #confirm{background:ButtonFace;color:ButtonText;border-color:ButtonText}
+}
+
+/* ===================================================== « Mes postes » (page d'accueil, avant la connexion)
+   Memes jetons sombres que la carte de connexion (--lg-*). Le service est facultatif : sans lui, ce bloc n'existe pas. */
+#app>#rdflotte{box-sizing:border-box;max-inline-size:60rem;margin:clamp(1.25rem,8dvh,5rem) auto 0;padding:1.5rem;
+       border:1px solid var(--lg-border);border-radius:1.25rem;background:var(--lg-bg);color:var(--lg-text);
+       font:400 .9375rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       box-shadow:0 1px 0 oklch(1 0 0/.04) inset,0 28px 70px oklch(0 0 0/.5),0 0 90px oklch(.5 .2 264/.1)}
+#app>#rdflotte[hidden]{display:none}
+#app>#rdflotte:not([hidden])+#connect{margin-top:1rem}
+#app>#rdflotte:not([hidden])+#connect::before{content:"Connexion manuelle";font-size:1rem;color:var(--lg-text-2)}
+#rdflotte .rdfl-entete{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1rem;margin-block-end:1rem}
+#rdflotte .rdfl-entete h2{margin:0;font-size:1.25rem;font-weight:650;letter-spacing:-.012em}
+#rdflotte .rdfl-compte{color:var(--lg-text-2);font-size:.8125rem;font-variant-numeric:tabular-nums}
+#rdflotte .rdfl-outils{display:flex;gap:.4rem;margin-inline-start:auto;flex-wrap:wrap}
+#rdflotte .rdfl-recherche{box-sizing:border-box;inline-size:100%;block-size:2.5rem;margin:0 0 1rem;padding:0 .85rem;border:1px solid var(--lg-border-strong);
+       border-radius:.75rem;background:var(--lg-field);color:var(--lg-text);font:inherit;min-inline-size:0}
+#rdflotte .rdfl-recherche[hidden]{display:none}
+#rdflotte .rdfl-grille{display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:.75rem;margin:0;padding:0;list-style:none}
+#rdflotte .rdfl-vide{grid-column:1/-1;padding:1.5rem 0;color:var(--lg-text-2);text-align:center}
+.rdfl-carte{display:flex;flex-direction:column;gap:.45rem;min-inline-size:0;padding:.9rem 1rem;border:1px solid var(--lg-border);border-radius:1rem;
+       background:var(--lg-field);transition:border-color .14s,translate .14s}
+.rdfl-carte:hover{border-color:var(--lg-border-strong)}
+.rdfl-carte[data-etat="en_ligne"]{border-color:color-mix(in oklch,oklch(.75 .17 155) 38%,transparent)}
+.rdfl-tete{display:flex;align-items:center;gap:.55rem;min-inline-size:0}
+.rdfl-nom{flex:1 1 auto;min-inline-size:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:1rem;font-weight:600}
+.rdfl-pastille{flex:none;inline-size:.625rem;block-size:.625rem;border-radius:50%;background:oklch(.55 .01 265)}
+[data-etat="en_ligne"]>.rdfl-tete>.rdfl-pastille,.rdfl-pastille[data-etat="en_ligne"]{background:oklch(.75 .17 155);box-shadow:0 0 0 3px oklch(.75 .17 155/.25)}
+[data-etat="hors_ligne"]>.rdfl-tete>.rdfl-pastille,.rdfl-pastille[data-etat="hors_ligne"]{background:oklch(.45 .01 265)}
+.rdfl-etoile{flex:none;inline-size:2rem;block-size:2rem;margin:0;padding:0;border:0;border-radius:.5rem;background:transparent;color:var(--lg-text-2);
+       font-size:1.1rem;line-height:1;cursor:pointer;transition:background-color .12s,color .12s}
+.rdfl-etoile:hover{background:oklch(.285 .014 265)}
+.rdfl-etoile[aria-pressed="true"]{color:oklch(.82 .15 85)}
+.rdfl-sous{display:flex;flex-wrap:wrap;gap:.1rem .75rem;margin:0;color:var(--lg-text-2);font-size:.8125rem;font-variant-numeric:tabular-nums}
+.rdfl-tags{display:flex;flex-wrap:wrap;gap:.3rem;margin:0;padding:0;list-style:none}
+.rdfl-tag{padding:.125rem .55rem;border:1px solid var(--lg-border-strong);border-radius:999px;color:var(--lg-text-2);font-size:.75rem}
+.rdfl-note{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--lg-text-2);font-size:.8125rem}
+.rdfl-actions{display:flex;gap:.4rem;margin-block-start:auto;padding-block-start:.35rem}
+.rdfl-actions .rdfl-primaire{flex:1 1 auto}
+.rdfl-btn{display:inline-flex;align-items:center;justify-content:center;block-size:2.25rem;margin:0;padding:0 .9rem;border:1px solid var(--lg-border);border-radius:.625rem;
+       background:oklch(.285 .014 265);color:var(--lg-text);font:600 .8125rem/1 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;cursor:pointer;
+       transition:background-color .12s,scale .12s}
+.rdfl-btn:hover:not(:disabled){background:oklch(.33 .016 265)}
+.rdfl-btn:active:not(:disabled){scale:.98}
+.rdfl-btn:disabled{opacity:.55;cursor:not-allowed}
+.rdfl-primaire{background:var(--lg-accent);border-color:transparent;color:oklch(1 0 0)}
+.rdfl-primaire:hover:not(:disabled){background:oklch(.48 .21 264)}
+.rdfl-danger{background:oklch(.5 .19 25);border-color:transparent;color:#fff}
+.rdfl-danger:hover:not(:disabled){background:oklch(.44 .19 25)}
+.rdfl-icone{inline-size:2.25rem;padding:0;font-size:1.1rem}
+#rdflotte :is(button,input):focus-visible,.rdfl-dlg :is(button,input,textarea):focus-visible{outline:2px solid var(--lg-focus);outline-offset:2px}
+
+/* Dialogue d'ajout / de modification : <dialog> natif (focus piege, Echap, arriere-plan inerte). */
+.rdfl-dlg{box-sizing:border-box;inline-size:min(26rem,calc(100vw - 2rem));padding:1.25rem;border:1px solid oklch(1 0 0/.2);border-radius:1.125rem;
+       background:oklch(.205 .012 265);color:oklch(.95 .005 265);box-shadow:0 30px 80px oklch(0 0 0/.6);
+       font:400 .9375rem/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.rdfl-dlg::backdrop{background:oklch(0 0 0/.55);backdrop-filter:blur(2px)}
+.rdfl-dlg h2{margin:0 0 .9rem;font-size:1.125rem;font-weight:650}
+.rdfl-champ{display:grid;gap:.25rem;margin-block-end:.8rem}
+.rdfl-champ>span{color:oklch(.76 .012 265);font-size:.75rem;font-weight:600;letter-spacing:.02em}
+.rdfl-champ>small{color:oklch(.76 .012 265);font-size:.75rem}
+.rdfl-champ :is(input,textarea){box-sizing:border-box;inline-size:100%;min-inline-size:0;padding:.55rem .75rem;border:1px solid oklch(1 0 0/.45);border-radius:.625rem;
+       background:oklch(.245 .013 265);color:inherit;font:inherit}
+.rdfl-champ textarea{resize:vertical;min-block-size:3.5rem}
+.rdfl-champ input[readonly]{opacity:.7}
+.rdfl-err{margin:0 0 .75rem;color:oklch(.8 .14 25);font-size:.8125rem}
+.rdfl-err[data-info]{color:oklch(.76 .012 265)}
+.rdfl-err[hidden]{display:none}
+.rdfl-dlg-actions{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:flex-end}
+.rdfl-dlg-actions .rdfl-danger{margin-inline-end:auto}
+
+/* En session : la liste des postes dans la barre haute (jetons de la console). */
+body.rd-console .rdsw-liste{display:grid;gap:.25rem;margin:0;padding:.25rem .75rem .75rem;list-style:none}
+body.rd-console .rdposte{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:.7rem;inline-size:100%;margin:0;padding:.55rem .7rem;
+       border:1px solid var(--rd-border);border-radius:.625rem;background:transparent;color:var(--rd-text);font:500 .8125rem/1.25 var(--rd-font);
+       text-align:start;cursor:pointer;transition:background-color .12s,border-color .12s}
+body.rd-console .rdposte:hover:not(:disabled){background:var(--rd-surface-2)}
+body.rd-console .rdposte:disabled{cursor:default;border-color:var(--rd-accent);background:color-mix(in oklch,var(--rd-accent) 14%,var(--rd-bg))}
+body.rd-console .rdposte-txt{display:grid;gap:.1rem;min-inline-size:0}
+body.rd-console .rdposte-nom{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.rd-console .rdposte-id{color:var(--rd-text-2);font-size:.75rem;font-variant-numeric:tabular-nums}
+body.rd-console .rdposte .rdfl-pastille{background:var(--rd-text-2)}
+body.rd-console .rdposte .rdfl-pastille[data-etat="en_ligne"]{background:var(--rd-ok);box-shadow:0 0 0 3px color-mix(in oklch,var(--rd-ok) 25%,transparent)}
+body.rd-console .rdposte:focus-visible{outline:2px solid var(--rd-focus);outline-offset:2px}
+
+@media (max-width:480px){
+  #app>#rdflotte{max-inline-size:none;margin:0;padding:max(1.25rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-right)) 1rem max(1rem,env(safe-area-inset-left));
+       border:0;border-radius:0;box-shadow:none}
+  #app>#rdflotte+#connect{margin-top:0;min-block-size:auto}
+  #rdflotte .rdfl-grille{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){.rdfl-carte,.rdfl-btn,.rdfl-etoile{transition-duration:.01ms!important}}
+@media (forced-colors:active){
+  #app>#rdflotte,.rdfl-dlg,.rdfl-carte{border-color:CanvasText;background:Canvas;color:CanvasText}
+  .rdfl-pastille{background:CanvasText;box-shadow:none}
+  .rdfl-primaire{background:ButtonFace;color:ButtonText;border-color:ButtonText}
+}
+@media (pointer:coarse){
+  .rdfl-btn,.rdfl-etoile,.rdfl-icone{min-block-size:2.75rem}
+  .rdfl-etoile{min-inline-size:2.75rem}
+  .rdfl-icone{min-inline-size:2.75rem}
+  #rdflotte .rdfl-recherche{block-size:2.75rem}
 }

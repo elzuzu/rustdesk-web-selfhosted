@@ -43,8 +43,9 @@ fi
 T=$(mktemp -d)
 nettoyer() {
   if [ "$SANS_DOCKER" -eq 0 ]; then
-    docker rm -f rdweb-verify >/dev/null 2>&1 || true
-    docker rmi -f rustdesk-web:verify rustdesk-tls:verify >/dev/null 2>&1 || true
+    docker rm -f rdweb-verify rdweb-verify-seul rdfleet-verify >/dev/null 2>&1 || true
+    docker network rm rdverify-net >/dev/null 2>&1 || true
+    docker rmi -f rustdesk-web:verify rustdesk-tls:verify rustdesk-fleet:verify >/dev/null 2>&1 || true
   fi
   rm -rf "$T"
 }
@@ -62,6 +63,17 @@ vert "  ✓ tous les scripts se parsent"
 titre "Syntaxe Python des outils"
 python3 -m py_compile scripts/relay-probe.py
 vert "  ✓ scripts/relay-probe.py"
+python3 -I -m py_compile fleet/server.py scripts/online-probe.py
+vert "  ✓ fleet/server.py, scripts/online-probe.py"
+
+titre "Service flotte : tests unitaires"
+# Contre un FAUX hbbs TCP : le cadrage hbb_common, le bitmap MSB-first, le cache de 10 s, l'API, la garde CSRF, la validation.
+python3 -I -m unittest discover -s fleet -v > "$T/fleet.log" 2>&1 || true
+n=$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in.*/\1/p' "$T/fleet.log" | tail -1)
+tail -3 "$T/fleet.log" | grep -q '^OK' || { rouge "  ✗ tests du service flotte :"; tail -25 "$T/fleet.log"; exit 1; }
+PLANCHER_FLOTTE=19
+[ "${n:-0}" -ge "$PLANCHER_FLOTTE" ] || { rouge "  ✗ service flotte : $n tests, plancher $PLANCHER_FLOTTE"; exit 1; }
+vert "  ✓ service flotte ($n tests, plancher $PLANCHER_FLOTTE)"
 
 titre "Le piege retire doit rester retire"
 # « docker exec hbbs cat /root/id_ed25519.pub » a ete la seule instruction que
@@ -123,8 +135,8 @@ done
 # Plancher du nombre de tests : un test supprime ou desactive en silence ne doit
 # pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
 # baisser sans raison ecrite dans le commit.
-PLANCHER_GABARIT=146
-PLANCHER_NAVIGATEUR=42
+PLANCHER_GABARIT=150
+PLANCHER_NAVIGATEUR=86
 
 titre "Banc du gabarit"
 # Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.
@@ -175,7 +187,8 @@ fi
 titre "Construction des images"
 docker build -q -t rustdesk-web:verify . >/dev/null
 docker build -q -t rustdesk-tls:verify -f Dockerfile.tls . >/dev/null
-vert "  ✓ rustdesk-web:verify, rustdesk-tls:verify"
+docker build -q -t rustdesk-fleet:verify fleet >/dev/null
+vert "  ✓ rustdesk-web:verify, rustdesk-tls:verify, rustdesk-fleet:verify"
 
 titre "Format de fil d'authentification, DANS l'image"
 # Le controle decisif : c'est l'artefact embarque qui compte, pas celui du
@@ -222,6 +235,60 @@ echo "  ✓ /rd-console.js = 200, javascript, gzip, no-cache"
 cs=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/rd-console.css)
 [ "$cs" = "200 text/css" ] || { rouge "  ✗ /rd-console.css : $cs"; exit 1; }
 echo "  ✓ /rd-console.css = 200 text/css"
+
+titre "nginx sans le service flotte (facultatif : son absence ne doit RIEN casser)"
+# Le piege : un « proxy_pass http://fleet:8000 » litteral fait REFUSER LE DEMARRAGE de nginx quand « fleet » n'existe pas. Le
+# conteneur ci-dessus tourne sur le reseau par defaut, sans « fleet » : il est deja demarre, c'est la preuve. Ici, l'API doit
+# repondre 502 (et vite : resolver_timeout 2s), jamais bloquer ni faire tomber le reste.
+debut=$(date +%s)
+code=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/api/health || true)
+duree=$(( $(date +%s) - debut ))
+[ "$code" = "502" ] || { rouge "  ✗ /api/health sans service : attendu 502, vu $code"; docker logs rdweb-verify 2>&1 | tail -5; exit 1; }
+[ "$duree" -le 6 ] || { rouge "  ✗ /api/health sans service : ${duree}s (resolver_timeout 2s attendu)"; exit 1; }
+echo "  ✓ /api/health sans service = 502 en ${duree}s ; la page reste servie"
+attendu /api/health              401   # et l'API est derriere la meme authentification
+attendu /healthz                 204
+
+titre "nginx + service flotte, de bout en bout"
+docker rm -f rdweb-verify >/dev/null 2>&1 || true
+docker network create rdverify-net >/dev/null
+docker run -d --name rdfleet-verify --network rdverify-net --network-alias fleet -e RD_BACKEND_HOST=127.0.0.1 rustdesk-fleet:verify >/dev/null
+docker run -d --name rdweb-verify --network rdverify-net -p 18099:80 rustdesk-web:verify >/dev/null
+for _ in $(seq 1 20); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/api/health || true)
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+[ "$code" = "200" ] || { rouge "  ✗ /api/health avec le service : $code"; docker logs rdfleet-verify 2>&1 | tail -5; docker logs rdweb-verify 2>&1 | tail -5; exit 1; }
+echo "  ✓ /api/health avec cookie = 200"
+api() {                          # api METHODE chemin corps [options curl...] -> code HTTP
+  local m=$1 c=$2 corps=$3
+  shift 3
+  if [ -n "$corps" ]; then
+    curl -s -o /dev/null -w '%{http_code}' -X "$m" -H 'Cookie: rdsession=jeton_de_test' -H 'Content-Type: application/json' "$@" -d "$corps" "http://127.0.0.1:18099$c"
+  else
+    curl -s -o /dev/null -w '%{http_code}' -X "$m" -H 'Cookie: rdsession=jeton_de_test' "$@" "http://127.0.0.1:18099$c"
+  fi
+}
+verif_api() { [ "$1" = "$2" ] || { rouge "  ✗ $3 : attendu $2, vu $1"; exit 1; }; echo "  ✓ $3 = $1"; }
+verif_api "$(api POST /api/devices '{"id":"123456789","nom":"Mac"}' -H 'X-RD: 1')" 201 "creer un poste (avec X-RD)"
+verif_api "$(api POST /api/devices '{"id":"987654321"}')"                      403 "ecriture SANS X-RD refusee (garde CSRF)"
+verif_api "$(api GET /api/devices '' -H 'Sec-Fetch-Site: cross-site')"          403 "lecture entre sites refusee"
+verif_api "$(api POST /api/devices '{"id":"x"}' -H 'X-RD: 1')"                  400 "ID invalide refuse"
+liste=$(curl -s -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/api/devices)
+echo "$liste" | python3 -I -c "
+import json, sys
+j = json.load(sys.stdin)
+assert [p['id'] for p in j['postes']] == ['123456789'], j
+assert j['postes'][0]['en_ligne'] is None, 'hbbs absent : etat INCONNU, jamais hors ligne'
+assert j['en_ligne_disponible'] is False
+" || { rouge "  ✗ liste des postes inattendue : $liste"; exit 1; }
+echo "  ✓ liste : le poste cree, etat en ligne inconnu (hbbs absent), jamais « hors ligne »"
+verif_api "$(api DELETE /api/devices/123456789 '' -H 'X-RD: 1')" 200 "supprimer"
+docker stop rdfleet-verify >/dev/null
+sleep 1
+verif_api "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/api/health)" 502 "service arrete : 502, nginx tient"
+attendu /healthz                 204
 
 titre "Termine"
 vert "  Tous les controles passent."

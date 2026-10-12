@@ -1352,7 +1352,11 @@ window.onGlobalEvent = function(payload){
   function fitCanvas(){
     var c = active(); if(!c || !c.width || !c.height) return;
     var z = zoneImage(c);
-    var k = Math.min(z.w/c.width, z.h/c.height);
+    // Vue « pixel d'origine » (reglage de la console, pose sur <body>) : 1 pixel distant = 1 pixel physique, la
+    // zone defile si l'image est plus grande. Sinon, l'image est ajustee a la zone libre.
+    var k = document.body.getAttribute("data-rd-vue") === "pixel"
+          ? 1 / (window.devicePixelRatio || 1)
+          : Math.min(z.w/c.width, z.h/c.height);
     c.style.width  = Math.floor(c.width*k)+"px";
     c.style.height = Math.floor(c.height*k)+"px";
     placerHud();

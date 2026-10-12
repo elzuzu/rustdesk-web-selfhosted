@@ -18,6 +18,7 @@
 // « ouverte » et on affiche #canvas, comme le fait une vraie session. Aucun
 // message ne part nulle part.
 import fs from "node:fs";
+import os from "node:os";
 import http from "node:http";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -79,11 +80,15 @@ try {
 // ------------------------------------------------------------------- petit banc
 const resultats = [];
 async function test(nom, fn, { init = {}, contexte = {} } = {}) {
-  const ctx = await navigateur.newContext({ viewport: { width: 1200, height: 800 }, ...contexte });
+  // RD_TEST_FILTRE=texte : ne joue que les tests dont le nom contient ce texte (boucle de travail courte, repetition d'un cas).
+  if (process.env.RD_TEST_FILTRE && !nom.includes(process.env.RD_TEST_FILTRE)) return;
+  const ctx = await navigateur.newContext({ viewport: { width: 1200, height: 800 }, locale: "fr-FR", ...contexte });   // la console suit la langue du navigateur
   await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: URL_PAGE.replace(/\/$/, "") });
   if (Object.keys(init).length) {
     await ctx.addInitScript((kv) => { for (const [k, v] of Object.entries(kv)) if (localStorage.getItem("__init_" + k) === null) { localStorage.setItem(k, v); localStorage.setItem("__init_" + k, "1"); } }, init);
   }
+  // RD_SANS_VIDEODECODER=1 : rejoue le banc sur le chemin du decodeur logiciel (navigateur sans WebCodecs).
+  if (process.env.RD_SANS_VIDEODECODER) await ctx.addInitScript(() => { try { delete window.VideoDecoder; } catch (_) {} });
   const p = await ctx.newPage();
   const avertissements = [];
   p.on("pageerror", (e) => avertissements.push("pageerror: " + e.message));
@@ -97,19 +102,27 @@ async function test(nom, fn, { init = {}, contexte = {} } = {}) {
 
 // Une session simulee : liaison « ouverte », #canvas affiche, RD pret. Les
 // messages sortants sont captures dans window.__envoyes.
-async function sessionSimulee(p, { version = "1.4.2" } = {}) {
+async function sessionSimulee(p, { version = "1.4.2", platform = "" } = {}) {
+  // La sonde de codec est asynchrone ; quand elle retient WebCodecs, le gabarit cree #rdcanvas et l'ACTIVE (focus). On attend
+  // ce cablage : sinon le focus peut etre vole au milieu d'un test, aleatoirement (c'est le gabarit, pas la console).
+  const sonde = p.waitForEvent("console", { predicate: (m) => /niveau retenu/.test(m.text()), timeout: 15000 }).catch(() => null);
   await p.goto(URL_PAGE);
+  await sonde;
+  await p.waitForFunction(() => !window.RD.codec || (document.getElementById("rdcanvas") && document.getElementById("rdcanvas").dataset.wired), null, { timeout: 8000 });
   await p.waitForFunction(() => window.RD && window.RDLib && document.getElementById("rdbar"), null, { timeout: 15000 });
-  await p.evaluate((v) => {
-    window.__envoyes = []; window.__touches = [];
-    window.curConn = { _id: "123456789", _peerInfo: { version: v },
+  await p.evaluate(([v, plat]) => {
+    window.__envoyes = []; window.__touches = []; window.__mouse = [];
+    window.curConn = { _id: "123456789", _peerInfo: { version: v, platform: plat }, _options: {},
       _ws: { _websocket: { readyState: 1 }, sendMessage(m) { window.__envoyes.push(m); }, next: () => new Promise(() => {}) },
-      getRemember: () => true, setRemember() {}, getOption: () => undefined };
+      getRemember: () => true, setRemember() {}, getOption: () => undefined,
+      // Ce que le vrai bundle sait faire : le pont (setByName) les appelle. Ici ils ne font que se souvenir.
+      inputMouse(m, x, y, a, c, sh, cm) { window.__mouse.push([m, x, y, a, c, sh, cm]); },
+      toggleOption(n) { this._options[n] = !this._options[n]; }, ctrlAltDel() {}, lockScreen() {}, switchDisplay() {}, inputKey() {}, inputString() {} };
     const sb = window.setByName; window.setByName = function (n, x) { window.__touches.push([n, x]); try { return sb.apply(this, arguments); } catch (e) { /* pas de vraie session */ } };
     document.getElementById("canvas").style.display = "block";
     document.getElementById("connect").style.display = "none";          // une vraie session masque le formulaire
     window.RD.ready = true;
-  }, version);
+  }, [version, platform]);
   await p.waitForFunction(() => getComputedStyle(document.getElementById("rdbar")).display !== "none", null, { timeout: 5000 });
 }
 const enTete = (s) => console.log("\n" + s);
@@ -413,6 +426,8 @@ const ouvrirTiroir = async (p) => {
   await p.click(".rdhandle");                                       // deplie la barre (repliee par defaut)
   await p.click("#rdbar .rdsession");
   await p.waitForFunction(() => !document.getElementById("rddrawer").hidden, null, { timeout: 3000 });
+  // Les clics rendent le focus au canvas dans un setTimeout(0) : sous charge il peut arriver APRES le p.focus() d'un test.
+  await p.waitForFunction(() => document.activeElement === window.__rdActive(), null, { timeout: 3000 });
 };
 const grandEcran = (p) => p.evaluate(() => { const c = window.__rdActive(); c.width = 1920; c.height = 1080; window.__rdFit(); });
 
@@ -429,7 +444,7 @@ await test("console-mounts-and-moves-controls : six controles dans le tiroir, le
   assert.deepEqual(e.tiroir, NOMS6.map(() => true), "les six dans le tiroir : " + JSON.stringify(e));
   assert.deepEqual(e.barre, NOMS6.map(() => false), "plus aucun dans la barre");
   assert.deepEqual(e.directs, [true, true, true, true], "session, fichiers, quitter, poignee : enfants directs de #rdbar");
-  assert.deepEqual(e.sections, ["Vidéo", "Clavier", "Souris", "Affichage"]);
+  assert.deepEqual(e.sections, ["Vidéo", "Audio", "Clavier", "Souris", "Affichage"]);
   assert.equal(e.statut, true);
 });
 
@@ -680,14 +695,17 @@ await test("console-theme : « auto » suit le systeme, « clair » et « sombre
 
 await test("console-keyboard-controls : le contrOle segmente (fleches) et les interrupteurs (Espace) se pilotent au clavier", async (p) => {
   await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
-  const actif = () => p.evaluate(() => [...document.querySelectorAll(".rdsegmented [role=radio]")].map((b) => b.getAttribute("aria-checked") + ":" + b.tabIndex).join(" "));
+  const GT = '.rdsegmented:has([data-valeur="clair"])';                    // le groupe du theme : il y en a plusieurs dans le tiroir
+  const actif = () => p.evaluate((g) => [...document.querySelectorAll(g + " [role=radio]")].map((b) => b.getAttribute("aria-checked") + ":" + b.tabIndex).join(" "), GT);
   assert.equal(await actif(), "true:0 false:-1 false:-1", "un seul segment dans l'ordre de tabulation (Auto)");
-  await p.focus('.rdsegmented [aria-checked="true"]');
+  await p.focus(GT + ' [aria-checked="true"]');
   await p.keyboard.press("ArrowRight");
   assert.equal(await actif(), "false:-1 true:0 false:-1", "fleche droite : « clair »");
   assert.equal(await p.evaluate(() => document.activeElement.getAttribute("data-valeur")), "clair", "le focus suit le choix");
-  await p.keyboard.press("ArrowLeft"); await p.keyboard.press("ArrowLeft");
-  assert.equal(await p.evaluate(() => document.activeElement.getAttribute("data-valeur")), "sombre", "boucle de « auto » vers « sombre »");
+  await p.keyboard.press("ArrowLeft");
+  assert.equal(await p.evaluate(() => document.activeElement.getAttribute("data-valeur")), "auto", "fleche gauche : « auto » : " + await p.evaluate(() => document.activeElement.outerHTML.slice(0, 160)));
+  await p.keyboard.press("ArrowLeft");
+  assert.equal(await p.evaluate(() => document.activeElement.getAttribute("data-valeur")), "sombre", "boucle de « auto » vers « sombre » : " + await p.evaluate(() => document.activeElement.outerHTML.slice(0, 160)));
   assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-console")).theme), "sombre");
   const sw = '#rddrawer .rdsw[data-pour="coalesce"]';
   const avant = await p.evaluate(() => window.RD.coalesce);
@@ -874,6 +892,607 @@ await test("login-recents-still-under-id : la carte garde les pastilles de derni
   assert.ok(e.dans, "et dans la carte");
   assert.deepEqual(e.libelles, ["222 222 222", "333 333 333", "111 111 111"], "tri par recence conserve");
 }, { init: { peers: JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } }) } });
+
+// ============================================================ fonctions de session
+enTete("Poste distant — actions, ecrans, options, liaison");
+const toucheDe = (p, nom) => p.evaluate((n) => window.__touches.filter(([x]) => x === n).map(([, v]) => v), nom);
+const ouvrirBarre = async (p) => { await p.click(".rdhandle"); await p.waitForSelector("#rdbar .rdtool", { timeout: 8000 }); };
+const ouvrirPop = async (p, id) => { await p.click(`#rdbar [data-rd="${id}"]`); await p.waitForSelector(`#rdpop-${id}:popover-open`, { timeout: 4000 }); };
+const prete = async (p, opts) => { await sessionSimulee(p, opts); await montee(p); await ouvrirBarre(p); };
+const pairInfo = (p, ecrans, courant = 0) => p.evaluate(([e, c]) => window.onGlobalEvent(JSON.stringify({ name: "peer_info", displays: JSON.stringify(e), current_display: String(c) })), [ecrans, courant]);
+
+await test("poste-actions : Ctrl+Alt+Suppr et verrouillage partent par le pont du bundle ; le redemarrage exige deux clics", async (p) => {
+  await prete(p, { platform: "Windows" }); await ouvrirPop(p, "poste");
+  await p.click('#rdpop-poste [data-action="cad"]');
+  assert.deepEqual(await toucheDe(p, "ctrl_alt_del"), [""], "message ctrl_alt_del");
+  await p.click('#rdpop-poste [data-action="verrou"]');
+  assert.deepEqual(await toucheDe(p, "lock_screen"), [""]);
+  const restart = () => p.evaluate(() => window.__envoyes.filter((m) => m.misc && m.misc.restart_remote_device === true).length);
+  await p.click('#rdpop-poste [data-action="redemarrer"]');
+  assert.equal(await restart(), 0, "un seul clic ne redemarre RIEN");
+  assert.match(await p.textContent('#rdpop-poste [data-action="redemarrer"]'), /Confirmer le redémarrage/);
+  await p.click('#rdpop-poste [data-action="redemarrer"]');
+  assert.equal(await restart(), 1, "le second clic envoie restart_remote_device");
+  await p.waitForFunction(() => !document.getElementById("rdpop-poste").matches(":popover-open"), null, { timeout: 3000 });
+});
+
+await test("poste-gating : une fonction impossible sur ce poste est grisee avec sa raison, jamais cachee", async (p) => {
+  await prete(p, { platform: "Mac OS" }); await ouvrirPop(p, "poste");
+  const e = await p.evaluate(() => ({ cad: document.querySelector('#rdpop-poste [data-action="cad"]').disabled,
+    cadRaison: document.querySelector('#rdpop-poste [data-action="cad"]').title,
+    priv: document.querySelector('#rdpop-poste .rdsw[data-pour="privacy-mode"]').disabled,
+    privRaison: document.querySelector('#rdpop-poste [data-indisponible] .rdaide').textContent,
+    verrou: document.querySelector('#rdpop-poste [data-action="verrou"]').disabled }));
+  assert.equal(e.cad, true); assert.match(e.cadRaison, /Windows, Linux/);
+  assert.equal(e.priv, true); assert.match(e.privRaison, /Windows seulement/);
+  assert.equal(e.verrou, false, "verrouiller reste disponible");
+});
+
+await test("poste-options : confidentialite, blocage (deux ordres), presse-papier, curseur — l'etat relu a la source", async (p) => {
+  await prete(p, { platform: "Windows" }); await ouvrirPop(p, "poste");
+  const sw = (n) => `#rdpop-poste .rdsw[data-pour="${n}"]`;
+  await p.click(sw("privacy-mode"));
+  assert.deepEqual(await toucheDe(p, "toggle_option"), ["privacy-mode"]);
+  assert.equal(await p.isChecked(sw("privacy-mode")), true, "l'interrupteur suit l'etat du pair");
+  await p.click(sw("block-input")); await p.click(sw("block-input"));
+  assert.deepEqual((await toucheDe(p, "toggle_option")).slice(1), ["block-input", "unblock-input"], "bloquer puis debloquer : deux ordres distincts");
+  assert.equal(await p.isChecked(sw("disable-clipboard")), true, "presse-papier partage : actif tant qu'il n'est pas desactive");
+  await p.click(sw("disable-clipboard"));
+  assert.equal(await p.isChecked(sw("disable-clipboard")), false);
+  await p.click(sw("show-remote-cursor")); await p.click(sw("lock-after-session-end"));
+  assert.deepEqual((await toucheDe(p, "toggle_option")).slice(-2), ["show-remote-cursor", "lock-after-session-end"]);
+});
+
+await test("poste-ecrans : la liste des moniteurs apparait quand il y en a plusieurs, et suit l'ecran courant", async (p) => {
+  await prete(p, { platform: "Windows" });
+  await pairInfo(p, [{ width: 1920, height: 1080, name: "Principal" }]);
+  await ouvrirPop(p, "poste");
+  assert.equal(await p.locator("#rdpop-poste .rdecran").count(), 0, "un seul ecran : pas de choix");
+  await pairInfo(p, [{ width: 1920, height: 1080, name: "Principal" }, { width: 1280, height: 720 }], 0);
+  await p.waitForSelector("#rdpop-poste .rdecran");
+  assert.equal(await p.locator("#rdpop-poste .rdecran").count(), 2);
+  assert.match(await p.textContent('#rdpop-poste [data-ecran="0"]'), /Écran 1 — Principal.*1920×1080/);
+  assert.equal(await p.getAttribute('#rdpop-poste [data-ecran="0"]', "aria-checked"), "true");
+  await p.click('#rdpop-poste [data-ecran="1"]');
+  assert.deepEqual(await toucheDe(p, "switch_display"), [1], "switch_display avec l'indice de l'ecran");
+  await p.evaluate(() => window.onGlobalEvent(JSON.stringify({ name: "switch_display", display: "1" })));
+  await p.waitForFunction(() => document.querySelector('#rdpop-poste [data-ecran="1"]').getAttribute("aria-checked") === "true", null, { timeout: 3000 });
+});
+
+await test("audio-son : « Son du poste » pilote disable-audio et suit son etat", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  const sw = '#rddrawer .rdsw[data-pour="son"]';
+  assert.equal(await p.isChecked(sw), true);
+  await p.click(sw);
+  assert.deepEqual(await toucheDe(p, "toggle_option"), ["disable-audio"]);
+  assert.equal(await p.isChecked(sw), false, "le son est coupe");
+});
+
+await test("statut-liaison : « Relais » toujours, « Chiffre » seulement quand connection_ready le dit", async (p) => {
+  await sessionSimulee(p); await montee(p);
+  await p.waitForSelector("#rdstatut .rdtag-relais");
+  const tags = () => p.evaluate(() => [...document.querySelectorAll("#rdstatut .rdtag")].map((t) => t.textContent));
+  assert.deepEqual(await tags(), ["Relais"], "avant connection_ready : pas de mention de chiffrement");
+  await p.evaluate(() => window.onGlobalEvent(JSON.stringify({ name: "connection_ready", secure: "true", direct: "false" })));
+  await p.waitForFunction(() => document.querySelectorAll("#rdstatut .rdtag").length === 2);
+  assert.deepEqual(await tags(), ["Relais", "Chiffré"]);
+  await p.evaluate(() => window.onGlobalEvent(JSON.stringify({ name: "connection_ready", secure: "false", direct: "false" })));
+  await p.waitForFunction(() => /Non chiffré/.test(document.querySelector("#rdstatut .rdtags").textContent));
+  assert.equal(await p.evaluate(() => !!document.querySelector("#rdstatut .rdtag-alerte")), true, "un echange non chiffre est signale en alerte");
+});
+
+await test("plein-ecran : le bouton bascule le plein ecran, masque tiroir et statut (epure) et remet tout a la sortie", async (p) => {
+  await prete(p);
+  await p.click('#rdbar [data-rd="plein"]');
+  await p.waitForFunction(() => !!document.fullscreenElement, null, { timeout: 5000 });
+  await p.waitForFunction(() => document.body.classList.contains("rd-plein"), null, { timeout: 3000 });
+  const e = await p.evaluate(() => ({ statut: document.getElementById("rdstatut").hidden, pressed: document.querySelector('[data-rd="plein"]').getAttribute("aria-pressed"),
+                                       libelle: document.querySelector('[data-rd="plein"]').title }));
+  assert.equal(e.statut, true, "plein ecran epure : pas de barre de statut"); assert.equal(e.pressed, "true"); assert.match(e.libelle, /Quitter le plein écran/);
+  await p.evaluate(() => document.exitFullscreen());
+  await p.waitForFunction(() => !document.fullscreenElement && !document.body.classList.contains("rd-plein"), null, { timeout: 3000 });
+  assert.equal(await p.evaluate(() => document.getElementById("rdstatut").hidden), false, "la barre de statut revient");
+});
+
+await test("vue-pixel : « 1:1 » affiche un pixel distant par pixel d'ecran, avec defilement", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
+  const mesure = () => p.evaluate(() => { const c = window.__rdActive(), z = document.getElementById("canvas"), r = c.getBoundingClientRect();
+    return { w: Math.round(r.width), dpr: window.devicePixelRatio, defile: z.scrollWidth > z.clientWidth + 1, vue: document.body.getAttribute("data-rd-vue") }; });
+  const a = await mesure(); assert.equal(a.vue, "ajuste"); assert.equal(a.defile, false);
+  await p.click('.rdsegmented:has([data-valeur="pixel"]) [data-valeur="pixel"]');
+  await p.waitForFunction(() => document.body.getAttribute("data-rd-vue") === "pixel");
+  const b = await mesure();
+  assert.equal(b.w, Math.round(1920 / b.dpr), "largeur = pixels distants / ratio de l'ecran"); assert.equal(b.defile, true, "l'image deborde : la zone defile");
+  await p.click('.rdsegmented:has([data-valeur="pixel"]) [data-valeur="ajuste"]');
+  await p.waitForFunction(() => document.body.getAttribute("data-rd-vue") === "ajuste");
+  assert.ok((await mesure()).w < 1920, "retour a l'image ajustee");
+});
+
+enTete("Entrees — souris, molette, clavier");
+const molette = async (p, dx, dy) => { await p.mouse.move(600, 400); await p.mouse.wheel(dx, dy); await p.waitForTimeout(80); };
+const dernierMouse = (p) => p.evaluate(() => window.__mouse[window.__mouse.length - 1]);
+
+await test("entree-defauts : avec les reglages par defaut, les messages de souris partent exactement comme avant", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p);
+  await p.mouse.move(600, 400); await p.mouse.down(); await p.mouse.up(); await molette(p, 0, 100);
+  const m = await p.evaluate(() => window.__mouse.map((x) => x.slice(0, 3)));
+  assert.deepEqual(m.filter((x) => x[0] !== 0), [[9, 600, 400 - 0].slice(0, 1).concat([m.find((x) => x[0] === 9)[1], m.find((x) => x[0] === 9)[2]]), [10, m.find((x) => x[0] === 10)[1], m.find((x) => x[0] === 10)[2]], [3, 0, -1]],
+    "clic gauche (9), relache (10), un cran de molette vers le bas (3, 0, -1) : " + JSON.stringify(m));
+});
+
+await test("entree-molette : vitesse et sens de defilement", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
+  await p.locator('#rddrawer .rdslider[data-pour="taux"]').fill("4");
+  assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-console")).taux), 4, "le reglage est memorise");
+  await molette(p, 0, 100);
+  assert.deepEqual((await dernierMouse(p)).slice(0, 3), [3, 0, -4], "vitesse x4, sens standard");
+  await p.selectOption('#rddrawer select[data-pour="sens"]', "vertical");
+  await molette(p, 0, 100);
+  assert.deepEqual((await dernierMouse(p)).slice(0, 3), [3, 0, 4], "vertical inverse");
+  await p.selectOption('#rddrawer select[data-pour="sens"]', "les-deux");
+  await molette(p, 100, 0);
+  assert.deepEqual((await dernierMouse(p)).slice(0, 3), [3, 4, 0], "horizontal inverse aussi (x = -(-1) * 4)");
+  await p.selectOption('#rddrawer select[data-pour="sens"]', "standard"); await p.locator('#rddrawer .rdslider[data-pour="taux"]').fill("1");
+  await molette(p, 0, -100);
+  assert.deepEqual((await dernierMouse(p)).slice(0, 3), [3, 0, 1], "retour aux reglages par defaut");
+});
+
+await test("entree-bouton-principal : « Droit » echange gauche et droit ; les autres boutons ne bougent pas", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
+  await p.click('.rdsegmented:has([data-valeur="droit"]) [data-valeur="droit"]');
+  await p.mouse.move(600, 400); await p.mouse.down(); await p.mouse.up();
+  const l = await p.evaluate(() => window.__mouse.map((x) => x[0]).filter((m) => m !== 0));
+  assert.deepEqual(l, [17, 18], "clic gauche physique -> bouton droit distant (1|2<<3, 2|2<<3)");
+  await p.mouse.down({ button: "right" }); await p.mouse.up({ button: "right" });
+  assert.deepEqual((await p.evaluate(() => window.__mouse.map((x) => x[0]).filter((m) => m !== 0))).slice(2), [9, 10], "clic droit physique -> gauche distant");
+  await p.mouse.down({ button: "middle" }); await p.mouse.up({ button: "middle" });
+  assert.deepEqual((await p.evaluate(() => window.__mouse.map((x) => x[0]).filter((m) => m !== 0))).slice(4), [33, 34], "le milieu ne bouge pas (1|4<<3)");
+});
+
+await test("entree-retour-avance : les boutons 4 et 5 partent comme Retour / Avance, plus comme un clic gauche", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p);
+  await p.evaluate(() => { const c = window.__rdActive(); for (const [t, b] of [["mousedown", 3], ["mouseup", 3], ["mousedown", 4], ["mouseup", 4]]) c.dispatchEvent(new MouseEvent(t, { button: b, bubbles: true, cancelable: true })); });
+  assert.deepEqual(await p.evaluate(() => window.__mouse.map((x) => x[0])), [65, 66, 129, 130], "Retour = 1|8<<3, Avance = 1|16<<3 (et leurs relachements)");
+  assert.equal(await p.evaluate(() => window.__touches.filter(([n, v]) => n === "send_mouse" && /"left"/.test(v)).length), 0, "aucun clic gauche parasite");
+});
+
+await test("entree-souris-relative : mouvements relatifs (type 5) avec sensibilite, sans mouvement absolu, et grisee sur un vieux pair", async (p) => {
+  await sessionSimulee(p, { version: "1.4.9", platform: "Windows" }); await montee(p); await grandEcran(p); await ouvrirTiroir(p);
+  await p.evaluate(() => { const c = window.__rdActive(); c.requestPointerLock = () => { Object.defineProperty(document, "pointerLockElement", { configurable: true, get: () => c }); }; });
+  await p.click('.rdsegmented:has([data-valeur="relatif"]) [data-valeur="relatif"]');
+  await p.locator('#rddrawer .rdslider[data-pour="sensib"]').fill("20");
+  await p.mouse.move(600, 400); await p.mouse.down(); await p.mouse.up();
+  assert.equal(await p.evaluate(() => !!document.pointerLockElement), true, "un clic dans l'image capture la souris");
+  await p.evaluate(() => { window.__mouse.length = 0; window.__touches.length = 0; const c = window.__rdActive();
+    c.dispatchEvent(new MouseEvent("mousemove", { movementX: 7, movementY: -3, bubbles: true, cancelable: true })); });
+  assert.deepEqual((await dernierMouse(p)).slice(0, 3), [5, 14, -6], "type 5, deplacement x sensibilite 2,0");
+  assert.equal(await p.evaluate(() => window.__touches.filter(([n]) => n === "send_mouse").length), 0, "le gabarit n'envoie AUCUN mouvement absolu (il couperait le mode relatif)");
+  await p.evaluate(() => { window.__mouse.length = 0; window.__rdActive().dispatchEvent(new MouseEvent("mousemove", { movementX: 0, movementY: 0, bubbles: true })); });
+  assert.equal(await p.evaluate(() => window.__mouse.length), 0, "pas de message vide");
+});
+await test("entree-souris-relative-version : sur un pair < 1.4.5 le choix « Relatif » est grise avec sa raison", async (p) => {
+  await sessionSimulee(p, { version: "1.4.2", platform: "Windows" }); await montee(p); await ouvrirTiroir(p);
+  const e = await p.evaluate(() => { const l = [...document.querySelectorAll("#rddrawer .rdrow")].find((r) => r.querySelector('[data-valeur="relatif"]'));
+    return { off: [...l.querySelectorAll("button")].every((b) => b.disabled), raison: l.querySelector(".rdaide").textContent, indispo: l.hasAttribute("data-indisponible") }; });
+  assert.equal(e.off, true); assert.match(e.raison, /RustDesk 1\.4\.5/); assert.equal(e.indispo, true);
+});
+
+await test("entree-anti-veille : un battement d'un pixel apres 45 s d'inactivite, jamais avant, jamais s'il est desactive", async (p) => {
+  await sessionSimulee(p, { version: "1.4.9", platform: "Windows" }); await montee(p); await ouvrirTiroir(p);
+  const battre = () => p.evaluate(() => { window.RDConsole.entree.jiggle(); return window.__mouse.length; });
+  await p.evaluate(() => window.RDConsole.entree._inactiver(60000));
+  assert.equal(await battre(), 0, "desactive par defaut : rien");
+  await p.click('#rddrawer .rdsw[data-pour="jiggle"]');
+  await p.evaluate(() => window.RDConsole.entree._inactiver(10000));
+  assert.equal(await battre(), 0, "actif mais l'utilisateur vient de bouger : rien");
+  await p.evaluate(() => window.RDConsole.entree._inactiver(60000));
+  assert.equal(await battre(), 1); assert.deepEqual((await dernierMouse(p)).slice(0, 3), [5, -1, 0], "pair recent : mouvement RELATIF invisible (type 5, un pixel)");
+  await p.evaluate(() => window.RDConsole.entree._inactiver(60000));
+  await battre(); assert.equal((await dernierMouse(p))[1], 1, "le battement alterne (-1 puis +1) : pas de derive");
+});
+await test("entree-anti-veille-ancien-pair : sur un pair < 1.4.5, un mouvement absolu d'un pixel", async (p) => {
+  await sessionSimulee(p, { version: "1.4.2" }); await montee(p); await ouvrirTiroir(p);
+  await p.click('#rddrawer .rdsw[data-pour="jiggle"]'); await p.evaluate(() => window.RDConsole.entree._inactiver(60000));
+  await p.evaluate(() => window.RDConsole.entree.jiggle());
+  assert.equal((await dernierMouse(p))[0], 0, "type 0 : mouvement absolu");
+});
+
+await test("entree-touches-physiques : Impr. ecran, Menu, Pause… partent au poste (le gabarit les ignorait)", async (p) => {
+  await sessionSimulee(p); await montee(p); await grandEcran(p);
+  const msg = () => p.evaluate(() => window.__touches.filter(([n]) => n === "input_key").map(([, v]) => JSON.parse(v)).map((m) => m.name + ":" + m.down + ":" + m.press));
+  await p.evaluate(() => { const c = window.__rdActive(); c.focus();
+    c.dispatchEvent(new KeyboardEvent("keydown", { code: "ContextMenu", key: "ContextMenu", bubbles: true, cancelable: true }));
+    c.dispatchEvent(new KeyboardEvent("keyup", { code: "ContextMenu", key: "ContextMenu", bubbles: true, cancelable: true }));
+    c.dispatchEvent(new KeyboardEvent("keyup", { code: "PrintScreen", key: "PrintScreen", bubbles: true, cancelable: true })); });   // sous Windows seul keyup arrive
+  assert.deepEqual(await msg(), ["Apps:true:false", "Apps:false:false", "Snapshot:false:true"]);
+});
+
+enTete("Clavier virtuel, Toolbox, statistiques, aide");
+await test("clavier-virtuel : texte, combinaisons avec modificateurs collants, touches nommees, sans voler le focus ; image calee au-dessus", async (p) => {
+  await prete(p); await grandEcran(p);
+  await p.evaluate(() => window.__rdActive().focus());
+  const bas = () => p.evaluate(() => Math.round(document.getElementById("canvas").getBoundingClientRect().bottom));
+  const avant = await bas();
+  await p.click('#rdbar [data-rd="clavierv"]');
+  await p.waitForFunction(() => !document.getElementById("rdvkb").hidden);
+  const haut = await p.evaluate(() => Math.round(document.getElementById("rdvkb").getBoundingClientRect().height));
+  await p.waitForFunction((a) => Math.round(document.getElementById("canvas").getBoundingClientRect().bottom) < a - 100, avant, { timeout: 3000 });
+  assert.ok(Math.abs((avant - (await bas())) - haut) <= 2, `l'image cede exactement la hauteur du clavier (${haut} px)`);
+  const key = (v) => p.click(`#rdvkb [data-valeur="${v}"]`);
+  const dernier = (n) => p.evaluate((nom) => window.__touches.filter(([x]) => x === nom).map(([, v]) => v).pop(), n);
+  await key("a"); assert.equal(await dernier("input_string"), "a", "un caractere seul part comme du texte");
+  await key("shift"); await key("a"); assert.equal(await dernier("input_string"), "A", "Maj arme la majuscule…");
+  await key("a"); assert.equal(await dernier("input_string"), "a", "…pour UNE touche : le modificateur se relache");
+  await key("ctrl"); assert.equal(await p.getAttribute('#rdvkb [data-valeur="ctrl"]', "aria-pressed"), "true"); await key("c");
+  const cc = JSON.parse(await dernier("input_key"));
+  assert.deepEqual([cc.name, cc.ctrl, cc.alt, cc.shift, cc.command, cc.press], ["c", "true", "false", "false", "false", "true"], "Ctrl+C : touche en minuscule + drapeau");
+  assert.equal(await p.getAttribute('#rdvkb [data-valeur="ctrl"]', "aria-pressed"), "false", "Ctrl relache apres la touche");
+  await key("Escape"); assert.equal(JSON.parse(await dernier("input_key")).name, "Escape");
+  await key("alt"); await key("command"); await key("Tab"); const at = JSON.parse(await dernier("input_key"));
+  assert.deepEqual([at.name, at.alt, at.command], ["Tab", "true", "true"], "plusieurs modificateurs armes ensemble");
+  assert.equal(await p.evaluate(() => document.activeElement === window.__rdActive()), true, "le clavier virtuel ne prend pas le focus");
+  assert.equal(await p.getAttribute("#rdvkb", "data-disposition"), "azerty", "locale francaise : AZERTY");
+  await p.click('#rdbar [data-rd="clavierv"]');
+  await p.waitForFunction(() => document.getElementById("rdvkb").hidden); await p.waitForFunction((a) => Math.round(document.getElementById("canvas").getBoundingClientRect().bottom) === a, avant, { timeout: 3000 });
+});
+await test("clavier-virtuel-qwerty : locale anglaise : QWERTY", async (p) => {
+  await sessionSimulee(p); await montee(p); await p.evaluate(() => window.RDConsole.vkb.basculer(true));
+  assert.equal(await p.getAttribute("#rdvkb", "data-disposition"), "qwerty");
+  assert.deepEqual(await p.evaluate(() => [...document.querySelectorAll("#rdvkb .rdkb-rang")[2].querySelectorAll("button")].slice(1, 6).map((b) => b.textContent)), ["q", "w", "e", "r", "t"]);
+}, { contexte: { locale: "en-US" } });
+
+await test("toolbox-presse-papier : « Copier » depose le texte dans le presse-papier du poste, « Taper » l'ecrit touche par touche", async (p) => {
+  await prete(p); await ouvrirPop(p, "toolbox");
+  await p.click('#rdpop-toolbox [data-action="copier"]');
+  assert.equal(await p.evaluate(() => window.__envoyes.filter((m) => m.clipboard).length), 0, "rien a envoyer : rien ne part");
+  await p.fill("#rdtb-texte", "bonjour é");
+  await p.click('#rdpop-toolbox [data-action="copier"]');
+  assert.equal(await p.evaluate(() => new TextDecoder().decode(window.__envoyes.find((m) => m.clipboard).clipboard.content)), "bonjour é");
+  await p.click('#rdpop-toolbox [data-action="taper"]');
+  assert.deepEqual(await toucheDe(p, "input_string"), ["bonjour é"]);
+});
+
+await test("toolbox-raccourcis : ceux du systeme du poste, les vôtres (memorises, valides, sans doublon, retirables)", async (p) => {
+  await prete(p, { platform: "Windows" }); await ouvrirPop(p, "toolbox");
+  assert.equal(await p.locator('#rdpop-toolbox [data-rac="cad"]').count(), 1, "Windows : Ctrl+Alt+Suppr propose");
+  await p.click('#rdpop-toolbox [data-rac="alttab"]');
+  const m = JSON.parse((await toucheDe(p, "input_key")).pop());
+  assert.deepEqual([m.name, m.alt, m.ctrl, m.press, m.down], ["Tab", "true", "false", "true", "false"], "Alt+Tab : une pression avec le drapeau Alt");
+  await p.click('#rdpop-toolbox [data-rac="cad"]'); assert.deepEqual(await toucheDe(p, "ctrl_alt_del"), [""], "Ctrl+Alt+Suppr passe par son message dedie");
+  const ajouter = async (t) => { await p.fill("#rdpop-toolbox .rdchamp", t); await p.click('#rdpop-toolbox [data-action="rac-ajouter"]'); };
+  await ajouter("ctrl+"); assert.match(await p.textContent("#rdpop-toolbox .rdrac-erreur"), /illisible/);
+  await ajouter("ctrl+alt+t"); await p.waitForSelector('#rdpop-toolbox [data-perso="0"]');
+  assert.deepEqual(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-raccourcis"))), ["ctrl+alt+t"]);
+  await ajouter("CTRL+ALT+T"); assert.match(await p.textContent("#rdpop-toolbox .rdrac-erreur"), /existe déjà/);
+  await p.click('#rdpop-toolbox [data-perso="0"]');
+  const t = JSON.parse((await toucheDe(p, "input_key")).pop()); assert.deepEqual([t.name, t.ctrl, t.alt], ["t", "true", "true"]);
+  await p.click('#rdpop-toolbox [aria-label^="Retirer"]');
+  assert.equal(await p.locator("#rdpop-toolbox [data-perso]").count(), 0); assert.deepEqual(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-raccourcis"))), []);
+});
+await test("toolbox-raccourcis-macos : sur un Mac distant, Spotlight et Cmd+Tab, pas Ctrl+Alt+Suppr", async (p) => {
+  await prete(p, { platform: "Mac OS" }); await ouvrirPop(p, "toolbox");
+  assert.equal(await p.locator('#rdpop-toolbox [data-rac="cad"]').count(), 0); await p.click('#rdpop-toolbox [data-rac="spotlight"]');
+  const m = JSON.parse((await toucheDe(p, "input_key")).pop()); assert.deepEqual([m.name, m.command, m.ctrl], ["Space", "true", "false"], "Cmd+Espace : le drapeau Cmd, pas Ctrl");
+});
+await test("toolbox-raccourcis-corrompus : un stockage illisible ou hostile est ecarte, jamais recopie", async (p) => {
+  await prete(p); await ouvrirPop(p, "toolbox");
+  assert.equal(await p.locator("#rdpop-toolbox [data-perso]").count(), 1, "seul le raccourci valide survit : " + await p.evaluate(() => localStorage.getItem("rd-raccourcis")));
+}, { init: { "rd-raccourcis": JSON.stringify(["<img src=x onerror=alert(1)>", 42, "ctrl+k", "a+b", { x: 1 }, "x".repeat(60)]) } });
+
+await test("toolbox-capture : la capture d'ecran et l'enregistrement produisent de vrais fichiers PNG et WebM", async (p) => {
+  await prete(p); await grandEcran(p);
+  // Chemin logiciel : #player est un canvas WebGL (pas de contexte 2D a peindre) ; la capture reste un PNG valide, mais peut etre vide.
+  await p.evaluate(() => { const c = window.__rdActive(), x = c.getContext("2d"); if (x) { x.fillStyle = "#c0392b"; x.fillRect(0, 0, c.width, c.height); } });
+  await ouvrirPop(p, "toolbox");
+  const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 8000 }), p.click('#rdpop-toolbox [data-action="capture"]')]);
+  assert.match(dl.suggestedFilename(), /^rustdesk-123456789-\d{8}-\d{6}\.png$/);
+  const png = fs.readFileSync(await dl.path()); assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], "signature PNG"); assert.ok(png.length > 200);
+  // Chemin logiciel : #player est un canvas WebGL sans tampon conserve ; son flux d'enregistrement est vide. Limite connue
+  // (documentee) du repli logiciel ; le chemin WebCodecs, lui, enregistre. On ne l'exige donc que la ou il s'applique.
+  if (await p.evaluate(() => !window.__rdActive().getContext("2d"))) return;
+  await p.click('#rdpop-toolbox [data-action="enregistrer"]');
+  await p.waitForFunction(() => /Arrêter/.test(document.querySelector('#rdpop-toolbox [data-action="enregistrer"]').textContent));
+  await p.evaluate(() => { const c = window.__rdActive(), x = c.getContext("2d"); if (!x) return; let n = 0; const iv = setInterval(() => { x.fillStyle = n++ % 2 ? "#2980b9" : "#27ae60"; x.fillRect(0, 0, c.width, c.height); if (n > 12) clearInterval(iv); }, 120); });
+  await p.waitForTimeout(1500);
+  const [dl2] = await Promise.all([p.waitForEvent("download", { timeout: 10000 }), p.click('#rdpop-toolbox [data-action="enregistrer"]')]);
+  assert.match(dl2.suggestedFilename(), /\.webm$/);
+  const webm = fs.readFileSync(await dl2.path()); assert.deepEqual([...webm.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3], "signature EBML (WebM)"); assert.ok(webm.length > 500);
+  assert.match(await p.textContent('#rdpop-toolbox [data-action="enregistrer"]'), /Enregistrer la vidéo/, "le bouton revient a son etat");
+});
+
+await test("stats : quatre courbes alimentees par les mesures, avec bornes et percentiles", async (p) => {
+  await prete(p);
+  await p.evaluate(() => { window.RD.stats.delay = [20, 25, 31, 28, 26, 40, 22]; window.RD.stats.decode = [4, 5, 6, 5]; window.RD.stats.bitrate = 4664; });
+  await p.waitForTimeout(2200);                                   // quelques echantillons (une mesure toutes les 0,9 s)
+  await ouvrirPop(p, "stats");
+  await p.waitForFunction(() => document.querySelectorAll("#rdpop-stats .rdstat").length === 4);
+  await p.waitForFunction(() => /ms/.test(document.querySelector('#rdpop-stats [data-metrique="rtt"] .rdstat-val').textContent), null, { timeout: 4000 });
+  const e = await p.evaluate(() => ({ rtt: document.querySelector('#rdpop-stats [data-metrique="rtt"] .rdstat-val').textContent,
+    pied: document.querySelector('#rdpop-stats [data-metrique="rtt"] .rdstat-pied').textContent, debit: document.querySelector('#rdpop-stats [data-metrique="debit"] .rdstat-val').textContent,
+    dessin: (() => { const cv = document.querySelector('#rdpop-stats [data-metrique="rtt"] canvas'), d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data; for (let i = 3; i < d.length; i += 4) if (d[i]) return true; return false; })() }));
+  assert.match(e.rtt, /^\d+ ms$/); assert.match(e.pied, /min \d+ · moy \d+ · max \d+ {2}\| {2}p50 \d+ · p95 \d+ · p99 \d+/); assert.equal(e.debit, "4664 kbit/s"); assert.equal(e.dessin, true, "la courbe est dessinee");
+});
+
+await test("aide : test du relais (verdict), export du journal SANS secret, version et lien vers la source", async (p) => {
+  await prete(p, { platform: "Windows", version: "1.4.9" });
+  await p.evaluate(() => { window.__rdVerdict = [{ verdict: "ACCEPTEE" }, { verdict: "REFUSEE" }, { verdict: "REFUSEE" }]; window.rdRelayTest = () => Promise.resolve(window.__rdVerdict); console.log("[test] ligne de journal"); console.warn("hbbr refuse la cle : abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP+/= (resume abcdefgh\u2026KLMNOP) password=hunter2"); });
+  await ouvrirPop(p, "aide");
+  const verdict = async (v) => { await p.evaluate((x) => { window.__rdVerdict = x; }, v); await p.click('#rdpop-aide [data-action="relais"]');
+    await p.waitForFunction(() => !document.querySelector('#rdpop-aide .rdaide-resultat').hidden && !document.querySelector('#rdpop-aide [data-action="relais"]').disabled);
+    return p.evaluate(() => [document.querySelector("#rdpop-aide .rdaide-resultat").textContent, document.querySelector("#rdpop-aide .rdaide-resultat").dataset.niveau]); };
+  assert.deepEqual(await verdict([{ verdict: "ACCEPTEE" }, { verdict: "REFUSEE" }, { verdict: "REFUSEE" }]), ["hbbr accepte la clé de ce navigateur.", "ok"]);
+  assert.equal((await verdict([{ verdict: "ACCEPTEE" }, { verdict: "ACCEPTEE" }, { verdict: "ACCEPTEE" }]))[1], "alerte", "relais ouvert : alerte");
+  assert.equal((await verdict([{ verdict: "REFUSEE" }, { verdict: "REFUSEE" }, { verdict: "REFUSEE" }]))[1], "erreur", "cle refusee : erreur");
+  const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 8000 }), p.click('#rdpop-aide [data-action="journal"]')]);
+  assert.match(dl.suggestedFilename(), /^rustdesk-web-journal-\d{14}\.txt$/);
+  const txt = fs.readFileSync(await dl.path(), "utf8");
+  assert.match(txt, /=== Journal \(\d+ lignes\) ===/); assert.match(txt, /Poste : Windows RustDesk 1\.4\.9, id 123456789/); assert.match(txt, /\[test\] ligne de journal/); assert.match(txt, /Client web : console 1\.0\.0/);
+  for (const secret of ["secret-pair-1", "CLEPUBLIQUESECRETE", "motdepasse-hash", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP+/=", "abcdefgh\u2026KLMNOP", "hunter2"]) assert.ok(!txt.includes(secret), `le journal ne contient jamais « ${secret} »`);
+  assert.match(txt, /\[cle masquee\]/); assert.match(txt, /password=\[masque\]/, "un mot de passe ecrit en console est masque");
+  const e = await p.evaluate(() => ({ href: document.querySelector("#rdpop-aide .rdapropos a").href, version: document.querySelector("#rdpop-aide .rdapropos dd").textContent }));
+  assert.equal(e.href, "https://github.com/elzuzu/rustdesk-web-selfhosted"); assert.match(e.version, /^console 1\.0\.0/);
+}, { init: { peers: JSON.stringify({ "123456789": { password: "secret-pair-1", info: { x: 1 } } }), key: "CLEPUBLIQUESECRETE", "rd-prefs": JSON.stringify({ v: 1, quality: "best" }) } });
+
+enTete("Langues");
+await test("i18n-anglais : la console suit la langue du navigateur", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p); await p.click(".rdhandle");
+  const e = await p.evaluate(() => ({ titre: document.querySelector("#rddrawer .rdtete b").textContent,
+    sections: [...document.querySelectorAll("#rddrawer summary")].map((x) => x.textContent), lang: document.documentElement.lang,
+    boutons: [...document.querySelectorAll("#rdbar .rdtool")].map((b) => b.querySelector(".rdlbl").textContent),
+    qualite: [...document.querySelector('#rddrawer [data-rd="qualite"]').options].map((o) => o.textContent), fps: document.querySelector('#rddrawer [data-rd="cadence"]').options[0].textContent }));
+  assert.equal(e.titre, "Session settings"); assert.deepEqual(e.sections, ["Video", "Audio", "Keyboard", "Mouse", "Display"]); assert.equal(e.lang, "en");
+  assert.deepEqual(e.boutons.sort(), ["Help", "Keyboard", "Machine", "Machines", "Full screen", "Stats", "Toolbox"].sort());
+  assert.deepEqual(e.qualite, ["Balanced", "Quality", "Smoothness"]); assert.match(e.fps, /fps max/);
+}, { contexte: { locale: "en-US" } });
+
+await test("i18n-bascule : changer de langue reconstruit la console SANS toucher a la session ni aux reglages deplaces", async (p) => {
+  await sessionSimulee(p); await montee(p); await ouvrirTiroir(p);
+  await p.evaluate(() => { window.__marque = window.curConn; window.__noeudQualite = document.querySelector('[data-rd="qualite"]'); });
+  assert.equal(await p.textContent("#rddrawer .rdtete b"), "Session settings");
+  await p.click('.rdsegmented:has([data-valeur="fr"]) [data-valeur="fr"]');
+  await p.waitForFunction(() => document.querySelector("#rddrawer .rdtete b") && document.querySelector("#rddrawer .rdtete b").textContent === "Réglages de session", null, { timeout: 4000 });
+  const e = await p.evaluate(() => ({ lang: document.documentElement.lang, meme: window.curConn === window.__marque, memeNoeud: document.querySelector('#rddrawer [data-rd="qualite"]') === window.__noeudQualite,
+    options: [...document.querySelector('#rddrawer [data-rd="qualite"]').options].map((o) => o.textContent), stock: JSON.parse(localStorage.getItem("rd-console")).langue,
+    ouvert: !document.getElementById("rddrawer").hidden, nTiroirs: document.querySelectorAll("#rddrawer").length, nBarre: document.querySelectorAll("#rdbar .rdsession").length }));
+  assert.equal(e.lang, "fr"); assert.equal(e.meme, true, "la session est intacte"); assert.equal(e.memeNoeud, true, "le meme controle du gabarit, deplace a nouveau");
+  assert.deepEqual(e.options, ["Équilibré", "Qualité", "Fluidité"]); assert.equal(e.stock, "fr"); assert.equal(e.ouvert, true, "le tiroir reste ouvert");
+  assert.equal(e.nTiroirs, 1, "pas de tiroir en double"); assert.equal(e.nBarre, 1, "pas de bouton Session en double");
+  await p.selectOption('#rddrawer [data-rd="qualite"]', "best");
+  assert.deepEqual((await p.evaluate(() => window.__touches.filter(([n]) => n === "image_quality").map(([, v]) => v))), ["best"], "le controle deplace fonctionne toujours apres le remontage");
+}, { contexte: { locale: "en-US" } });
+
+// ============================================================ liste des postes (flotte)
+enTete("Liste des postes — page d'accueil, changement de poste, repli");
+const MAINTENANT = Math.floor(Date.now() / 1000);
+const LISTE4 = () => [
+  { id: "222482174", nom: "Mac mini d'Alex", note: "Bureau — poste principal", etiquettes: ["maison", "mac"], favori: true, derniere_connexion: MAINTENANT - 3 * 3600, en_ligne: true },
+  { id: "523470026", nom: "MacBook Pro", note: "", etiquettes: ["mac"], favori: true, derniere_connexion: MAINTENANT - 2 * 86400, en_ligne: false },
+  { id: "314159265", nom: "PC portable travail", note: "Windows 11, VPN requis", etiquettes: ["travail"], favori: false, derniere_connexion: MAINTENANT - 600, en_ligne: true },
+  { id: "271828182", nom: "", note: "", etiquettes: [], favori: false, derniere_connexion: null, en_ligne: null },
+];
+// Une fausse API qui respecte le CONTRAT du service : X-RD sur toute ecriture, memes codes, memes champs.
+function fausseApi(ctx, depart = [], { statut = 0, ordures = false } = {}) {
+  const e = { postes: depart.map((p) => ({ cree: MAINTENANT, favori: false, etiquettes: [], note: "", nom: "", derniere_connexion: null, en_ligne: null, ...p })), req: [] };
+  return ctx.route("**/api/**", async (route) => {
+    const r = route.request(), u = new URL(r.url()), m = r.method(), corps = r.postData() ? JSON.parse(r.postData()) : null;
+    e.req.push({ m, chemin: u.pathname, corps, xrd: r.headers()["x-rd"], ct: r.headers()["content-type"] });
+    const j = (o, s = 200) => route.fulfill({ status: s, contentType: "application/json", body: JSON.stringify(o) });
+    if (statut) return route.fulfill({ status: statut, contentType: "text/plain", body: "non" });
+    if (ordures) return route.fulfill({ status: 200, contentType: "text/html", body: "<html>pas du json</html>" });
+    if (m !== "GET" && r.headers()["x-rd"] !== "1") return j({ erreur: "en_tete_manquant" }, 403);
+    if (u.pathname === "/api/health") return j({ ok: true, version: "t", postes: e.postes.length });
+    if (u.pathname === "/api/devices" && m === "GET") return j({ postes: e.postes, en_ligne_disponible: e.postes.some((p) => p.en_ligne !== null) });
+    if (u.pathname === "/api/devices" && m === "POST") {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{4,31}$/.test(corps.id || "")) return j({ erreur: "id_invalide" }, 400);
+      let p = e.postes.find((x) => x.id === corps.id), neuf = !p;
+      if (!p) { p = { cree: MAINTENANT, favori: false, etiquettes: [], note: "", nom: "", derniere_connexion: null, en_ligne: null, id: corps.id }; e.postes.push(p); }
+      for (const k of ["nom", "note", "etiquettes", "favori"]) if (k in corps) p[k] = corps[k];
+      return j(p, neuf ? 201 : 200);
+    }
+    const mm = u.pathname.match(/^\/api\/devices\/([^/]+)(\/touch)?$/);
+    if (mm) {
+      const p = e.postes.find((x) => x.id === decodeURIComponent(mm[1]));
+      if (!p) return j({ erreur: "inconnu" }, 404);
+      if (mm[2] && m === "POST") { p.derniere_connexion = MAINTENANT; return j(p); }
+      if (m === "PUT") { for (const k of ["nom", "note", "etiquettes", "favori"]) if (k in corps) p[k] = corps[k]; return j(p); }
+      if (m === "DELETE") { e.postes = e.postes.filter((x) => x !== p); return j({ ok: true }); }
+    }
+    return j({ erreur: "introuvable" }, 404);
+  }).then(() => e);
+}
+const panneau = (p) => p.waitForSelector("#rdflotte:not([hidden]) .rdfl-carte", { timeout: 15000 });
+const cartes = (p) => p.evaluate(() => [...document.querySelectorAll("#rdflotte .rdfl-carte")].map((c) => ({ id: c.dataset.id, etat: c.dataset.etat, nom: c.querySelector(".rdfl-nom").textContent,
+  fav: c.querySelector(".rdfl-etoile").getAttribute("aria-pressed"), sous: c.querySelector(".rdfl-sous").textContent, tags: [...c.querySelectorAll(".rdfl-tag")].map((x) => x.textContent), note: (c.querySelector(".rdfl-note") || {}).textContent || "" })));
+
+await test("flotte-liste : « Mes postes » — tri (epingles, en ligne, inconnus), etat, temps relatif, etiquettes, note, comptes", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  const c = await cartes(p);
+  assert.deepEqual(c.map((x) => x.id), ["222482174", "523470026", "314159265", "271828182"], "epingles d'abord (en ligne avant hors ligne), puis le reste");
+  assert.deepEqual(c.map((x) => x.etat), ["en_ligne", "hors_ligne", "en_ligne", "inconnu"]);
+  assert.deepEqual(c[0], { id: "222482174", etat: "en_ligne", nom: "Mac mini d'Alex", fav: "true", sous: "222 482 174il y a 3 h", tags: ["maison", "mac"], note: "Bureau — poste principal" });
+  assert.equal(c[1].sous, "523 470 026il y a 2 j"); assert.equal(c[3].nom, "271 828 182", "sans nom : l'ID formate est le titre"); assert.equal(c[3].sous, "jamais connecté", "…et n'est pas repete dessous");
+  assert.equal(await p.textContent("#rdflotte .rdfl-compte"), "4 postes · 2 en ligne");
+  assert.equal(await p.evaluate(() => document.querySelector("#rdflotte+#connect").getBoundingClientRect().top > document.getElementById("rdflotte").getBoundingClientRect().bottom - 1), true, "le formulaire manuel reste dessous");
+  assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector("#rdflotte+#connect"), "::before").content), '"Connexion manuelle"');
+  assert.equal(await p.evaluate(() => document.querySelector('#rdflotte [data-etat="en_ligne"] .rdfl-pastille').getAttribute("aria-label")), "En ligne", "la pastille a un nom, la couleur ne porte pas seule l'information");
+});
+
+await test("flotte-etat-inconnu : sans etat en ligne (hbbs injoignable) le compte ne pretend pas « 0 en ligne »", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4().map((x) => ({ ...x, en_ligne: null }))); await p.goto(URL_PAGE); await panneau(p);
+  assert.equal(await p.textContent("#rdflotte .rdfl-compte"), "4 postes");
+});
+
+await test("flotte-absente : service absent, en panne, non authentifie ou illisible — la page est exactement celle d'avant", async (p, ctx) => {
+  for (const [nom, opts] of [["502", { statut: 502 }], ["401", { statut: 401 }], ["404", { statut: 404 }], ["html au lieu de JSON", { ordures: true }]]) {
+    await ctx.unroute("**/api/**"); await fausseApi(ctx, LISTE4(), opts);
+    await p.goto(URL_PAGE); await p.waitForSelector("#rd-recents .rdchip-id", { timeout: 15000 }); await p.waitForTimeout(800);
+    const e = await p.evaluate(() => ({ panneau: !!document.getElementById("rdflotte"), dispo: window.RDConsole.flotteUi.etat().dispo,
+      formulaire: getComputedStyle(document.getElementById("connect")).display !== "none", puces: document.querySelectorAll("#rd-recents .rdchip-id").length,
+      titre: getComputedStyle(document.getElementById("connect"), "::before").content }));
+    assert.deepEqual([e.panneau, e.dispo, e.formulaire, e.puces, e.titre], [false, false, true, 3, '"Connexion au poste distant"'], nom);
+  }
+  await ctx.unroute("**/api/**"); await ctx.route("**/api/**", (r) => r.abort()); await p.goto(URL_PAGE); await p.waitForTimeout(1200);
+  assert.equal(await p.evaluate(() => !!document.getElementById("rdflotte")), false, "reseau coupe : pas de panneau, pas d'erreur visible");
+}, { init: { peers: JSON.stringify({ "111111111": { tm: 100 }, "222222222": { tm: 300 }, "333333333": { tm: 200 } }) } });
+
+await test("flotte-recherche : sans accents ni casse, tous les mots, aucun resultat ; masquee sous quatre postes", async (p, ctx) => {
+  const api = await fausseApi(ctx, [...LISTE4(), { id: "999888777", nom: "Éléonore", etiquettes: ["salon"], note: "au deuxième" }]); await p.goto(URL_PAGE); await panneau(p);
+  const ids = async (q) => { await p.fill("#rdflotte .rdfl-recherche", q); return (await cartes(p)).map((x) => x.id); };
+  assert.deepEqual(await ids("ELEO"), ["999888777"], "casse et accents"); assert.deepEqual(await ids("mac maison"), ["222482174"], "tous les mots");
+  assert.deepEqual(await ids("314 159"), ["314159265"], "l'ID, avec ses espaces d'affichage"); assert.deepEqual(await ids("vpn"), ["314159265"], "dans la note");
+  assert.equal((await ids("zzz")).length, 0); assert.equal(await p.textContent("#rdflotte .rdfl-vide"), "Aucun poste ne correspond.");
+  assert.equal((await ids("")).length, 5, "efface : tout revient");
+  api.postes.splice(0, 2); await p.evaluate(() => window.RDConsole.flotteUi.charger());
+  await p.waitForFunction(() => document.querySelectorAll("#rdflotte .rdfl-carte").length === 3);
+  assert.equal(await p.evaluate(() => document.querySelector("#rdflotte .rdfl-recherche").hidden), true, "trois postes : pas de recherche");
+});
+
+await test("flotte-connecter : « Se connecter » remplit l'ID et appuie sur Connect, comme vous le feriez", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  await p.evaluate(() => { window.__go = []; window.connect = function () { window.__go.push(document.getElementById("id").value); }; });
+  await p.waitForTimeout(450);
+  await p.click('#rdflotte [data-id="314159265"] [data-action="connecter"]');
+  assert.deepEqual(await p.evaluate(() => window.__go), ["314159265"], "l'ID brut (sans espaces), une seule connexion");
+  assert.match(await p.getAttribute('#rdflotte [data-id="314159265"] [data-action="connecter"]', "aria-label"), /Se connecter à PC portable travail/);
+});
+
+await test("flotte-ajouter : validation avant tout envoi, X-RD sur l'ecriture, la liste se rafraichit", async (p, ctx) => {
+  const api = await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  await p.click('#rdflotte [data-action="ajouter"]'); await p.waitForSelector(".rdfl-dlg[open]");
+  assert.equal(await p.evaluate(() => document.querySelector(".rdfl-dlg").matches(":modal")), true, "dialogue modal natif : focus pris, fond inerte");
+  assert.equal(await p.evaluate(() => document.activeElement.name), "id", "le focus arrive sur le premier champ");
+  const avant = api.req.filter((r) => r.m === "POST").length;
+  await p.fill('.rdfl-dlg [name="id"]', "12 34"); await p.click('.rdfl-dlg [type="submit"]');
+  assert.match(await p.textContent(".rdfl-err"), /ID invalide/); assert.equal(api.req.filter((r) => r.m === "POST").length, avant, "rien n'est envoye");
+  await p.fill('.rdfl-dlg [name="id"]', "987 654 321"); await p.fill('.rdfl-dlg [name="tags"]', "a,b,c,d,e,f,g,h,i"); await p.click('.rdfl-dlg [type="submit"]');
+  assert.match(await p.textContent(".rdfl-err"), /Étiquettes : 8 au plus/);
+  await p.fill('.rdfl-dlg [name="nom"]', "Salon"); await p.fill('.rdfl-dlg [name="tags"]', "maison, tv ,Maison"); await p.fill('.rdfl-dlg [name="note"]', "sous la télé"); await p.click('.rdfl-dlg [type="submit"]');
+  await p.waitForFunction(() => !document.querySelector(".rdfl-dlg"));
+  const r = api.req.filter((x) => x.m === "POST").pop();
+  assert.deepEqual(r.corps, { id: "987654321", nom: "Salon", note: "sous la télé", etiquettes: ["maison", "tv"] }, "ID normalise, etiquettes dedoublonnees");
+  assert.equal(r.xrd, "1"); assert.equal(r.ct, "application/json");
+  await p.waitForFunction(() => document.querySelectorAll("#rdflotte .rdfl-carte").length === 5);
+  assert.ok((await cartes(p)).some((c) => c.id === "987654321" && c.nom === "Salon"));
+});
+
+await test("flotte-modifier-retirer : l'ID est fige, la suppression exige deux clics, Echap ferme sans rien envoyer", async (p, ctx) => {
+  const api = await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  await p.click('#rdflotte [data-id="523470026"] [data-action="modifier"]'); await p.waitForSelector(".rdfl-dlg[open]");
+  assert.equal(await p.evaluate(() => document.querySelector('.rdfl-dlg [name="id"]').readOnly), true); assert.equal(await p.inputValue('.rdfl-dlg [name="nom"]'), "MacBook Pro");
+  await p.keyboard.press("Escape"); await p.waitForFunction(() => !document.querySelector(".rdfl-dlg"));
+  assert.equal(api.req.filter((r) => r.m !== "GET").length, 0, "Echap : aucune ecriture");
+  await p.click('#rdflotte [data-id="523470026"] [data-action="modifier"]'); await p.waitForSelector(".rdfl-dlg[open]");
+  await p.fill('.rdfl-dlg [name="nom"]', "MBP 16"); await p.click('.rdfl-dlg [type="submit"]'); await p.waitForFunction(() => !document.querySelector(".rdfl-dlg"));
+  assert.deepEqual(api.req.filter((r) => r.m === "PUT").pop().corps, { nom: "MBP 16", note: "", etiquettes: ["mac"] });
+  await p.click('#rdflotte [data-id="523470026"] [data-action="modifier"]'); await p.waitForSelector(".rdfl-dlg[open]");
+  await p.click('.rdfl-dlg [data-action="retirer"]');
+  assert.equal(api.req.filter((r) => r.m === "DELETE").length, 0, "un seul clic ne retire RIEN"); assert.match(await p.textContent('.rdfl-dlg [data-action="retirer"]'), /Confirmer/);
+  assert.match(await p.textContent(".rdfl-err"), /Le poste lui-même n'est pas touché/);
+  await p.click('.rdfl-dlg [data-action="retirer"]'); await p.waitForFunction(() => !document.querySelector(".rdfl-dlg"));
+  assert.equal(api.req.filter((r) => r.m === "DELETE").length, 1); await p.waitForFunction(() => document.querySelectorAll("#rdflotte .rdfl-carte").length === 3);
+});
+
+await test("flotte-favori : epingler envoie favori et reordonne ; l'etat est annonce", async (p, ctx) => {
+  const api = await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  await p.click('#rdflotte [data-id="314159265"] .rdfl-etoile');
+  assert.deepEqual(api.req.filter((r) => r.m === "PUT").pop().corps, { favori: true }); assert.equal(api.req.filter((r) => r.m === "PUT").pop().chemin, "/api/devices/314159265");
+  await p.waitForFunction(() => document.querySelector('#rdflotte [data-id="314159265"] .rdfl-etoile').getAttribute("aria-pressed") === "true");
+  assert.match(await p.getAttribute('#rdflotte [data-id="314159265"] .rdfl-etoile', "aria-label"), /^Désépingler PC portable travail/);
+  assert.deepEqual((await cartes(p)).map((c) => c.id).slice(0, 3), ["314159265", "222482174", "523470026"], "les epingles en ligne passent devant l'epingle hors ligne ; entre deux en ligne, la plus recente d'abord");
+});
+
+await test("flotte-export-import : un fichier sans etat en ligne ; l'import n'envoie que du valide", async (p, ctx) => {
+  const api = await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 8000 }), p.click('#rdflotte [data-action="exporter"]')]);
+  assert.match(dl.suggestedFilename(), /^rustdesk-postes-\d{8}\.json$/);
+  const f = JSON.parse(fs.readFileSync(await dl.path(), "utf8"));
+  assert.equal(f.version, 1); assert.equal(f.postes.length, 4); assert.deepEqual(Object.keys(f.postes[0]).sort(), ["etiquettes", "favori", "id", "nom", "note"], "ni etat en ligne, ni horodatage");
+  const avant = api.req.filter((r) => r.m === "POST").length;
+  const tmp = path.join(os.tmpdir(), "rdimport-" + process.pid + ".json");
+  fs.writeFileSync(tmp, JSON.stringify({ postes: [{ id: "111 222 333", nom: "Importé", etiquettes: ["x"] }, { id: "../mal" }, { id: "222482174", nom: "doublon connu" }, { id: "444555666", favori: true, pirate: 1 }] }));
+  await p.setInputFiles('#rdflotte [data-role="import"]', tmp); fs.rmSync(tmp, { force: true });
+  await p.waitForFunction(() => document.querySelectorAll("#rdflotte .rdfl-carte").length === 6);
+  const envoyes = api.req.filter((r) => r.m === "POST").slice(avant).map((r) => r.corps);
+  assert.deepEqual(envoyes, [{ id: "111222333", nom: "Importé", etiquettes: ["x"] }, { id: "222482174", nom: "doublon connu" }, { id: "444555666", favori: true }], "seulement du valide, sans champ inconnu");
+  fs.writeFileSync(tmp, "ceci n'est pas du json"); const n = api.req.length; await p.setInputFiles('#rdflotte [data-role="import"]', tmp); fs.rmSync(tmp, { force: true });
+  await p.waitForTimeout(500); assert.equal(api.req.length, n, "fichier illisible : aucune requete");
+});
+
+await test("flotte-masquee-en-session : le panneau disparait avec le formulaire de connexion", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  await p.evaluate(() => { document.getElementById("connect").style.display = "none"; });
+  await p.waitForFunction(() => document.getElementById("rdflotte").hidden); assert.equal(await p.isVisible("#rdflotte"), false);
+  await p.evaluate(() => { document.getElementById("connect").style.display = "block"; });
+  await p.waitForFunction(() => !document.getElementById("rdflotte").hidden);
+});
+
+await test("flotte-session : une connexion reussie ajoute le poste (nomme d'apres l'hote) ou met sa derniere connexion a jour", async (p, ctx) => {
+  const api = await fausseApi(ctx, [{ id: "555666777", nom: "Déjà connu" }]);
+  await sessionSimulee(p); await montee(p); await p.waitForFunction(() => window.RDConsole.flotteUi.etat().dispo);
+  await p.evaluate(() => window.onGlobalEvent(JSON.stringify({ name: "peer_info", hostname: "Mac-de-test", displays: "[]", current_display: "0" })));
+  await p.waitForFunction(() => window.RDConsole.flotteUi.etat().postes.some((x) => x.id === "123456789"), null, { timeout: 5000 });
+  assert.deepEqual(api.req.filter((r) => r.m === "POST" && r.chemin === "/api/devices").pop().corps, { id: "123456789", nom: "Mac-de-test" }, "inconnu : ajoute, nomme d'apres le nom d'hote");
+  await p.evaluate(() => window.onGlobalEvent(JSON.stringify({ name: "peer_info", hostname: "Mac-de-test", displays: "[]", current_display: "0" })));
+  await p.waitForTimeout(400);
+  assert.equal(api.req.filter((r) => r.chemin === "/api/devices/123456789/touch").length, 1, "connu : seulement la derniere connexion");
+  await p.evaluate(() => window.onGlobalEvent(JSON.stringify({ name: "connection_ready", secure: "true", direct: "false" }))); await p.waitForTimeout(300);
+  assert.equal(api.req.filter((r) => r.chemin === "/api/devices/123456789/touch").length, 1, "un autre evenement de la meme session n'y touche pas");
+});
+
+await test("flotte-changer-de-poste : en session, la liste (poste courant grise) ; un clic quitte puis ouvre l'autre", async (p, ctx) => {
+  await fausseApi(ctx, [{ id: "123456789", nom: "Ce poste", en_ligne: true }, { id: "314159265", nom: "L'autre", en_ligne: true }, { id: "271828182", nom: "Éteint", en_ligne: false }]);
+  await sessionSimulee(p); await montee(p); await p.waitForFunction(() => window.RDConsole.flotteUi.etat().postes.length === 3);
+  await p.evaluate(() => { window.__go = []; window.connect = function () { window.__go.push(document.getElementById("id").value); };
+    window.cancel = function () { document.getElementById("connect").style.display = "block"; document.getElementById("canvas").style.display = "none"; }; });
+  await ouvrirBarre(p); await ouvrirPop(p, "postes");
+  const e = await p.evaluate(() => [...document.querySelectorAll("#rdpop-postes .rdposte")].map((b) => ({ id: b.dataset.id, off: b.disabled, texte: b.textContent })));
+  assert.deepEqual(e.map((x) => x.id), ["123456789", "314159265", "271828182"], "en ligne d'abord, hors ligne en dernier");
+  assert.equal(e[0].off, true); assert.match(e[0].texte, /connecté/); assert.equal(e[1].off, false);
+  await p.waitForTimeout(450);
+  await p.click('#rdpop-postes [data-id="314159265"]');
+  await p.waitForFunction(() => window.__go.length === 1, null, { timeout: 6000 });
+  assert.deepEqual(await p.evaluate(() => window.__go), ["314159265"], "la session est quittee, puis l'autre poste est ouvert");
+});
+await test("flotte-changer-sans-service : sans le service, la liste vient des dernieres connexions du navigateur", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4(), { statut: 502 });
+  await sessionSimulee(p); await montee(p); await ouvrirBarre(p); await ouvrirPop(p, "postes");
+  const ids = await p.evaluate(() => [...document.querySelectorAll("#rdpop-postes .rdposte")].map((b) => b.dataset.id));
+  assert.deepEqual(ids.sort(), ["123456789", "222222222", "333333333"].sort(), "123456789 (courant) puis les recents locaux");
+  assert.match(await p.textContent("#rdpop-postes h4"), /Dernières connexions/);
+}, { init: { "rd-recent": JSON.stringify({ v: 1, ids: [{ id: "123456789", t: Date.now() - 1000 }, { id: "222222222", t: Date.now() - 5000 }, { id: "333333333", t: Date.now() - 9000 }] }) } });
+
+await test("flotte-anglais : la page d'accueil suit la langue du navigateur", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  assert.equal(await p.textContent("#rdfl-titre"), "My machines"); assert.equal(await p.textContent("#rdflotte .rdfl-compte"), "4 machines · 2 online");
+  const c = await cartes(p); assert.equal(c[0].sous, "222 482 174" + "3 h ago"); assert.equal(c[3].sous, "never connected");
+  assert.equal(await p.textContent('#rdflotte [data-action="connecter"]'), "Connect"); assert.match(await p.textContent('#rdflotte [data-action="ajouter"]'), /Add a machine/);
+}, { contexte: { locale: "en-US" } });
+
+await test("flotte-mobile : une colonne, aucun debordement horizontal, cibles de 44 px", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  const e = await p.evaluate(() => { const r = (s) => document.querySelector(s).getBoundingClientRect();
+    return { sw: document.documentElement.scrollWidth, iw: innerWidth, colonnes: new Set([...document.querySelectorAll("#rdflotte .rdfl-carte")].map((c) => Math.round(c.getBoundingClientRect().left))).size,
+             cibles: ["#rdflotte [data-action=connecter]", "#rdflotte .rdfl-etoile", "#rdflotte [data-action=modifier]", "#rdflotte [data-action=ajouter]", "#rdflotte .rdfl-recherche"].map((s) => Math.round(r(s).height)) }; });
+  assert.ok(e.sw <= e.iw, `debordement : ${e.sw} > ${e.iw}`); assert.equal(e.colonnes, 1, "une seule colonne"); for (const h of e.cibles) assert.ok(h >= 44, "cible de " + h + " px");
+}, { contexte: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } });
+
+await test("flotte-contraste : texte >= 4,5:1 sur la page d'accueil et dans le dialogue", async (p, ctx) => {
+  await fausseApi(ctx, LISTE4()); await p.goto(URL_PAGE); await panneau(p);
+  const mesures = () => p.evaluate(`(() => { const M = ${MESURE}, q = (s) => document.querySelector(s);
+    const texte = (nom, fg, bg) => { const f = M.fond(bg), c = getComputedStyle(fg).color; return { nom, r: M.rapport(M.rgb(c, f), M.rgb(f, "#000")) }; };
+    const carte = q('#rdflotte [data-id="222482174"]');
+    const l = [ texte("titre", q("#rdfl-titre"), q("#rdflotte")), texte("compte", q(".rdfl-compte"), q("#rdflotte")), texte("nom", carte.querySelector(".rdfl-nom"), carte), texte("ID", carte.querySelector(".rdfl-id"), carte),
+      texte("duree", carte.querySelector(".rdfl-rel"), carte), texte("etiquette", carte.querySelector(".rdfl-tag"), carte), texte("note", carte.querySelector(".rdfl-note"), carte),
+      texte("bouton principal", carte.querySelector(".rdfl-primaire"), carte.querySelector(".rdfl-primaire")), texte("bouton secondaire", q(".rdfl-outils .rdfl-btn:not(.rdfl-primaire)"), q(".rdfl-outils .rdfl-btn:not(.rdfl-primaire)")),
+      texte("etoile", carte.querySelector(".rdfl-etoile"), carte), texte("recherche", q(".rdfl-recherche"), q(".rdfl-recherche")) ];
+    const d = q(".rdfl-dlg"); if (d) { l.push(texte("dialogue : titre", q(".rdfl-dlg h2"), d), texte("dialogue : etiquette de champ", q(".rdfl-champ > span"), d), texte("dialogue : saisie", q(".rdfl-champ input"), q(".rdfl-champ input")), texte("dialogue : bouton principal", q(".rdfl-dlg .rdfl-primaire"), q(".rdfl-dlg .rdfl-primaire")), texte("dialogue : retirer", q(".rdfl-dlg .rdfl-danger"), q(".rdfl-dlg .rdfl-danger"))); }
+    return l; })()`);
+  for (const phase of ["page", "dialogue"]) {
+    if (phase === "dialogue") { await p.click('#rdflotte [data-action="modifier"]'); await p.waitForSelector(".rdfl-dlg[open]"); await p.evaluate(() => document.getAnimations().forEach((a) => { try { a.finish(); } catch (e) {} })); }
+    const m = await mesures(), mauvais = m.filter((x) => !(x.r >= 4.5));
+    assert.deepEqual(mauvais.map((x) => `${x.nom} : ${x.r.toFixed(2)}:1`), [], phase + " — pire : " + m.slice().sort((a, b) => a.r - b.r).slice(0, 3).map((x) => `${x.nom} ${x.r.toFixed(2)}:1`).join(", "));
+  }
+});
 
 // ---------------------------------------------------------------------- bilan
 await navigateur.close();
