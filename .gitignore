@@ -8,6 +8,8 @@ Caddyfile
 html/
 
 # Divers
+node_modules/
+__pycache__/
 *.bak
 *.bak-*
 .DS_Store

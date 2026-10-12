@@ -102,6 +102,25 @@
   #rdbar button:hover{background:#3a4150}
   #rdbar button.quit{background:#7a2130}
   #rdbar button.quit:hover{background:#9c2a3c}
+  /* Poignee : DERNIERE enfant (order la garde a la fin meme si un greffon
+     ajoute un controle apres elle). Tous les controles restent des enfants
+     DIRECTS de #rdbar : le bloc fichiers fait insertBefore sur button.quit. */
+  #rdbar .rdhandle{order:99;min-width:24px;min-height:24px;padding:.1rem .45rem;
+         font-size:.95rem;line-height:1;background:transparent}
+  #rdbar .rdhandle:hover{background:#3a4150}
+  /* Replie : la barre se reduit a sa poignee. « display » n'est JAMAIS pose ici
+     sur #rdbar (le veilleur le pose en ligne, flex / none) : on masque les
+     enfants. Le conteneur ne recoit plus le pointeur — sans cela, sa boite a
+     padding continuerait de manger les clics destines au poste distant : seuls
+     la poignee et le bouton de presse-papier recu (.rdppbtn, present seulement
+     avec .attention) le reprennent. */
+  #rdbar.replie{padding:0;gap:0;background:none;border:0;backdrop-filter:none;
+         pointer-events:none;opacity:.6}
+  #rdbar.replie:hover,#rdbar.replie:focus-within,#rdbar.replie.attention{opacity:1}
+  #rdbar.replie .rdhandle,#rdbar.replie .rdppbtn{pointer-events:auto}
+  #rdbar.replie > :not(.rdhandle):not(.rdppbtn){display:none}
+  #rdbar.replie .rdhandle{width:28px;height:28px;background:rgba(18,20,24,.55);
+         border-radius:0 0 0 8px}
 
   /* ------------------------------------------- surimpression de telemetrie
      Elle informe, elle n'agit jamais. Elle ne doit donc intercepter ni clic,
@@ -151,6 +170,35 @@
          background:rgba(18,20,24,.92);backdrop-filter:none}
   }
   #rdhud b{color:#e6e8ec;font-weight:600}
+
+  /* ------------------------------------------------------------ retours */
+  /* Un echec doit se voir : la console n'est pas un endroit ou l'utilisateur
+     regarde. Ni clic, ni deplacement, ni molette : le retour informe, il ne
+     recouvre jamais l'ecran distant. Aucune animation. */
+  #rdtoasts{position:fixed;left:50%;bottom:1.2rem;transform:translateX(-50%);z-index:40;
+         display:flex;flex-direction:column;align-items:center;gap:.4rem;
+         max-width:min(36rem,92vw);pointer-events:none}
+  .rdtoast{padding:.45rem .8rem;border-radius:8px;font-size:.82rem;line-height:1.35;
+         background:rgba(18,20,24,.94);color:#e6e8ec;text-align:center;
+         border:1px solid rgba(255,255,255,.12);box-shadow:0 2px 10px rgba(0,0,0,.4)}
+  .rdtoast.erreur{border-color:#9c2a3c;background:rgba(58,18,26,.96)}
+
+  /* ------------------------------------- dernieres connexions (ecran de login)
+     Le formulaire du bundle donne a TOUT bouton de #connect le style du bouton
+     « Connect » (bleu, 1,2 rem de padding) : la specificite ci-dessous le defait. */
+  #app>#connect #rd-recents{display:flex;flex-wrap:wrap;gap:.35rem;max-width:22rem;
+         margin:0;text-align:left}
+  #app>#connect #rd-recents .rdchip{display:inline-flex;align-items:stretch;
+         border-radius:14px;background:#2a2f38;overflow:hidden}
+  #app>#connect #rd-recents button{margin:0;padding:.2rem .6rem;border:0;border-radius:0;
+         background:transparent;color:#e6e8ec;font-size:.78rem;font-weight:400;cursor:pointer}
+  #app>#connect #rd-recents button:hover,#app>#connect #rd-recents button:focus-visible{background:#3a4150}
+  /* overflow:hidden rogne l'anneau de focus du bouton enfant : c'est la pastille
+     entiere qui porte l'anneau. */
+  #app>#connect #rd-recents .rdchip:focus-within{outline:2px solid #7aa2ff;outline-offset:1px}
+  #app>#connect #rd-recents .rdchip button:focus-visible{outline:none}
+  #app>#connect #rd-recents .rdchip-x{padding:.2rem .45rem;color:#8b94a3}
+  #app>#connect #rd-recents .rdchip-clear{color:#8b94a3;text-decoration:underline;padding:.2rem .3rem}
 
   /* ------------------------------------------------ panneau de fichiers */
   #rdfiles{position:fixed;top:0;right:0;bottom:0;width:min(30rem,92vw);z-index:20;
@@ -399,6 +447,13 @@ if ("serviceWorker" in navigator) {
     var ws = proto === undefined ? new W(url) : new W(url, proto);
     var path = String(url).replace(/^wss?:\/\/[^/]+/, "");
     var wsStartTime = Date.now();
+    // L'epoque de session a l'ouverture de CETTE liaison. Une liaison plus
+    // ancienne — celle de la connexion « fichiers » d'une session deja finie —
+    // peut se fermer apres qu'un connect() a remis RD.ready a faux : sans cette
+    // comparaison, sa fermeture passait pour un echec d'etablissement de la
+    // nouvelle session (bannieres « cle refusee » / « pair absent », reprise
+    // parasite).
+    var epoque = window.RD ? window.RD.epoque : 0;
     console.log("[diag] websocket ouverture -> " + path);
     // Borne : une session longue enchaine les reconnexions, et chaque entree
     // retient une reference vers le WebSocket ferme.
@@ -435,7 +490,8 @@ if ("serviceWorker" in navigator) {
       //   pair jamais arrive    -> sleep(30) puis retrait, fermeture vers 30 s
       // On se base sur la duree de vie de CETTE liaison, pas sur le silence
       // global : « dernier » est partage entre toutes les liaisons ouvertes.
-      if (path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
+      var courante = !window.RD || window.RD.epoque === epoque;
+      if (courante && path.indexOf("/ws/relay") !== -1 && window.RD && !window.RD.ready) {
         if (dur <= 5) {
           showBannerError(messageCleRefusee(), "key");
         } else if (dur >= 20) {
@@ -464,7 +520,7 @@ if ("serviceWorker" in navigator) {
       // puis 55 minutes de silence. Un relais qui n'a jamais rien recu est un
       // echec d'etablissement (cle refusee, pair absent) : la banniere s'en
       // charge, une reprise n'y changerait rien.
-      if (path.indexOf("/ws/relay") !== -1 && msgCount > 0 && window.__rdReprise) {
+      if (courante && path.indexOf("/ws/relay") !== -1 && msgCount > 0 && window.__rdReprise) {
         window.__rdReprise();
       }
     });
@@ -589,6 +645,7 @@ if ("serviceWorker" in navigator) {
 // Etat partage entre les deux blocs de script.
 window.RD = {
   ready:false,        // vrai apres peer_info : rien ne doit partir avant
+  epoque:0,           // +1 a chaque connect() : une liaison n'est « de la session » que si elle est nee dans l'epoque courante
   res:[],             // modes supportes par l'ecran distant
   orig:null,          // resolution d'origine
   codec:null,         // "h265" | "vp9" | null (= logiciel ogv)
@@ -694,6 +751,12 @@ window.onGlobalEvent = function(payload){
       }
       window.RD.ready = true;
       console.log("[session] prete — " + window.RD.res.length + " resolutions disponibles");
+      // Les reglages memorises et le ratio de qualite s'appliquent a CHAQUE
+      // session, ici, et avant la negociation du codec (elle lit RD.forced).
+      // Un echec ici ne doit priver la session ni de son menu de resolutions ni
+      // de la negociation du codec, qui suivent dans le meme bloc.
+      try { if (window.__rdSessionReady) window.__rdSessionReady(); }
+      catch (err) { console.warn("[session] reglages non appliques :", err); }
       if (window.__rdMenu) window.__rdMenu();
       if (window.__rdNegotiate) window.__rdNegotiate();
     }
@@ -729,6 +792,464 @@ window.onGlobalEvent = function(payload){
     }
   } catch(err) { console.warn("[onGlobalEvent]", err); }
 };
+</script>
+
+<script>
+// ===================================================================
+// RDLib — la logique PURE de la page : aucun acces au DOM, aucune globale
+// hormis window.RDLib. Le stockage, le decodeur zstd et l'horloge sont
+// INJECTES : c'est ce qui permet de tester tout ceci sous Node, sans
+// navigateur (scripts/test-template.mjs charge ce bloc dans un contexte vide).
+//
+// Le cablage — evenements, canvas, barre, WebSocket — reste dans le bloc
+// suivant. Ici, seulement des fonctions qui prennent des valeurs et en rendent.
+//
+// Tout tient dans une IIFE : les scripts classiques partagent la portee
+// lexicale globale, un « const » de premier niveau declare deux fois dans deux
+// blocs leve au chargement.
+// ===================================================================
+(function(){
+  var MIO = 1024 * 1024;
+
+  // ------------------------------------------------------------ identifiants
+  // Meme regle que prefillForm : un ID de poste distant est numerique, avec ou
+  // sans espaces de presentation. Un champ qui contient autre chose a ete
+  // rempli par un gestionnaire de mots de passe, pas par l'utilisateur.
+  function isPeerId(s){
+    return typeof s === "string" && /^[0-9 ]{6,}$/.test(s.trim());
+  }
+  // L'ID sans espaces, ou null. Au moins six chiffres : « 12 3 4 5 » passe
+  // isPeerId (huit caracteres) mais n'est pas un ID.
+  function normId(s){
+    if (!isPeerId(s)) return null;
+    var d = s.replace(/\s+/g, "");
+    // Trente-deux chiffres au plus : un « ID » de 300 000 chiffres est un
+    // contenu de stockage hostile, pas un identifiant.
+    return /^[0-9]{6,32}$/.test(d) ? d : null;
+  }
+  // « 123456789 » -> « 123 456 789 » : la presentation de RustDesk.
+  function fmtId(s){
+    var d = normId(s);
+    return d ? d.replace(/(\d{3})(?=\d)/g, "$1 ") : "";
+  }
+
+  // ---------------------------------------------------------------- presse-papier
+  var FMT = { TEXT: 0, HTML: 2, RGBA: 21, PNG: 22 };
+  var LIM = {
+    OUT_PNG: 8 * MIO,      // image envoyee au poste distant, apres conversion
+    RAW_MAX: 128 * MIO,    // taille decompressee maximale acceptee en entree
+    SRC_MAX: 64 * MIO,     // image locale au-dela de laquelle on ne tente meme pas
+    PIXELS_MAX: 32 * MIO   // pixels d'une image ENVOYEE : le poste distant la decode en RGBA (4 octets/pixel)
+  };
+  var ERR = { DECODE: "DECODE", TOO_BIG: "TOO_BIG", SHORT: "SHORT", DIMS: "DIMS",
+              ENCODE: "ENCODE", LIMIT: "LIMIT", VERSION: "VERSION", NOSEND: "NOSEND",
+              BITMAP: "BITMAP", DENIED: "DENIED" };
+
+  // Un message par code : ce que l'utilisateur lit dans le bandeau. Le journal,
+  // lui, garde le detail technique.
+  var messages = {
+    DECODE:  "Décompression de l'image impossible (données corrompues ou trop volumineuses).",
+    TOO_BIG: "Image trop volumineuse pour être traitée.",
+    SHORT:   "Image reçue incomplète.",
+    DIMS:    "Dimensions d'image invalides.",
+    ENCODE:  "Conversion de l'image impossible.",
+    LIMIT:   "Image trop grande pour le presse-papier distant, même réduite.",
+    VERSION: "Le poste distant (RustDesk antérieur à 1.3.0) ne sait pas recevoir une image par le presse-papier.",
+    NOSEND:  "Envoi impossible : la session n'est pas prête.",
+    BITMAP:  "Format d'image non pris en charge par ce navigateur.",
+    DENIED:  "Le navigateur a refusé d'écrire dans le presse-papier."
+  };
+
+  function ClipError(code, detail){
+    var e = new Error(code + (detail ? " : " + detail : ""));
+    e.name = "ClipError"; e.code = code; e.detail = detail || "";
+    return e;
+  }
+
+  // Ce que le poste distant annonce : une liste d'entrees, chacune avec son
+  // format. On garde UNE entree par usage — image (PNG avant RGBA), HTML,
+  // texte — sans rien decoder : le decodage coute, il se fait plus tard.
+  function select(liste){
+    var r = { image: null, html: null, text: null }, png = null, rgba = null;
+    for (var i = 0; i < (liste || []).length; i++){
+      var cb = liste[i];
+      if (!cb) continue;
+      if (cb.format === FMT.PNG  && !png)    png = cb;
+      else if (cb.format === FMT.RGBA && !rgba) rgba = cb;
+      else if (cb.format === FMT.HTML && !r.html) r.html = cb;
+      else if (cb.format === FMT.TEXT && !r.text) r.text = cb;
+    }
+    if (png) r.image = { kind: "png", cb: png };
+    else if (rgba) r.image = { kind: "rgba", cb: rgba };
+    return r;
+  }
+
+  // La taille decompressee, lue dans l'en-tete de la trame zstd, sans wasm.
+  // null si la trame ne la declare pas (ou n'est pas une trame zstd).
+  //   magic(4) | descripteur(1) | [fenetre(1)] | [dictionnaire(0-4)] | [taille(0-8)]
+  function zstdContentSize(u8){
+    if (!u8 || u8.length < 6) return null;
+    if (u8[0] !== 0x28 || u8[1] !== 0xb5 || u8[2] !== 0x2f || u8[3] !== 0xfd) return null;
+    var d = u8[4], fcsFlag = d >> 6, single = (d >> 5) & 1, dict = d & 3;
+    var pos = 5 + (single ? 0 : 1) + [0, 1, 2, 4][dict];
+    var n = fcsFlag === 0 ? (single ? 1 : 0) : [1, 2, 4, 8][fcsFlag];
+    if (!n || u8.length < pos + n) return null;
+    var lo = 0, hi = 0, k;
+    for (k = 0; k < Math.min(n, 4); k++) lo += u8[pos + k] * Math.pow(2, 8 * k);
+    for (k = 4; k < n; k++) hi += u8[pos + k] * Math.pow(2, 8 * (k - 4));
+    if (hi > 0x1fffff) return null;                 // au-dela de 2^53 : inexploitable
+    var v = hi * 4294967296 + lo;
+    return fcsFlag === 1 ? v + 256 : v;
+  }
+
+  // Decompresse, ou LEVE. Le decodeur du bundle ne leve jamais : quand la
+  // destination est trop petite, ou la trame corrompue, il rend un tableau
+  // VIDE — truthy, donc invisible pour un « if(!x) » — et le bundle dimensionne
+  // sa destination a 30 x la taille compressee, ce qui ne suffit pas pour une
+  // image a fonds unis (taux > 30). Regle ici : une sortie vide pour une
+  // entree non vide est une erreur, jamais un contenu.
+  //
+  // Ordre des tailles essayees : celle de l'en-tete de trame (exacte), sinon
+  // l'indication de l'appelant (largeur x hauteur x 4 pour du RGBA), sinon un
+  // doublement a partir de 30 x l'entree, plafonne a opts.max.
+  // « dec » est { decode(u8, taille) } ; le retour peut etre synchrone ou une
+  // promesse (le repli sur __rdUnzstd, ancien bundle, en rend une).
+  async function decompress(dec, u8, opts){
+    opts = opts || {};
+    var max = opts.max > 0 ? opts.max : LIM.RAW_MAX;
+    if (!u8 || !u8.length) throw ClipError(ERR.DECODE, "entree vide");
+    // Pas de magic zstd : inutile de demander au decodeur d'allouer jusqu'a
+    // 128 Mio, huit fois de suite, pour apprendre que ce n'est pas une trame.
+    if (u8.length < 4 || u8[0] !== 0x28 || u8[1] !== 0xb5 || u8[2] !== 0x2f || u8[3] !== 0xfd)
+      throw ClipError(ERR.DECODE, "ce n'est pas une trame zstd");
+    var fcs = zstdContentSize(u8), tailles = [];
+    if (fcs !== null){
+      if (fcs > max) throw ClipError(ERR.TOO_BIG, fcs + " octets declares, limite " + max);
+      tailles.push(fcs);
+    } else {
+      var t = opts.hint > 0 ? opts.hint : Math.max(MIO, 30 * u8.length);
+      if (t > max) t = max;
+      tailles.push(t);
+      while (t < max){ t = Math.min(t * 2, max); tailles.push(t); }
+    }
+    // Le repli sur l'ancien __rdUnzstd (S3 ignore la taille demandee) n'a
+    // aucune raison d'etre rejoue huit fois avec le meme resultat.
+    if (dec && dec.unique) tailles = tailles.slice(0, 1);
+    var derniere = "";
+    for (var i = 0; i < tailles.length; i++){
+      var out;
+      try { out = await dec.decode(u8, tailles[i]); }
+      catch (e){ derniere = String(e && e.message || e); continue; }
+      if (out && out.length) return out;
+    }
+    throw ClipError(ERR.DECODE, "aucune taille de sortie ne convient (jusqu'a "
+                    + tailles[tailles.length - 1] + " octets)" + (derniere ? " — " + derniere : ""));
+  }
+
+  // Une sortie VIDE est-elle un echec du decodeur, ou le vrai contenu d'une
+  // trame vide ? Seule la taille declaree dans l'en-tete le dit : 0 -> legitime ;
+  // autre chose, ou rien de declare -> le decodeur a echoue sans le dire.
+  function sortieVideSuspecte(entree, sortie){
+    if (sortie && sortie.length) return false;
+    return zstdContentSize(entree) !== 0;
+  }
+
+  // Les pixels d'une image RGBA brute, ou une erreur : dimensions plausibles,
+  // et assez d'octets. Un tampon trop court laissait jusqu'ici des pixels a
+  // zero — une image transparente, collee sans un mot.
+  function rgbaPixels(raw, w, h){
+    if (!(w > 0 && h > 0) || w !== Math.floor(w) || h !== Math.floor(h) || w > 16384 || h > 16384)
+      throw ClipError(ERR.DIMS, w + "x" + h);
+    var n = w * h * 4;
+    if (n > LIM.RAW_MAX) throw ClipError(ERR.TOO_BIG, w + "x" + h);
+    if (!raw || raw.length < n) throw ClipError(ERR.SHORT, (raw ? raw.length : 0) + " octets pour " + n);
+    return new Uint8ClampedArray(raw.buffer, raw.byteOffset, n);
+  }
+
+  // Une ligne de journal : sans elle, « image/png 1920x1080 » s'ecrivait dans
+  // les deux cas — PNG deja compresse ou RGBA brut compresse en zstd — et on ne
+  // pouvait pas dire lequel le poste distant envoyait.
+  function describe(cb, rawLen){
+    if (!cb) return "(aucune entree)";
+    var noms = { 0: "texte", 1: "rtf", 2: "html", 21: "rgba", 22: "png", 23: "svg", 31: "special" };
+    var reseau = cb.content ? cb.content.length : 0;
+    return "format " + cb.format + " (" + (noms[cb.format] || "?") + ")"
+         + ", compress=" + (cb.compress ? "oui" : "non")
+         + ", " + reseau + " o recus"
+         + (rawLen != null ? " -> " + rawLen + " o bruts" : "")
+         + (cb.width && cb.height ? ", " + cb.width + "x" + cb.height : "");
+  }
+
+  // Un emplacement par usage. Un texte arrivant apres une image ne l'efface
+  // plus : chacun garde le sien, et chacun a son bouton.
+  function slots(){
+    var m = {}, ordre = [];
+    return {
+      put: function(kind, e){ if (!(kind in m)) ordre.push(kind); m[kind] = e; },
+      get: function(kind){ return kind in m ? m[kind] : null; },
+      take: function(kind){
+        if (!(kind in m)) return null;
+        var e = m[kind]; delete m[kind];
+        ordre = ordre.filter(function(k){ return k !== kind; });
+        return e;
+      },
+      kinds: function(){ return ordre.slice(); }
+    };
+  }
+
+  // Signature d'un PNG : 89 50 4E 47 0D 0A 1A 0A.
+  function estPng(u8){
+    if (!u8 || u8.length < 8) return false;
+    var sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    for (var i = 0; i < 8; i++) if (u8[i] !== sig[i]) return false;
+    return true;
+  }
+
+  // Dimensions ramenees sous PIXELS_MAX, rapport conserve. Inchangees si elles y sont deja.
+  function reduirePixels(w, h){
+    if (!(w > 0 && h > 0) || w * h <= LIM.PIXELS_MAX) return { w: w, h: h };
+    var f = Math.sqrt(LIM.PIXELS_MAX / (w * h));
+    return { w: Math.max(1, Math.floor(w * f)), h: Math.max(1, Math.floor(h * f)) };
+  }
+
+  // Une image locale de plus de SRC_MAX n'est meme pas decodee.
+  function precheck(octetsSource){
+    if (octetsSource > LIM.SRC_MAX)
+      throw ClipError(ERR.TOO_BIG, octetsSource + " octets, limite " + LIM.SRC_MAX);
+    return true;
+  }
+
+  // Dimensions pour tenir sous la limite. Le PNG grossit a peu pres avec la
+  // surface : facteur = racine(limite / octets), avec une marge de 10 %. Rend
+  // les memes dimensions si l'image passe deja, null si l'on descendrait sous
+  // 64 px. L'appelant reessaie au plus trois fois, en remesurant.
+  function nextScale(w, h, octets, limite){
+    if (octets <= limite) return { w: w, h: h };
+    var f = Math.sqrt(limite / octets) * 0.9;
+    f = Math.min(0.95, Math.max(0.35, f));
+    var nw = Math.floor(w * f), nh = Math.floor(h * f);
+    if (nw < 64 || nh < 64) return null;
+    return { w: nw, h: nh };
+  }
+
+  // Le collage distant est rejoue APRES l'envoi. Un texte tient dans un
+  // paquet ; une image de plusieurs Mio doit etre recue, decodee et posee par
+  // le poste distant avant qu'on lui dise de coller. C'est une HEURISTIQUE —
+  // rien ne dit, cote pair, que l'ecriture est terminee — d'ou le plancher a
+  // 150 ms (l'ancienne valeur fixe) et la possibilite de la forcer.
+  function pasteDelayMs(octets, override){
+    if (typeof override === "number" && isFinite(override) && override >= 0)
+      return Math.min(10000, Math.floor(override));
+    var ms = 150 + Math.floor((octets > 0 ? octets : 0) / MIO) * 250;
+    return Math.min(2500, Math.max(150, ms));
+  }
+
+  // multi_clipboards n'existe qu'a partir de RustDesk 1.3.0. true / false, ou
+  // null quand la version est inconnue ou illisible.
+  function peerSupportsMulti(ver){
+    var m = /^\s*(\d+)\.(\d+)/.exec(String(ver == null ? "" : ver));
+    if (!m) return null;
+    var maj = parseInt(m[1], 10), min = parseInt(m[2], 10);
+    return maj > 1 || (maj === 1 && min >= 3);
+  }
+
+  // Faut-il traiter un « paste » ? Sur le canvas, oui. Sur le corps de la page
+  // pendant une session vivante aussi : apres un clic sur un bouton de la barre
+  // le focus tombe sur <body>, et le collage restait ignore jusqu'au prochain
+  // clic dans l'image. Dans un champ (fenetre modale, panneau de fichiers), ou
+  // sur un autre controle, jamais : le collage y appartient a l'utilisateur.
+  function pasteAccepte(cx){
+    return !!cx && (cx.cible === "canvas" || (cx.cible === "body" && !!cx.enSession));
+  }
+
+  // Est-ce un « coller » ? La lettre saisie fait foi (Dvorak : le v est ailleurs
+  // sur le clavier). Sous une disposition d'un alphabet non latin — cyrillique,
+  // grec, arabe, hebreu — la lettre n'est pas un v, mais le navigateur declenche
+  // quand meme « paste » sur la touche physique : on la reconnait a son code, et
+  // SEULEMENT si le caractere saisi est une lettre de cet alphabet. Une
+  // ponctuation ou un chiffre sur cette touche n'est pas un collage : l'avaler
+  // ferait disparaitre le raccourci de la session distante.
+  function isPasteChord(e){
+    if (!e || !(e.ctrlKey || e.metaKey) || e.altKey) return false;
+    var key = typeof e.key === "string" ? e.key : "";
+    if (key.toLowerCase() === "v") return true;
+    return e.code === "KeyV" && /^\p{L}$/u.test(key) && !/^\p{Script=Latin}$/u.test(key);
+  }
+
+  // ------------------------------------------------- stockage : deux pieges
+  // Storage.prototype.setItem est surcharge plus haut et AVALE toute erreur
+  // (quota compris) : une ecriture perdue ne se voit qu'en relisant. Toute
+  // ecriture d'ici est donc relue et comparee ; si elle n'a pas tenu, la page
+  // garde sa copie en memoire et continue de fonctionner. Et jamais de cache
+  // entre deux mutations : lire, modifier, ecrire — deux onglets ne s'ecrasent
+  // ainsi qu'au sens du dernier ecrivain.
+  function lire(storage, key){
+    try { return storage.getItem(key); } catch (e) { return null; }
+  }
+  function ecrire(storage, key, texte){
+    try {
+      storage.setItem(key, texte);
+      return storage.getItem(key) === texte;
+    } catch (e) { return false; }
+  }
+  function json(texte){
+    if (typeof texte !== "string") return null;
+    try { var v = JSON.parse(texte); return v && typeof v === "object" ? v : null; }
+    catch (e) { return null; }
+  }
+
+  // ---------------------------------------------------------------- reglages
+  // Liste blanche : une valeur inconnue (ancienne version, stockage corrompu,
+  // cle « __proto__ ») est ignoree, jamais recopiee.
+  var PREFS_OK = {
+    quality: ["balanced", "best", "low"],
+    fps:     [10, 15, 30, 60],
+    codec:   ["auto", "h265", "vp9", "logiciel"],
+    bar:     ["ouverte", "repliee"]
+  };
+  function prefsFiltrees(src){
+    var r = {};
+    if (!src || typeof src !== "object") return r;
+    Object.keys(PREFS_OK).forEach(function(k){
+      if (!Object.prototype.hasOwnProperty.call(src, k)) return;
+      var v = src[k];
+      if (k === "fps") v = Number(v);
+      if (PREFS_OK[k].indexOf(v) >= 0) r[k] = v;
+    });
+    if (src.hint === true) r.hint = true;              // l'indice de la barre a ete montre
+    return r;
+  }
+  function creerPrefs(storage, opts){
+    var key = (opts && opts.key) || "rd-prefs", mem = null;
+    function get(){
+      if (mem) return prefsFiltrees(mem);
+      var j = json(lire(storage, key));
+      return j && j.v === 1 ? prefsFiltrees(j) : {};
+    }
+    return {
+      get: get,
+      // patch : { quality, fps, codec, bar, hint } ; null retire une valeur.
+      // Rend vrai si l'ecriture a tenu (relue).
+      set: function(patch){
+        var cur = get(), p = patch || {};
+        Object.keys(p).forEach(function(k){
+          if (p[k] === null){ delete cur[k]; return; }
+          var un = {}, f;
+          un[k] = p[k];
+          f = prefsFiltrees(un);
+          if (Object.prototype.hasOwnProperty.call(f, k)) cur[k] = f[k];
+        });
+        var texte = JSON.stringify({ v: 1, quality: cur.quality, fps: cur.fps, codec: cur.codec,
+                                     bar: cur.bar, hint: cur.hint });
+        var ok = ecrire(storage, key, texte);
+        mem = ok ? null : cur;
+        return ok;
+      },
+      reset: function(){
+        mem = null;
+        try { storage.removeItem(key); } catch (e) { return false; }
+        return true;
+      }
+    };
+  }
+
+  // ---------------------------------------------------- dernieres connexions
+  // Des chiffres et des horodatages, rien d'autre : jamais d'hote, jamais de
+  // mot de passe (« peers » les porte en clair, on n'y touche pas).
+  function creerRecent(storage, opts){
+    opts = opts || {};
+    var key = opts.key || "rd-recent", max = opts.max || 10,
+        maintenant = opts.now || function(){ return Date.now(); }, mem = null;
+
+    // Un horodatage venu du stockage est borne a « maintenant + un jour » : « 9e99 »
+    // se classerait sinon en tete pour toujours.
+    function horodatage(v){
+      var n = Number(v);
+      if (!isFinite(n) || n < 0) return 0;
+      return Math.min(n, maintenant() + 86400000);
+    }
+    function propre(liste){
+      var vus = {}, r = [];
+      (Array.isArray(liste) ? liste : []).forEach(function(e){
+        var id = e && normId(e.id);
+        if (!id || vus[id]) return;
+        vus[id] = true;
+        r.push({ id: id, t: horodatage(e.t) });
+      });
+      r.sort(function(a, b){ return b.t - a.t; });      // tri stable : le plus recent d'abord
+      return r.slice(0, max);
+    }
+    // null = la cle n'existe pas (jamais amorcee) ; [] = elle existe, vide.
+    function charger(){
+      if (mem) return propre(mem);
+      var brut = lire(storage, key);
+      if (brut === null) return null;
+      var j = json(brut);
+      return j && j.v === 1 ? propre(j.ids) : [];
+    }
+    function sauver(liste){
+      var l = propre(liste), ok = ecrire(storage, key, JSON.stringify({ v: 1, ids: l }));
+      mem = ok ? null : l;
+      return ok;
+    }
+    return {
+      list: function(){ return charger() || []; },
+      add: function(id){
+        var n = normId(id);
+        if (!n) return false;
+        var l = (charger() || []).filter(function(e){ return e.id !== n; });
+        l.unshift({ id: n, t: maintenant() });
+        return sauver(l);
+      },
+      remove: function(id){
+        var n = normId(id);
+        if (!n) return false;
+        return sauver((charger() || []).filter(function(e){ return e.id !== n; }));
+      },
+      // On ecrit une liste VIDE plutot que de retirer la cle : la cle absente
+      // declenche l'amorcage, et un historique efface reviendrait tout seul.
+      clear: function(){ return sauver([]); },
+      // Une seule fois, quand la cle n'existe pas encore : les IDs deja connus
+      // du bundle (« peers », classes par « tm » — la derniere ecriture d'option,
+      // pas la derniere connexion, donc approximatif) et le dernier ID saisi.
+      // On ecrit meme si la liste est vide, pour qu'un retrait ne soit pas
+      // annule au chargement suivant. Rend le nombre d'entrees amorcees.
+      seedFrom: function(peersJson, dernierId, idDefaut){
+        if (charger() !== null) return 0;
+        var p = typeof peersJson === "string" ? json(peersJson) : peersJson, liste = [];
+        if (p && typeof p === "object"){
+          Object.keys(p).forEach(function(id){
+            var n = normId(id), tm = p[id] && Number(p[id].tm);
+            if (n && tm > 0) liste.push({ id: n, t: horodatage(tm) });
+          });
+        }
+        var dernier = normId(dernierId), defaut = normId(idDefaut);
+        if (dernier && dernier !== defaut){
+          var t = liste.reduce(function(m, e){ return Math.max(m, e.t); }, 0);
+          liste.push({ id: dernier, t: Math.max(t + 1, maintenant()) });
+        }
+        sauver(liste);
+        return charger().length;
+      }
+    };
+  }
+
+  window.RDLib = {
+    v: 1,
+    isPeerId: isPeerId, normId: normId, fmtId: fmtId,
+    messages: messages,
+    clip: {
+      FMT: FMT, LIM: LIM, ERR: ERR, ClipError: ClipError,
+      select: select, zstdContentSize: zstdContentSize, decompress: decompress,
+      sortieVideSuspecte: sortieVideSuspecte, estPng: estPng, reduirePixels: reduirePixels,
+      rgbaPixels: rgbaPixels, describe: describe, slots: slots,
+      precheck: precheck, nextScale: nextScale, pasteDelayMs: pasteDelayMs,
+      peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord, pasteAccepte: pasteAccepte
+    },
+    prefs:  { create: creerPrefs, OK: PREFS_OK },
+    recent: { create: creerRecent }
+  };
+})();
 </script>
 
 <script src="ogvjs-1.8.6/ogv.js"></script>
@@ -961,12 +1482,57 @@ window.onGlobalEvent = function(payload){
   function fallbackToSoftware(raison){
     if (!RD.codec) return;
     console.warn("[codec] repli logiciel : "+raison);
+    // Un codec FORCE (et memorise) qui ne tient pas reviendrait a chaque session,
+    // et echouerait de la meme facon : on le rend a « auto ».
+    if (RD.forced === "h265" || RD.forced === "vp9"){
+      var ancien = RD.forced;
+      RD.forced = "auto";
+      prefs.set({ codec: "auto" });
+      if (ui.cod) ui.cod.value = "auto";
+      notifier("Codec " + ancien.toUpperCase() + " indisponible (" + raison + ") : retour en automatique.", "erreur");
+    }
     RD.codec = null; RD.errors = 0;
     negotiate();
     var c = window.curConn;
     if (c && c.__rdOrigHandle){ c.handleVideoFrame = c.__rdOrigHandle; }
     if (c && c.__rdOrigDraw){ c.draw = c.__rdOrigDraw; }
     showActive(); fitCanvas();
+  }
+  window.__rdFallback = fallbackToSoftware;
+
+  // ---------------------------------------------------------------- retours
+  // Une seule region « aria-live », creee a la demande. Les echecs passent en
+  // role="alert" (annonces tout de suite), le reste en role="status".
+  var toastsZone = null;
+  // Une region « aria-live » creee EN MEME TEMPS que son premier contenu n'est
+  // pas annoncee de facon fiable : elle est donc posee d'avance (wireGlobal).
+  function zoneRetours(){
+    if (!toastsZone){
+      toastsZone = document.createElement("div");
+      toastsZone.id = "rdtoasts";
+      toastsZone.setAttribute("aria-live", "polite");
+      document.body.appendChild(toastsZone);
+    }
+    return toastsZone;
+  }
+  function notifier(texte, niveau){
+    try{
+      zoneRetours();
+      var t = document.createElement("div");
+      t.className = "rdtoast" + (niveau === "erreur" ? " erreur" : "");
+      t.setAttribute("role", niveau === "erreur" ? "alert" : "status");
+      t.textContent = texte;
+      toastsZone.appendChild(t);
+      setTimeout(function(){ t.remove(); }, niveau === "erreur" ? 9000 : 4500);
+    }catch(e){ console.warn("[retour]", e); }
+  }
+  window.__rdToast = notifier;
+
+  // Le texte d'une erreur de presse-papier, pour l'utilisateur.
+  function messageErreur(e){
+    if (e && e.name === "ClipError") return RDLib.messages[e.code] || String(e.message);
+    if (e && e.name === "NotAllowedError") return RDLib.messages.DENIED;
+    return "Presse-papier : opération impossible (" + ((e && e.name) || "erreur") + ").";
   }
 
   // ============================================ presse-papier ENTRANT
@@ -979,124 +1545,221 @@ window.onGlobalEvent = function(payload){
   // c'est le seul endroit ou l'on voit le message decode AVANT l'aiguillage,
   // ce qui permet aussi de lui retirer une image que sa branche texte
   // collerait sinon en charabia.
-  var FMT_PNG_R = 22, FMT_RGBA_R = 21, FMT_HTML_R = 2, FMT_TEXTE_R = 0;
-  var ppRecu = null;                       // dernier presse-papier distant
+  //
+  // Ce point de greffe est sur le chemin de TOUS les messages, video comprise :
+  // msgLoop est sequentiel et acquitte chaque image par sendVideoReceived. On
+  // n'y fait donc que RANGER ce qui arrive — le decodage et la conversion en
+  // PNG, qui coutent des dizaines de millisecondes sur une capture d'ecran,
+  // partent dans une tache a part et leur resultat est une promesse.
+  var FMT_PNG_R = RDLib.clip.FMT.PNG, FMT_RGBA_R = RDLib.clip.FMT.RGBA;
+  var ppSlots = RDLib.clip.slots();        // un emplacement par usage : image / texte
 
-  async function ppContenu(cb){
-    var d = cb.content;
-    if (cb.compress){
-      if (!window.__rdUnzstd) throw new Error("decodeur zstd absent du bundle");
-      d = await window.__rdUnzstd(d);
+  // Le decodeur zstd du bundle. __rdZstdDecoder (patch 5) donne le decodeur
+  // lui-meme, dont on choisit la taille de destination ; un bundle patche par
+  // une version anterieure n'a que __rdUnzstd, dont le tampon est trop petit
+  // pour une image tres compressible : on s'en sert quand meme, mais une sortie
+  // vide y est une erreur.
+  async function ppDecodeur(){
+    if (window.__rdZstdDecoder) return await window.__rdZstdDecoder();
+    if (window.__rdUnzstd){
+      return { unique: true, decode: function(u8){ return window.__rdUnzstd(u8); } };
     }
+    throw RDLib.clip.ClipError(RDLib.clip.ERR.DECODE, "decodeur zstd absent du bundle");
+  }
+
+  async function ppContenu(cb, attendu){
+    var d = cb.content;
+    if (cb.compress) d = await RDLib.clip.decompress(await ppDecodeur(), d, { hint: attendu || 0 });
     return d;
   }
 
   // Le format 21 transporte les octets bruts de l'image. Passer par un canvas
   // est le seul moyen d'en faire un PNG, seul type d'image qu'un navigateur
   // accepte d'ecrire dans le presse-papier du systeme.
-  function ppRgbaEnPng(octets, w, h){
+  async function ppRgbaEnPng(pixels, w, h){
     var cv = document.createElement("canvas"); cv.width = w; cv.height = h;
     var cx = cv.getContext("2d");
     var img = cx.createImageData(w, h);
-    img.data.set(octets.subarray(0, img.data.length));
+    img.data.set(pixels);
     cx.putImageData(img, 0, 0);
-    return new Promise(function(r){ cv.toBlob(r, "image/png"); });
+    var blob = await new Promise(function(r){ cv.toBlob(r, "image/png"); });
+    if (!blob) throw RDLib.clip.ClipError(RDLib.clip.ERR.ENCODE, "toBlob a rendu null (" + w + "x" + h + ")");
+    return blob;
   }
 
-  async function ppRetenir(liste){
-    var png = null, rgba = null, html = null, texte = null;
-    for (var i = 0; i < liste.length; i++){
-      var cb = liste[i];
-      if (cb.format === FMT_PNG_R  && !png)   png   = cb;
-      else if (cb.format === FMT_RGBA_R && !rgba)  rgba  = cb;
-      else if (cb.format === FMT_HTML_R && !html)  html  = cb;
-      else if (cb.format === FMT_TEXTE_R && !texte) texte = cb;
+  // Image -> Blob PNG. Deux formes : PNG (deja pret, au mieux a decompresser)
+  // et RGBA brut (a valider puis a passer par un canvas).
+  async function ppImageEnBlob(image){
+    var cb = image.cb;
+    if (image.kind === "png"){
+      var png = await ppContenu(cb, 0);
+      // Des octets qui ne sont pas un PNG feraient echouer write() avec un nom
+      // generique, et le bouton resterait pour rien.
+      if (!RDLib.clip.estPng(png))
+        throw RDLib.clip.ClipError(RDLib.clip.ERR.DECODE, "signature PNG absente (" + (png ? png.length : 0) + " octets)");
+      return new Blob([png], { type: "image/png" });
     }
-    var choix = png || rgba || html || texte;
-    if (!choix) return;
-
-    var octets = await ppContenu(choix);
-    if (choix === png){
-      ppRecu = { type:"image/png", w:choix.width, h:choix.height,
-                 blob:new Blob([octets], {type:"image/png"}) };
-    } else if (choix === rgba){
-      ppRecu = { type:"image/png", w:choix.width, h:choix.height,
-                 blob: await ppRgbaEnPng(octets, choix.width, choix.height) };
-    } else {
-      ppRecu = { type: choix === html ? "text/html" : "text/plain",
-                 texte: new TextDecoder().decode(octets) };
-    }
-    ppBouton();
-    console.log("[presse-papier] recu du poste distant : " + ppRecu.type
-      + (ppRecu.blob ? " " + ppRecu.w + "x" + ppRecu.h
-                     : " (" + ppRecu.texte.length + " caracteres)")
-      + " — le bouton « Coller ici » le depose dans ce navigateur");
+    var w = cb.width | 0, h = cb.height | 0;
+    var brut = await ppContenu(cb, w * h * 4);
+    console.log("[presse-papier] image décompressée : " + RDLib.clip.describe(cb, brut.length));
+    return ppRgbaEnPng(RDLib.clip.rgbaPixels(brut, w, h), w, h);
   }
 
-  async function ppFiltrer(m){
+  async function ppTexteEnValeur(sel){
+    var r = { html: null, texte: null };
+    if (sel.html) r.html = new TextDecoder().decode(await ppContenu(sel.html, 0));
+    if (sel.text) r.texte = new TextDecoder().decode(await ppContenu(sel.text, 0));
+    return r;
+  }
+
+  // Range l'image : la conversion demarre tout de suite, mais HORS du chemin de
+  // msgLoop — un « setTimeout » que personne n'attend. Un emplacement remplace
+  // avant que la tache ne tourne n'est pas converti du tout.
+  function ppRangerImage(image){
+    var slot = { kind: "image", cb: image.cb, w: image.cb.width, h: image.cb.height };
+    slot.promesse = new Promise(function(resolve, reject){
+      setTimeout(function(){
+        // Supplante avant que la tache ne tourne : inutile de convertir — sauf si
+        // un clic l'attend deja (voir ppDeposer), auquel cas sa promesse doit tenir.
+        if (ppSlots.get("image") !== slot && !slot.clique){ resolve(null); return; }
+        ppImageEnBlob(image).then(function(blob){
+          slot.pret = true;
+          image.cb.content = null;                                   // les octets recus ne servent plus
+          resolve(blob);
+        }, reject);
+      }, 0);
+    });
+    slot.promesse.catch(function(e){                                 // pas de « unhandledrejection »
+      slot.erreur = e;
+      console.warn("[presse-papier] conversion de l'image : " + (e && e.message || e));
+    });
+    ppSlots.put("image", slot);
+  }
+
+  function ppRangerTexte(sel){
+    var slot = { kind: "text", riche: !!sel.html };
+    slot.promesse = ppTexteEnValeur(sel);
+    slot.promesse.catch(function(e){
+      slot.erreur = e;
+      console.warn("[presse-papier] decodage du texte : " + (e && e.message || e));
+    });
+    ppSlots.put("text", slot);
+  }
+
+  function ppRetenir(liste){
+    var sel = RDLib.clip.select(liste);
+    (liste || []).forEach(function(cb){
+      if (cb) console.log("[presse-papier] recu du poste distant : " + RDLib.clip.describe(cb));
+    });
+    if (sel.image) ppRangerImage(sel.image);
+    if (sel.html || sel.text) ppRangerTexte(sel);
+    if (sel.image || sel.html || sel.text) ppBouton();
+  }
+
+  // Synchrone, et volontairement : rien ici ne doit retarder msgLoop.
+  function ppFiltrer(m){
     if (!m) return m;
     if (m.multi_clipboards && m.multi_clipboards.clipboards
         && m.multi_clipboards.clipboards.length){
-      await ppRetenir(m.multi_clipboards.clipboards);
+      ppRetenir(m.multi_clipboards.clipboards);
       return m;                       // le bundle l'ignore, rien a lui cacher
     }
     if (m.clipboard && (m.clipboard.format === FMT_PNG_R
                      || m.clipboard.format === FMT_RGBA_R)){
       var cb = m.clipboard;
       delete m.clipboard;             // sinon : TextDecoder sur du PNG
-      await ppRetenir([cb]);
+      ppRetenir([cb]);
     }
     return m;                         // texte simple : le bundle sait faire
   }
 
-  // Ecrire dans le presse-papier du systeme exige une activation recente : le
-  // navigateur refuse toute ecriture differee, et Chrome au-dela d'environ une
-  // seconde apres l'interaction. Une pose automatique a la reception est donc
-  // condamnee — d'ou ce bouton, qui fournit le geste. C'est le meme choix que
-  // Guacamole, qui expose une zone dediee plutot que d'automatiser.
+  // Ecrire dans le presse-papier du systeme exige, selon les navigateurs, une
+  // activation utilisateur recente (Safari l'exige strictement). Une pose
+  // automatique a la reception n'est donc pas fiable — d'ou ces boutons, qui
+  // fournissent le geste. C'est le meme choix que Guacamole, qui expose une zone
+  // dediee plutot que d'automatiser. Un bouton par usage : image, texte.
+  var PP_LIBELLES = { image: "Image reçue ⇩", text: "Texte reçu ⇩" };
   function ppBouton(){
     var bar = window.__rdBar;
-    if (!bar || !ppRecu) return;
-    var b = bar.querySelector(".rdppbtn");
-    if (!b){
-      b = document.createElement("button");
-      b.className = "rdppbtn";
-      b.onclick = ppDeposer;
-      bar.insertBefore(b, bar.firstChild);
-    }
-    bar.classList.add("attention");
-    b.textContent = ppRecu.blob ? "Image reçue ⇩" : "Texte reçu ⇩";
-    b.title = "Déposer ce contenu dans le presse-papier de ce navigateur. "
-            + "Un clic est indispensable : le navigateur refuse d'écrire dans "
-            + "le presse-papier sans geste de ta part.";
+    if (!bar) return;
+    ppSlots.kinds().forEach(function(kind){
+      var b = bar.querySelector('.rdppbtn[data-kind="' + kind + '"]');
+      if (!b){
+        b = document.createElement("button");
+        b.className = "rdppbtn";
+        b.setAttribute("data-kind", kind);
+        b.onclick = function(){ ppDeposer(kind); };
+        bar.insertBefore(b, bar.firstChild);
+      }
+      b.textContent = PP_LIBELLES[kind];
+      b.title = "Déposer ce contenu dans le presse-papier de ce navigateur. "
+              + "Un clic est nécessaire : le navigateur n'écrit pas dans le "
+              + "presse-papier sans geste de ta part.";
+    });
+    if (ppSlots.kinds().length) bar.classList.add("attention");
   }
 
-  async function ppDeposer(){
-    if (!ppRecu) return;
+  function ppRetirerBouton(kind){
+    var bar = window.__rdBar;
+    if (!bar) return;
+    var b = bar.querySelector('.rdppbtn[data-kind="' + kind + '"]');
+    if (b) b.remove();
+    if (!ppSlots.kinds().length) bar.classList.remove("attention");
+  }
+
+  // Une image : la PROMESSE du blob va directement dans le ClipboardItem. Le
+  // geste est ainsi consomme au clic, que la conversion soit finie ou non.
+  // Certains navigateurs refusent une promesse comme valeur : TypeError a la
+  // construction, on attend alors le blob avant d'ecrire.
+  async function ppEcrireImage(promesse){
+    var item;
+    try { item = new ClipboardItem({ "image/png": promesse }); }
+    catch (e){
+      if (!(e && e.name === "TypeError")) throw e;
+      item = new ClipboardItem({ "image/png": await promesse });
+    }
+    await navigator.clipboard.write([item]);
+  }
+
+  async function ppEcrireTexte(valeur){
+    if (valeur.html){
+      // Le vrai texte brut, s'il a ete annonce : on ne fabrique le sien en
+      // retirant les balises qu'a defaut.
+      var plain = valeur.texte != null ? valeur.texte : valeur.html.replace(/<[^>]*>/g, "");
+      await navigator.clipboard.write([ new ClipboardItem({
+        "text/html":  new Blob([valeur.html], {type:"text/html"}),
+        "text/plain": new Blob([plain], {type:"text/plain"}) }) ]);
+    } else {
+      await navigator.clipboard.writeText(valeur.texte || "");
+    }
+  }
+
+  async function ppDeposer(kind){
+    var slot = ppSlots.get(kind);
+    if (!slot) return;
+    slot.clique = true;
+    // Pendant l'attente, un contenu plus recent a pu prendre l'emplacement : ce
+    // qu'on vient d'ecrire est l'ANCIEN, le nouveau et son bouton doivent rester.
+    var encoreLe_mien = function(){ return ppSlots.get(kind) === slot; };
     try{
-      if (ppRecu.blob){
-        await navigator.clipboard.write([
-          new ClipboardItem({ "image/png": ppRecu.blob }) ]);
-      } else if (ppRecu.type === "text/html"){
-        await navigator.clipboard.write([ new ClipboardItem({
-          "text/html":  new Blob([ppRecu.texte], {type:"text/html"}),
-          "text/plain": new Blob([ppRecu.texte.replace(/<[^>]*>/g, "")],
-                                 {type:"text/plain"}) }) ]);
-      } else {
-        await navigator.clipboard.writeText(ppRecu.texte);
-      }
-      console.log("[presse-papier] depose dans le presse-papier local");
-      ppRecu = null;
-      var bar = window.__rdBar;
-      if (bar){
-        var b = bar.querySelector(".rdppbtn");
-        if (b) b.remove();
-        bar.classList.remove("attention");
-      }
-    }catch(e){
-      console.warn("[presse-papier] depot refuse : " + e.name + " — " + e.message
-        + (/Firefox|Safari/.test(navigator.userAgent)
-           ? " (ce navigateur n'ecrit pas d'image dans le presse-papier)" : ""));
+      if (kind === "image") await ppEcrireImage(slot.promesse);
+      else await ppEcrireTexte(await slot.promesse);
+      console.log("[presse-papier] " + kind + " déposé dans le presse-papier local");
+      if (encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
+      notifier(kind === "image" ? "Image déposée dans le presse-papier local."
+                                : "Texte déposé dans le presse-papier local.");
+    }catch(e0){
+      // Si la CONVERSION a echoue, c'est elle la vraie cause : write() rejoue son
+      // rejet sous un autre nom (NotAllowedError, DataError…) et le message
+      // « le navigateur a refuse » serait faux — et definitif, donc trompeur.
+      var e = slot.erreur || e0;
+      console.warn("[presse-papier] depot refuse : " + (e && e.name) + " — " + (e && e.message));
+      // Une erreur de conversion est definitive : reessayer ne changerait rien.
+      // Un refus du navigateur, lui, peut passer au clic suivant.
+      if (e && e.name === "ClipError" && encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
+      notifier(messageErreur(e), "erreur");
+    }finally{
+      var c = active(); if (c) c.focus();      // le bouton ne doit pas garder le clavier
     }
   }
   window.__rdPpFiltrer = ppFiltrer;
@@ -1200,7 +1863,7 @@ window.onGlobalEvent = function(payload){
       var suivant = c._ws.next.bind(c._ws);
       c._ws.next = async function(){
         var m = await suivant();
-        try { return await ppFiltrer(m); }
+        try { return ppFiltrer(m); }
         catch(e){ console.warn("[presse-papier] entrant :", e); return m; }
       };
     }
@@ -1251,7 +1914,7 @@ window.onGlobalEvent = function(payload){
       }
       if(k.length!==1) return;
       // Ctrl/Cmd+V : NE PAS intercepter, sinon le navigateur n'emet pas "paste".
-      if((e.ctrlKey||e.metaKey)&&!e.altKey&&k.toLowerCase()==="v") return;
+      if(RDLib.clip.isPasteChord(e)) return;
       if(e.ctrlKey||e.altKey||e.metaKey){
         e.preventDefault();
         var base=(k>="A"&&k<="Z")?k.toLowerCase():k;
@@ -1295,6 +1958,10 @@ window.onGlobalEvent = function(payload){
   function repriseplanifier(){
     if (reprise.voulue){ console.log("[reprise] deconnexion demandee, pas de reprise"); return; }
     if (reprise.timer) return;
+    // La fermeture d'UNE liaison relais n'est pas la fin de la session : la
+    // connexion « fichiers » en ouvre une seconde, et sa fermeture appelle
+    // __rdReprise alors que la session video est bien vivante.
+    if (sessionVivante()) return;
     if (reprise.n >= 6){
       console.warn("[reprise] abandon apres 6 tentatives");
       repriseInfo("reprise abandonnee — recharge la page");
@@ -1306,6 +1973,8 @@ window.onGlobalEvent = function(payload){
     repriseInfo("reconnexion " + reprise.n + "/6 dans " + (delai/1000) + " s");
     reprise.timer = setTimeout(function(){
       reprise.timer = null;
+      // Elle a pu revenir entre-temps : ne pas relancer connect() par-dessus.
+      if (sessionVivante()){ repriseAnnuler(); repriseInfo(""); return; }
       repriseInfo("reconnexion en cours…");
       try { if (window.connect) window.connect(); }
       catch(e){ console.warn("[reprise]", e); }
@@ -1362,19 +2031,168 @@ window.onGlobalEvent = function(payload){
     if (c && c.width > 300) veilleActiver();
   });
 
+  // Le canvas GARDE sa largeur apres une coupure : c.width reste a 1920 et la fin
+  // de session passait inapercue. On interroge donc l'etat reel : le conteneur
+  // d'affichage est-il visible, et la liaison est-elle ouverte.
+  function sessionVivante(){
+    var d = document.getElementById("canvas");
+    if (!d || getComputedStyle(d).display === "none") return false;
+    var k = window.curConn;
+    if (!k || !k._ws || !k._ws._websocket) return false;
+    return k._ws._websocket.readyState === 1;
+  }
+
+  // ------------------------------------------------------ reglages memorises
+  // Qualite, plafond de cadence et codec survivent au rechargement de la page,
+  // et se reappliquent a chaque session : le ratio de qualite n'etait envoye
+  // qu'UNE fois par page (le sondage « tuned »), donc jamais apres une reprise.
+  var prefs = (function(){
+    try { return RDLib.prefs.create(window.localStorage); }
+    catch(e){ return RDLib.prefs.create({ getItem: function(){ return null; }, setItem: function(){}, removeItem: function(){} }); }
+  })();
+  var ui = {};                       // les <select> de la barre, poses par wireGlobal
+
+  // ----------------------------------------------- dernieres connexions
+  // Dix ID au plus, les plus recents d'abord, sous le champ « Id » de l'ecran de
+  // connexion. On enregistre a peer_info (une session REUSSIE — pas un clic sur
+  // Connect, qui garderait les fautes de frappe), et l'on ne stocke que des
+  // chiffres et des horodatages : « peers » porte les mots de passe memorises,
+  // on n'y touche pas.
+  var recents = (function(){
+    try { return RDLib.recent.create(window.localStorage); }
+    catch(e){ return RDLib.recent.create({ getItem: function(){ return null; }, setItem: function(){}, removeItem: function(){} }); }
+  })();
+
+  function viderNoeud(n){ while (n.firstChild) n.removeChild(n.firstChild); }
+
+  // Tout passe par textContent : un ID vient du stockage, jamais du balisage.
+  function rendreRecents(){
+    var zone = document.getElementById("rd-recents");
+    if (!zone) return;
+    viderNoeud(zone);
+    var liste = recents.list();
+    liste.forEach(function(e){
+      var pastille = document.createElement("span");
+      pastille.className = "rdchip";
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "rdchip-id";
+      b.textContent = RDLib.fmtId(e.id);
+      b.title = "Utiliser cet ID (Suppr ou Retour arrière pour le retirer de la liste)";
+      b.onclick = function(){ choisirRecent(e.id); };
+      b.addEventListener("keydown", function(ev){
+        // Suppr, ou Retour arriere : un portable Mac n'a pas de touche Suppr.
+        if (ev.key === "Delete" || ev.key === "Backspace"){ ev.preventDefault(); retirerRecent(e.id); }
+      });
+      // La croix est reservee a la souris : vingt arrets de tabulation pour dix
+      // ID seraient pire que l'absence de liste. Au clavier : Suppr sur l'ID.
+      var x = document.createElement("button");
+      x.type = "button"; x.className = "rdchip-x"; x.textContent = "×";
+      x.setAttribute("tabindex", "-1"); x.setAttribute("aria-hidden", "true");
+      x.title = "Retirer de la liste";
+      x.onclick = function(){ retirerRecent(e.id); };
+      pastille.appendChild(b); pastille.appendChild(x);
+      zone.appendChild(pastille);
+    });
+    if (liste.length){
+      var eff = document.createElement("button");
+      eff.type = "button"; eff.className = "rdchip-clear"; eff.textContent = "Effacer";
+      eff.title = "Effacer toute la liste";
+      eff.onclick = function(){ recents.clear(); rendreRecents(); };
+      zone.appendChild(eff);
+    }
+  }
+  // Le bundle n'enleve pas les espaces d'un ID : « 123 456 789 » ne serait pas
+  // « 123456789 » pour le serveur. On remplit donc avec les chiffres seuls.
+  function choisirRecent(id){
+    var champ = document.getElementById("id");
+    if (champ) champ.value = id;
+    var go = document.querySelector('#connect button[onclick^="connect"]');
+    if (go && go.focus) go.focus();
+  }
+  function retirerRecent(id){ recents.remove(id); rendreRecents(); }
+  // La ligne des pastilles, sous celle du champ « Id » (le formulaire est un
+  // tableau : Host / Key / Id / Connect). Une seule fois.
+  function poserRecents(champId){
+    if (document.getElementById("rd-recents")) return;
+    var ligneId = champId.parentNode && champId.parentNode.parentNode;
+    if (!ligneId || !ligneId.parentNode) return;
+    var tr = document.createElement("tr"), vide = document.createElement("td"),
+        cel = document.createElement("td"), zone = document.createElement("div");
+    zone.id = "rd-recents";
+    zone.setAttribute("role", "group");
+    zone.setAttribute("aria-label", "Dernières connexions");
+    cel.appendChild(zone); tr.appendChild(vide); tr.appendChild(cel);
+    ligneId.parentNode.insertBefore(tr, ligneId.nextSibling);
+    // Amorcage unique : les ID que le bundle connait deja (« peers », classes par
+    // « tm » — la derniere ecriture d'option, PAS la derniere connexion, donc
+    // approximatif) et le dernier ID saisi, hors ID par defaut du deploiement.
+    try { recents.seedFrom(window.localStorage.getItem("peers"), window.localStorage.getItem("id"), DEFAUT_ID); }
+    catch(e){ console.warn("[historique] amorcage :", e); }
+    rendreRecents();
+  }
+
+  function majSelects(p){
+    if (ui.qual) ui.qual.value = p.quality || "balanced";
+    if (ui.fps && p.fps) ui.fps.value = String(p.fps);
+    if (ui.cod) ui.cod.value = p.codec || "auto";
+  }
+
+  // Appelee de facon SYNCHRONE par le peer_info de chaque session (onGlobalEvent,
+  // avant __rdNegotiate). Rien n'est envoye avant : rdSend refuse tant que
+  // RD.ready est faux, et les compteurs secretbox seraient desynchronises.
+  function sessionPrete(){
+    var p = prefs.get();
+    // Le codec d'abord : __rdNegotiate lit RD.forced juste apres.
+    if (p.codec) RD.forced = p.codec;
+    // La contrainte n'est pas la bande passante (le relais plafonne 30x au-dessus
+    // du besoin) : qualite rehaussee a chaque session, pas une fois par page.
+    // C'est la valeur PAR DEFAUT ; elle part EN PREMIER, car le pair applique les
+    // options dans l'ordre d'arrivee : un preset choisi par l'utilisateur doit
+    // venir apres et l'emporter (« Fluidite » ne peut pas tourner au ratio 1,5).
+    if (rdSend({misc:{option:{custom_image_quality:150}}})) console.log("[qualite] ratio 1.5 applique");
+    // Qualite. Preference absente : on ne pousse RIEN — le bundle renvoie deja
+    // la qualite qu'il a memorisee pour ce pair, et l'on aligne simplement le
+    // selecteur dessus (il affichait « Equilibre » quel que soit l'etat reel).
+    try{
+      if (p.quality){
+        window.setByName("image_quality", p.quality);
+      } else {
+        var q = window.curConn && window.curConn.getOption && window.curConn.getOption("image-quality");
+        if (ui.qual) ui.qual.value = (RDLib.prefs.OK.quality.indexOf(q) >= 0) ? q : "balanced";
+      }
+    }catch(e){ console.warn("[reglages] qualite :", e); }
+    if (p.fps && rdSend({misc:{option:{custom_fps:p.fps}}}))
+      console.log("[cadence] plafond a " + p.fps + " i/s (reglage memorise)");
+    if (p.quality || p.fps || p.codec) majSelects(p);
+    // Une session reussie : cet ID rejoint la liste de l'ecran de connexion.
+    try{
+      var idSession = window.curConn && window.curConn._id;
+      if (idSession){ recents.add(idSession); rendreRecents(); }
+    }catch(e){ console.warn("[historique]", e); }
+    // La barre est repliee par defaut : on dit UNE fois ou elle est passee.
+    if (!p.hint && ui.barre && ui.barre.classList.contains("replie")){
+      notifier("Réglages de la session (résolution, qualité, fichiers…) : clique sur ⚙ en haut à droite.");
+      prefs.set({ hint: true });
+    }
+    // Une session reussie efface la banniere d'echec d'une tentative precedente.
+    try{ var b = document.getElementById("rderror"); if (b) b.remove(); }catch(_){}
+  }
+  window.__rdSessionReady = sessionPrete;
+
   // ------------------------------------------------- cablage global, 1 fois
   var globalWired = false;
   function wireGlobal(){
     if (globalWired) return; globalWired = true;
+    zoneRetours();
 
     // --- Presse-papier sortant : navigateur -> Mac ---
     // Valeurs relevees dans l'enumeration ClipboardFormat du bundle, non
     // devinees : Text=0, Rtf=1, Html=2, ImageRgba=21, ImagePng=22,
-    // ImageSvg=23, Special=31. Le porteur est « multi_clipboards », champ 27
-    // du Message, que le pair ne comprend qu'a partir de RustDesk 1.3.0 —
-    // d'ou le rappel de sa version dans le journal quand une image part.
+    // ImageSvg=23, Special=31. Le porteur est « multi_clipboards », champ 28
+    // du Message (tag 226 dans le bundle ; le champ 27 est auth_2fa), que le
+    // pair ne comprend qu'a partir de RustDesk 1.3.0 — d'ou le rappel de sa
+    // version dans le journal quand une image part.
     var FMT_TEXTE = 0, FMT_HTML = 2, FMT_PNG = 22;
-    var IMG_MAX = 8 * 1024 * 1024;   // au-dela on refuse, en le disant
 
     function versionPair(){
       try{
@@ -1387,64 +2205,108 @@ window.onGlobalEvent = function(payload){
     // pair plus ancien ne provoque pas d'erreur : le champ est simplement
     // ignore, et le collage ne se fait pas du tout. Le texte fonctionnant
     // aujourd'hui, on ne bascule le format riche que si le pair sait le lire,
-    // et l'on retombe sinon sur le message simple.
+    // et l'on retombe sinon sur le message simple. Version inconnue : faux ici.
     function pairSupporteMulti(){
-      var v = versionPair();
-      if (!v) return false;
-      var p = String(v).split(".");
-      var maj = parseInt(p[0], 10) || 0, min = parseInt(p[1], 10) || 0;
-      return maj > 1 || (maj === 1 && min >= 3);
+      return RDLib.clip.peerSupportsMulti(versionPair()) === true;
     }
 
     // Rejoue la frappe de collage sur le bon modificateur : Cmd+V si la
-    // permutation est active, Ctrl+V sinon (terminal distant).
-    function rejouerCollage(){
+    // permutation est active, Ctrl+V sinon (terminal distant). Le delai croit
+    // avec la taille envoyee : une image doit etre recue et posee par le poste
+    // distant avant qu'on lui dise de coller.
+    function rejouerCollage(octets){
+      var ms = RDLib.clip.pasteDelayMs(octets);
+      if (ms > 150) console.log("[presse-papier] collage distant dans " + ms + " ms (" + octets + " octets)");
       setTimeout(function(){
         var m={alt:"false",shift:"false",
                ctrl: swapCtrlCmd ? "false" : "true",
                command: swapCtrlCmd ? "true" : "false"};
         send("input_key",merge({name:"v",down:"true",press:"false"},m));
         send("input_key",merge({name:"v",down:"false",press:"false"},m));
-      },150);
+      }, ms);
     }
 
-    // Une image du presse-papier local vers celui du poste distant. Le pair
-    // attend du PNG pour le format 22 ; un navigateur peut fournir du jpeg ou
-    // du webp, et l'annoncer PNG produirait des octets que le pair ne saurait
-    // pas lire — on repasse donc par un canvas plutot que de mentir.
+    // Une image dessinee a la taille voulue, en PNG : le pair attend du PNG pour
+    // le format 22, et un navigateur peut fournir du jpeg ou du webp — annoncer
+    // PNG des octets jpeg produirait des donnees que le pair ne saurait pas lire.
+    function encoderPng(bmp, w, h){
+      var cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      var cx = cv.getContext("2d");
+      cx.imageSmoothingQuality = "high";
+      cx.drawImage(bmp, 0, 0, w, h);
+      return new Promise(function(r){ cv.toBlob(r, "image/png"); }).then(function(b){
+        if (!b) throw RDLib.clip.ClipError(RDLib.clip.ERR.ENCODE, "toBlob a rendu null (" + w + "x" + h + ")");
+        return b;
+      });
+    }
+
+    // Une image du presse-papier local vers celui du poste distant. Chaque
+    // echec se dit : « rien ne se passe » etait la seule reponse, alors que la
+    // cause etait une limite de taille, un format que le navigateur ne decode
+    // pas ou un pair trop ancien.
+    //
+    // La limite porte sur ce qui PART — le PNG — et non sur la source : un jpeg
+    // de quelques Mio gonfle de plusieurs fois en PNG. Trop gros, on reduit les
+    // dimensions (trois fois au plus, en remesurant) plutot que de refuser.
     async function envoyerImagePressePapier(blob){
+      var C = RDLib.clip, bmp = null;
       try{
-        var bmp = await createImageBitmap(blob);
-        var w = bmp.width, h = bmp.height;
-        if (blob.type !== "image/png"){
-          var cv = document.createElement("canvas");
-          cv.width = w; cv.height = h;
-          cv.getContext("2d").drawImage(bmp, 0, 0);
-          blob = await new Promise(function(r){ cv.toBlob(r, "image/png"); });
-          if (!blob) throw new Error("conversion en PNG impossible");
+        var v = versionPair();
+        if (C.peerSupportsMulti(v) === false)
+          throw C.ClipError(C.ERR.VERSION, "pair en version " + v);
+        C.precheck(blob.size);
+        try { bmp = await createImageBitmap(blob); }
+        catch(e){ throw C.ClipError(C.ERR.BITMAP, (blob.type || "type inconnu") + " — " + ((e && e.message) || e)); }
+
+        var cur = { w: bmp.width, h: bmp.height }, png = blob.type === "image/png" ? blob : null, ok = false;
+        // Un PNG plat de 6000 x 6000 pese moins de 1 Mo mais fait decoder 144 Mo de
+        // pixels au poste distant : les DIMENSIONS sont plafonnees aussi.
+        var borne = C.reduirePixels(cur.w, cur.h);
+        if (borne.w !== cur.w || borne.h !== cur.h){ cur = borne; png = null; }
+        for (var essai = 0; essai < 4; essai++){
+          if (!png) png = await encoderPng(bmp, cur.w, cur.h);
+          if (png.size <= C.LIM.OUT_PNG){ ok = true; break; }
+          var n = C.nextScale(cur.w, cur.h, png.size, C.LIM.OUT_PNG);
+          if (!n) break;
+          cur = n; png = null;
         }
-        if (bmp.close) bmp.close();
-        if (blob.size > IMG_MAX){
-          console.warn("[presse-papier] image de "
-                     + (blob.size/1048576).toFixed(1) + " Mio — au-dela de la "
-                     + "limite de " + (IMG_MAX/1048576) + " Mio, ignoree");
-          return;
-        }
-        var octets = new Uint8Array(await blob.arrayBuffer());
-        if (rdSend({ multi_clipboards: { clipboards: [{
+        if (!ok) throw C.ClipError(C.ERR.LIMIT, cur.w + "x" + cur.h);
+
+        var octets = new Uint8Array(await png.arrayBuffer());
+        if (!rdSend({ multi_clipboards: { clipboards: [{
               format: FMT_PNG, content: octets,
-              width: w, height: h, compress: false }] } })){
-          console.log("[presse-papier] image " + w + "x" + h + ", "
-                    + octets.length + " octets envoyes en PNG — pair en version "
-                    + (versionPair() || "inconnue") + " (1.3.0 minimum requis)");
-          rejouerCollage();
-        }
-      }catch(e){ console.warn("[presse-papier] image :", e); }
+              width: cur.w, height: cur.h, compress: false }] } }))
+          throw C.ClipError(C.ERR.NOSEND, "rdSend a refuse");
+        console.log("[presse-papier] image " + cur.w + "x" + cur.h + ", "
+                  + octets.length + " octets envoyes en PNG — pair en version "
+                  + (v || "inconnue") + " (1.3.0 minimum requis)");
+        if (cur.w !== bmp.width || cur.h !== bmp.height)
+          notifier("Image réduite de " + bmp.width + "×" + bmp.height + " à "
+                 + cur.w + "×" + cur.h + " pour tenir dans la limite d'envoi.");
+        rejouerCollage(octets.length);
+      }catch(e){
+        console.warn("[presse-papier] image :", e);
+        notifier(messageErreur(e), "erreur");
+      }finally{
+        if (bmp && bmp.close) bmp.close();
+      }
+    }
+
+    // Ou est le focus ? Le collage ne se traite que sur le canvas, ou sur le
+    // corps de la page pendant une session (voir RDLib.clip.pasteAccepte).
+    function pasteCible(){
+      var a = document.activeElement;
+      if (a && (a === player() || a === document.getElementById("rdcanvas"))) return "canvas";
+      if (!a || a === document.body) return "body";
+      var tag = String(a.tagName || "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || a.isContentEditable) return "champ";
+      if (a.closest && a.closest("#rdfiles, #rdmodal")) return "champ";
+      return "autre";
     }
 
     document.addEventListener("paste", function(ev){
-      var a = document.activeElement;
-      if (a !== player() && a !== document.getElementById("rdcanvas")) return;
+      if (!RDLib.clip.pasteAccepte({ cible: pasteCible(), enSession: sessionVivante() })) return;
       ev.preventDefault();
       var cd = ev.clipboardData || window.clipboardData;
       if (!cd) return;
@@ -1474,32 +2336,45 @@ window.onGlobalEvent = function(payload){
       var t="", h="";
       try{ t=cd.getData("text/plain")||""; }catch(_){}
       try{ h=cd.getData("text/html")||"";  }catch(_){}
-      if(!t && !h){ console.log("[presse-papier] ignore (contenu non textuel)"); return; }
+      if(!t && !h){
+        console.log("[presse-papier] ignore (contenu non textuel)");
+        notifier("Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller.", "erreur");
+        return; }
       if(t.length>1048576 || h.length>1048576){
-        console.warn("[presse-papier] trop volumineux, ignore"); return; }
+        console.warn("[presse-papier] trop volumineux, ignore");
+        notifier("Texte trop volumineux pour le presse-papier distant (limite : 1 Mio).", "erreur");
+        return; }
 
       // Texte enrichi : Word et Excel deposent du HTML a cote du texte brut.
       // MultiClipboards est fait pour cela — les deux entrees partent dans le
       // meme message et l'application distante choisit ce qu'elle sait poser.
       if (h && pairSupporteMulti()){
-        var lot = [{ format: FMT_HTML, content: new TextEncoder().encode(h),
+        // Le delai de rejeu se calcule en OCTETS : « h.length » compte des unites
+        // UTF-16, un texte accentue ou asiatique pese 2 a 4 fois plus.
+        var hb = new TextEncoder().encode(h), tb = t ? new TextEncoder().encode(t) : null;
+        var lot = [{ format: FMT_HTML, content: hb,
                      width: 0, height: 0, compress: false }];
-        if (t) lot.push({ format: FMT_TEXTE, content: new TextEncoder().encode(t),
+        if (t) lot.push({ format: FMT_TEXTE, content: tb,
                           width: 0, height: 0, compress: false });
         if (rdSend({ multi_clipboards: { clipboards: lot } })){
           console.log("[presse-papier] texte enrichi envoye — "
                     + h.length + " car. de HTML"
                     + (t ? " et " + t.length + " car. de texte brut" : ""));
-          rejouerCollage();
+          rejouerCollage(hb.length + (tb ? tb.length : 0));
           return;
         }
       }
 
-      if(!t){ console.log("[presse-papier] ignore (HTML seul, pair trop ancien)"); return; }
+      if(!t){
+        console.log("[presse-papier] ignore (HTML seul, pair trop ancien)");
+        notifier("Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu.", "erreur");
+        return; }
       var bytes=new TextEncoder().encode(t);
       if(rdSend({clipboard:{content:bytes,compress:false}})){
         console.log("[presse-papier] "+bytes.length+" octets envoyes");
-        rejouerCollage();
+        rejouerCollage(bytes.length);
+      } else {
+        notifier(RDLib.messages.NOSEND, "erreur");
       }
     });
 
@@ -1514,6 +2389,7 @@ window.onGlobalEvent = function(payload){
     qual.onchange=function(){
       try{ window.setByName("image_quality",qual.value); console.log("[qualite] "+qual.value); }
       catch(e){ console.warn(e); }
+      prefs.set({ quality: qual.value });
       var c=active(); if(c) c.focus();
     };
     // custom_fps est un PLAFOND, pas une cible : le serveur calcule la cadence
@@ -1530,6 +2406,7 @@ window.onGlobalEvent = function(payload){
     fps.onchange=function(){
       if(rdSend({misc:{option:{custom_fps:+fps.value}}}))
         console.log("[cadence] plafond a "+fps.value+" i/s (cadence reelle decidee par l'ABR)");
+      prefs.set({ fps: +fps.value });
       var c=active(); if(c) c.focus();
     };
     var cod=document.createElement("select"); cod.title="Codec video";
@@ -1538,10 +2415,19 @@ window.onGlobalEvent = function(payload){
         x.value=o[0]; x.textContent=o[1]; cod.appendChild(x); });
     cod.onchange=function(){
       RD.forced = cod.value;
+      prefs.set({ codec: cod.value });
       if (RD.forced === "auto"){ probeCodecs().then(function(c){ RD.codec=c; window.__rdNegotiate(); }); }
       else { window.__rdNegotiate(); }
       var c=active(); if(c) c.focus();
     };
+    // Les reglages memorises : les selecteurs demarrent sur ce que l'utilisateur
+    // a choisi la derniere fois, plus sur les valeurs par defaut.
+    ui.qual = qual; ui.fps = fps; ui.cod = cod;
+    (function(p){
+      if (p.codec) RD.forced = p.codec;
+      majSelects(p);
+    })(prefs.get());
+
     // Permutation Ctrl/Cmd : indispensable hors terminal, nuisible dedans.
     var swp=document.createElement("button");
     function majSwap(){
@@ -1562,7 +2448,61 @@ window.onGlobalEvent = function(payload){
 
     var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
     [sel,fit,qual,fps,cod,swp,quit].forEach(function(x){ bar.appendChild(x); });
+
+    // La poignee replie / deplie la barre. Repliee, elle ne laisse a l'ecran
+    // qu'un bouton de 28 px : le reste du coin haut-droit redevient cliquable
+    // sur le poste distant (barre de menus, boutons de fenetre). On deplie au
+    // CLIC, pas au survol : le survol se declencherait precisement en passant la
+    // souris dans ce coin. Le canvas avale Tab : la barre reste a la souris.
+    var handle=document.createElement("button");
+    handle.className="rdhandle"; handle.type="button";
+    handle.setAttribute("aria-controls","rdbar");
+    function majPoignee(){
+      var replie = bar.classList.contains("replie");
+      handle.setAttribute("aria-expanded", replie ? "false" : "true");
+      handle.textContent = replie ? "⚙" : "»";
+      handle.title = replie ? "Afficher les réglages de la session" : "Replier les réglages";
+      handle.setAttribute("aria-label", handle.title);
+    }
+    function fixerBarre(replie, memoriser){
+      bar.classList.toggle("replie", replie);
+      majPoignee();
+      if (memoriser) prefs.set({ bar: replie ? "repliee" : "ouverte" });
+    }
+    handle.onclick=function(){ fixerBarre(!bar.classList.contains("replie"), true); };
+    // Echap replie, MAIS sur la barre seulement : sur le document il se
+    // combinerait avec l'envoi de la touche au poste distant (le canvas
+    // transmet Echap). Un <select> l'utilise pour fermer sa liste : on l'y laisse.
+    bar.addEventListener("keydown", function(ev){
+      var tag = ev.target && String(ev.target.tagName || "").toUpperCase();
+      if (ev.key !== "Escape" || tag === "SELECT" || bar.classList.contains("replie")) return;
+      fixerBarre(true, true);
+      // Le focus ne revient au canvas qu'APRES le keyup d'Echap : le lui rendre
+      // tout de suite lui ferait recevoir un keyup sans keydown, que le canvas
+      // enverrait au poste distant. (Le bouton replie disparait, le focus tombe
+      // sur <body> : le keyup n'a plus de gestionnaire.) Delai de garde : si le
+      // keyup ne vient jamais, l'ecouteur ne reste pas arme.
+      var rendre = function(e2){
+        if (e2.key !== "Escape") return;
+        document.removeEventListener("keyup", rendre, true);
+        setTimeout(function(){ var c=active(); if(c) c.focus(); }, 0);
+      };
+      document.addEventListener("keyup", rendre, true);
+      setTimeout(function(){ document.removeEventListener("keyup", rendre, true); }, 1500);
+    });
+    bar.appendChild(handle);
+    ui.barre = bar;
+    fixerBarre(prefs.get().bar !== "ouverte", false);        // repliee par defaut : rien a migrer
     document.body.appendChild(bar);
+    // Un bouton de la barre garde le clavier apres son clic : le focus tombait
+    // sur <body>, et le collage restait ignore jusqu'au prochain clic dans
+    // l'image. Le canvas le reprend — sauf pour un <select>, qui doit garder le
+    // focus pour ouvrir sa liste.
+    bar.addEventListener("click", function(ev){
+      var tag = ev.target && String(ev.target.tagName || "").toUpperCase();
+      if (tag === "SELECT" || tag === "OPTION") return;
+      setTimeout(function(){ var c = active(); if (c && c.focus) c.focus(); }, 0);
+    });
 
     var orig=document.querySelector("#canvas > button");
     if(orig) orig.style.display="none";
@@ -1632,7 +2572,7 @@ window.onGlobalEvent = function(payload){
     window.addEventListener("resize", fitCanvas);
 
     // Veilleur : taille, reglages initiaux, repatch apres reconnexion.
-    var last=0, tuned=false;
+    var last=0;
     setInterval(function(){
       var c = active();
       if (c && c.width !== last){
@@ -1640,27 +2580,12 @@ window.onGlobalEvent = function(payload){
         console.log("[ecran distant] "+c.width+"x"+c.height);
         fitCanvas();
       }
-      // Qualite rehaussee une fois la session prete : la contrainte n'est pas
-      // la bande passante (le relais plafonne 30x au-dessus du besoin).
-      if (RD.ready && !tuned){
-        tuned = rdSend({misc:{option:{custom_image_quality:150}}});
-        if (tuned) console.log("[qualite] ratio 1.5 applique");
-      }
       // Memoriser le mot de passe du pair : ui.js ne l'active jamais.
       try{ if(window.curConn && !window.curConn.getRemember()) window.curConn.setRemember(true); }catch(_){}
       // Reappliquer les substitutions : curConn est remplace a chaque
       // connexion, et reconnect() reutilise l'instance avec un _ws neuf.
       try{ patchConn(window.curConn); }catch(_){}
-      // Le canvas GARDE sa largeur apres une coupure : c.width reste a 1920 et
-      // la fin de session passait inapercue. On interroge donc l'etat reel :
-      // le conteneur d'affichage est-il visible, et la liaison est-elle ouverte.
-      var enSession = (function(){
-        var d = document.getElementById("canvas");
-        if (!d || getComputedStyle(d).display === "none") return false;
-        var k = window.curConn;
-        if (!k || !k._ws || !k._ws._websocket) return false;
-        return k._ws._websocket.readyState === 1;
-      })();
+      var enSession = sessionVivante();
       if (enSession) veilleActiver(); else veilleLiberer();
       // Transition « en session » -> « plus en session » : tenter une reprise.
       if (window.__rdEtait && !enSession) repriseplanifier();
@@ -1713,6 +2638,7 @@ window.onGlobalEvent = function(payload){
       if(host.value !== RD_HOST) host.value = RD_HOST;
     }, 400);
 
+    poserRecents(id);
     console.log("[formulaire] prerempli — ID "+id.value+" (modifiable)");
     return true;
   }
@@ -1745,6 +2671,18 @@ window.onGlobalEvent = function(payload){
                      + ") — corrigee avant connexion ; sans cela hbbr aurait repondu « invalid key »");
           k.value = RD_KEY;
         }
+        // Une NOUVELLE session commence : elle n'est pas prete tant que son propre
+        // peer_info n'est pas arrive. On le remet a faux ICI et non en fin de
+        // session — le diagnostic des liaisons relais lit RD.ready, et une
+        // fermeture normale ne doit pas passer pour « cle refusee ». Ce chemin est
+        // celui du bouton Connect ET de la reprise auto (reconnect() du bundle le
+        // contourne, mais rien ne l'appelle).
+        RD.ready = false;
+        RD.epoque = (RD.epoque | 0) + 1;
+        // « Quitter » pose reprise.voulue et rien ne l'effacait : apres une
+        // deconnexion voulue, la reprise auto restait coupee jusqu'au rechargement.
+        // Une nouvelle connexion est, par definition, une nouvelle intention.
+        reprise.voulue = false;
         return orig.apply(this, arguments);
       };
       window.connect = mien;
@@ -2055,7 +2993,9 @@ window.onGlobalEvent = function(payload){
       if (!b.compressed) return b.data;
       if (!window.__rdUnzstd) throw new Error("decodeur zstd absent du bundle");
       return window.__rdUnzstd(b.data).then(function(d){
-        if (!d) throw new Error("decompression zstd echouee");
+        // Le decodeur ne leve jamais : une sortie VIDE est un echec, sauf si la
+        // trame declare elle-meme une taille de 0 (voir RDLib.clip.decompress).
+        if (!d || RDLib.clip.sortieVideSuspecte(b.data, d)) throw new Error("decompression zstd echouee");
         return d;
       });
     }).then(function(data){
