@@ -119,11 +119,19 @@ for m in '/ws/relay' 'get_conn_status' '__rdUnzstd' '__rdZstdDecoder'; do
   echo "  ✓ $m"
 done
 
+# Plancher du nombre de tests : un test supprime ou desactive en silence ne doit
+# pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
+# baisser sans raison ecrite dans le commit.
+PLANCHER_GABARIT=123
+PLANCHER_NAVIGATEUR=18
+
 titre "Banc du gabarit"
 # Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.
 if command -v node >/dev/null 2>&1; then
-  node scripts/test-template.mjs --require-vendor
-  vert "  ✓ banc du gabarit"
+  node scripts/test-template.mjs --require-vendor 2>&1 | tee "$T/banc-gabarit.log"
+  n=$(sed -n 's/^ℹ tests \([0-9][0-9]*\).*/\1/p' "$T/banc-gabarit.log" | tail -1)
+  [ "${n:-0}" -ge "$PLANCHER_GABARIT" ] || { rouge "  ✗ banc du gabarit : ${n:-0} tests, plancher $PLANCHER_GABARIT"; exit 1; }
+  vert "  ✓ banc du gabarit ($n tests, plancher $PLANCHER_GABARIT)"
 else
   rouge "  ⚠ node absent — banc du gabarit ignore (la CI le fait)"
 fi
@@ -133,7 +141,13 @@ titre "Banc navigateur"
 # (la CI, elle, l'exige). NODE_PATH permet de retrouver un Playwright installe
 # globalement (npm root -g).
 if command -v node >/dev/null 2>&1; then
-  NODE_PATH="${NODE_PATH:-$(npm root -g 2>/dev/null || true)}" node scripts/test-browser.mjs
+  NODE_PATH="${NODE_PATH:-$(npm root -g 2>/dev/null || true)}" node scripts/test-browser.mjs 2>&1 | tee "$T/banc-navigateur.log"
+  # Le banc s'ignore (sortie 0) sans Playwright : le plancher ne vaut que s'il a tourne.
+  if grep -q "tests navigateur reussis" "$T/banc-navigateur.log"; then
+    n=$(sed -n 's|^\([0-9][0-9]*\)/[0-9][0-9]* tests navigateur reussis.*|\1|p' "$T/banc-navigateur.log" | tail -1)
+    [ "${n:-0}" -ge "$PLANCHER_NAVIGATEUR" ] || { rouge "  ✗ banc navigateur : ${n:-0} tests reussis, plancher $PLANCHER_NAVIGATEUR"; exit 1; }
+    vert "  ✓ banc navigateur ($n tests, plancher $PLANCHER_NAVIGATEUR)"
+  fi
 else
   rouge "  ⚠ node absent — banc navigateur ignore (la CI le fait)"
 fi

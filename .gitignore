@@ -17,3 +17,6 @@ __pycache__/
 # Portefeuille de dons : ne doit jamais approcher le depot
 .rustdesk-web-funding/
 *private-key*
+
+# Journaux d'acces nginx (docker-compose monte ./logs : adresses IP des visiteurs)
+logs/
