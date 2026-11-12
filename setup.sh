@@ -207,6 +207,8 @@ rendre() {                         # rendre gabarit destination
 }
 rendre nginx.conf.template     nginx.conf
 rendre Caddyfile.template      Caddyfile
+# La page est assemblee depuis web/src/ ; le gabarit n'est pas versionne.
+python3 scripts/build-page.py
 rendre web/index.html.template "$TMPD/index.html"
 
 # ------------------------------------------------------------------ assets

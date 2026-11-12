@@ -28,7 +28,10 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | | |
 |---|---|
 | Vidéo | H265 ou H264 **matériel** des deux côtés via WebCodecs, puis AV1, VP9, et le logiciel en dernier recours |
-| Souris | déplacement, clics gauche/droit, molette, coordonnées mises à l'échelle |
+| Souris | déplacement, clics gauche/droit, coordonnées mises à l'échelle ; un glisser terminé hors de l'image relâche quand même le bouton |
+| Molette, trackpad | les pixels sont cumulés en crans : un trackpad ne défile plus dix fois trop vite |
+| Tactile | un doigt pilote la souris (toucher, glisser, appui long = clic droit), deux doigts font défiler ; un bouton sort le clavier de l'appareil |
+| Plein écran | avec capture du clavier sur Chromium : Échap, Alt+Tab, Cmd+W partent au poste distant |
 | Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
 | `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
 | Presse-papier | texte dans les deux sens ; **images et texte enrichi** aussi, sur Chromium |
@@ -43,10 +46,13 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Reprise automatique | une session coupée se relance seule, avec délai croissant — pas de retour au formulaire |
 | Réglages | qualité, plafond de cadence et codec sont **mémorisés** et réappliqués à chaque session, reprise automatique comprise |
 | Barre de réglages | se replie en une petite poignée : le coin haut-droit de l'écran distant reste cliquable |
-| Connexions récentes | les dix derniers ID, sous le champ de connexion |
+| Connexions récentes | les dix derniers postes, par nom et ID, sous le champ de connexion |
+| Langue | français ou anglais, selon le navigateur ou le choix fait sur l'écran de connexion |
+| Installable | un manifeste d'application : la page s'installe comme une application, dans une fenêtre sans onglets |
 | Veille écran | l'écran ne se verrouille pas tant qu'une session est active, comme YouTube en lecture |
 | Mesure | percentiles p50/p95/p99 de latence et de décodage, en surimpression |
 | Accès | authentification Basic + cookie de session de 90 jours |
+| Durcissement | politique de contenu, aucune requête vers un tiers, texte du pair jamais injecté comme du HTML |
 
 **Non supporté** : coller un fichier du Mac dans le Finder local. Voir
 [Transfert de fichiers](#transfert-de-fichiers) — ce n'est pas une limite de ce
@@ -124,7 +130,7 @@ redémarrages.
 | `web` | `nginx:alpine` | assets, authentification, proxy WebSocket |
 | `tls` | `caddy:2-alpine` | terminaison TLS 443, ACME automatique |
 
-## Les cinq correctifs du bundle
+## Les six correctifs du bundle
 
 `scripts/patch-assets.sh` les réapplique de façon idempotente à partir de
 `html/js/dist/index.js.orig`. Sans eux, rien ne fonctionne :
@@ -144,6 +150,10 @@ redémarrages.
    de 128 Kio) et `window.__rdZstdDecoder` (le décodeur lui-même, pour que la page
    choisisse la taille de destination — voir
    [Presse-papier riche](#presse-papier-riche--ce-qui-marche-et-où)).
+6. **Texte du pair injecté comme du HTML** — l'écran d'attente écrivait le message
+   d'erreur par `innerHTML`, et ce message vient du pair (`LoginResponse.error`).
+   Un pair hostile pouvait exécuter du script dans la page, qui détient les mots
+   de passe mémorisés. Le texte est maintenant échappé.
 
 ## Transfert de fichiers
 
@@ -256,8 +266,9 @@ Diagnostic dans la console : `rdFiles()`.
 
 ## Ce qui a été réimplémenté
 
-Le client V1 ne câble **que l'affichage**. Tout le reste vit dans
-`web/index.html.template`, via `window.curConn` et `setByName`, **sans jamais
+Le client V1 ne câble **que l'affichage**. Tout le reste vit dans `web/src/`,
+assemblé en une page par `scripts/build-page.py` (voir
+[Organisation des sources](#organisation-des-sources)), via `window.curConn` et `setByName`, **sans jamais
 patcher le bundle** : les deux fonctions que le pont attend de l'hôte
 (`onGlobalEvent`, `onRgba`), la couche souris et clavier, le presse-papier
 sortant, la résolution, le curseur, et le décodeur WebCodecs.
@@ -295,9 +306,16 @@ récent d'abord. Une entrée est enregistrée quand une session **aboutit**, pas
 clic sur Connect : les fautes de frappe ne s'accumulent pas. Un clic remplit le
 champ (chiffres seuls — le bundle n'enlève pas les espaces) et donne le focus à
 Connect ; `Suppr` sur une entrée focalisée la retire, la croix aussi à la souris,
-« Effacer » vide la liste. Seuls des chiffres et des horodatages sont stockés
-(`rd-recent`) — jamais un hôte, jamais un mot de passe (l'entrée `peers` du bundle
-porte les mots de passe mémorisés et n'est pas touchée). La liste est amorcée une
+« Effacer » vide la liste. Ce qui est stocké (`rd-recent`) : l'ID, un horodatage,
+et le nom de poste annoncé par le pair — jamais un hôte de serveur, jamais un mot
+de passe (l'entrée `peers` du bundle porte les mots de passe mémorisés).
+
+**Mots de passe mémorisés.** Le bundle garde le mot de passe d'un poste **en
+clair** dans le stockage du navigateur. La page l'imposait ; c'est maintenant la
+case « Mémoriser les mots de passe sur cet appareil » de l'écran de connexion,
+cochée par défaut. La décocher efface aussitôt les mots de passe stockés et
+empêche le bundle d'en garder de nouveaux. À décocher sur toute machine qui n'est
+pas la tienne. La liste est amorcée une
 seule fois à partir des ID que le bundle connaissait déjà.
 
 ## Codec
@@ -353,6 +371,48 @@ les appelait. Le menu **Actions** de la barre le fait.
 - **2FA** : sur `2FA Required`, la page demande le code à six chiffres et
   l'envoie en `auth_2fa`. Non testé face à un vrai pair en 2FA ; « faire confiance
   à cet appareil » n'est pas implémenté, le code est donc demandé à chaque connexion.
+
+## Organisation des sources
+
+```
+web/src/page.html          le squelette : en-tête, balises du bundle, lignes d'inclusion
+web/src/style.css          tous les styles
+web/src/00-stockage.js     garde-fous du stockage, hôte et clé cuits par le déploiement
+web/src/10-diagnostic.js   diagnostic des liaisons, état partagé, curseur distant
+web/src/20-rdlib.js        RDLib : logique pure, sans DOM — ce que le banc Node teste directement
+web/src/30-session.js      entrées, vidéo, presse-papier, barre, écran de connexion
+web/src/40-fichiers.js     le panneau de fichiers
+```
+
+`python3 scripts/build-page.py` les assemble en `web/index.html.template`, qui
+n'est **pas versionné** : `setup.sh`, `verify.sh`, la CI et les deux bancs de test
+le reconstruisent avant de s'en servir. La page servie reste un seul fichier de
+blocs en ligne — seules les sources sont découpées.
+
+## Entrées : tactile, molette, plein écran
+
+- **Tactile.** Un doigt est la souris : un toucher est un clic gauche à l'endroit
+  touché, toucher puis glisser tient le bouton, un appui long immobile est un clic
+  droit. Deux doigts qui glissent ensemble font défiler, dans le sens « naturel ».
+  Le bouton **Clavier**, affiché sur les appareils tactiles, sort le clavier de
+  l'appareil. Testé dans l'émulation tactile de Chromium, pas sur une tablette réelle.
+- **Molette.** Le pair compte en crans. Un cran part tous les 100 px de défilement
+  cumulé : une molette de souris ne change pas, un trackpad est assagi.
+- **Plein écran.** Sur Chromium, l'API Keyboard Lock donne au poste distant les
+  raccourcis que le navigateur ou le système gardent d'ordinaire ; maintenir Échap
+  pour sortir. Firefox et Safari passent en plein écran sans cette capture.
+
+## Durcissement du déploiement
+
+- nginx n'**hérite pas** des `add_header` du niveau `server` dans un bloc
+  `location` qui en déclare un. Les trois blocs qui posent le cookie de session
+  partaient donc sans `X-Frame-Options` ni `nosniff`. Les en-têtes y sont
+  maintenant répétés, et un test échoue si l'un d'eux disparaît.
+- Une politique de contenu interdit tout script, image ou connexion vers un autre
+  hôte. Elle garde `'unsafe-inline'` : la page est faite de blocs en ligne et le
+  formulaire du bundle utilise des attributs `onclick`. Le banc navigateur tourne
+  sous cette politique exacte, lue dans `nginx.conf.template`.
+- HSTS est envoyé par Caddy, là où TLS se termine.
 
 ## Vérifier une modification
 

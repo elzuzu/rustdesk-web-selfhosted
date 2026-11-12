@@ -34,7 +34,12 @@ jobs:
           for s in setup.sh scripts/*.sh; do bash -n "$s"; done
 
       - name: Check Python tools syntax
-        run: python3 -m py_compile scripts/relay-probe.py
+        run: python3 -m py_compile scripts/relay-probe.py scripts/build-page.py
+
+      # web/index.html.template n'est pas versionne : il est assemble depuis
+      # web/src/. Toutes les etapes suivantes le lisent.
+      - name: Assemble the page from web/src
+        run: python3 scripts/build-page.py
 
       # « docker exec hbbs cat /root/id_ed25519.pub » a ete la seule instruction
       # que ce depot donnait pour relever la cle du serveur, et elle ne peut pas

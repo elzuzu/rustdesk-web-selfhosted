@@ -41,6 +41,9 @@ const TARBALL = path.join(RACINE, "assets", "rustdesk-web-assets.tar.gz");
 const MIO = 1024 * 1024;
 
 const lire = (p) => fs.readFileSync(p, "utf8");
+// Le gabarit est assemble depuis web/src/ : le banc teste TOUJOURS les sources
+// courantes, jamais un gabarit reste d'un assemblage precedent.
+execFileSync("python3", [path.join(RACINE, "scripts", "build-page.py")], { stdio: "pipe" });
 const html = lire(GABARIT);
 
 // Meme regex que scripts/check-syntax.sh : les blocs porteurs d'un src= sont
@@ -2646,4 +2649,36 @@ test("i18n : la barre et les retours suivent la langue memorisee", async () => {
   const fr = await montageSortant();
   assert.equal(fr.w.__rdLangue, "fr");
   assert.equal(fr.bar.children.find((c) => c.className === "quit").textContent, "Quitter");
+});
+
+// ====================================================================
+// Assemblage de la page, et ce que l'historique garde.
+// ====================================================================
+test("assemblage : chaque source de web/src/ est incluse, aucune directive ne reste dans la page", () => {
+  assert.ok(!/@inclure/.test(html), "une directive d'inclusion n'a pas ete resolue");
+  const src = path.join(RACINE, "web", "src");
+  const squelette = lire(path.join(src, "page.html"));
+  for (const f of fs.readdirSync(src).filter((n) => /\.(js|css)$/.test(n))) {
+    assert.ok(squelette.includes("@inclure " + f), f + " n'est inclus nulle part");
+    assert.ok(html.includes(lire(path.join(src, f)).trimEnd()), f + " n'est pas dans la page assemblee");
+  }
+  // Le gabarit est un produit : il ne doit pas revenir dans le depot.
+  assert.match(lire(path.join(RACINE, ".gitignore")), /^web\/index\.html\.template$/m);
+  execFileSync("python3", [path.join(RACINE, "scripts", "build-page.py"), "--verifier"], { stdio: "pipe" });
+});
+
+test("historique : le nom du poste accompagne l'ID, nettoye et borne ; rien d'autre n'est ecrit", () => {
+  const { recent } = chargerLib();
+  const s = stock();
+  const r = recent.create(s, { now: horloge() });
+  r.add("111111111", "mac-mini");
+  r.add("222222222", "  <b>x</b>\u0000" + "a".repeat(80));
+  r.add("111111111");                                   // reconnexion sans nom : l'ancien est garde
+  const l = plat(r.list());
+  assert.equal(l[0].id, "111111111"); assert.equal(l[0].n, "mac-mini");
+  assert.equal(l[1].n.length, 40, "borne a 40 caracteres");
+  assert.ok(!/\u0000/.test(l[1].n));
+  for (const e of JSON.parse(s.m.get("rd-recent")).ids) assert.ok(Object.keys(e).every((k) => ["id", "t", "n"].includes(k)), JSON.stringify(e));
+  r.add("333333333", { toString() { return "piege"; } });
+  assert.equal(plat(r.list())[0].n, undefined, "un nom qui n'est pas une chaine est ignore");
 });

@@ -23,6 +23,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const RACINE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HTML = path.join(RACINE, "html");
@@ -47,6 +48,8 @@ if (!fs.existsSync(path.join(HTML, "js", "dist", "index.js"))) ignorer("html/ ab
 // ------------------------------------------------------------ serveur statique
 // La page rendue depuis le gabarit COURANT ; tout le reste vient de html/.
 const CLE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOP+/=".slice(0, 43) + "=";
+// Le gabarit est assemble depuis web/src/ : toujours les sources courantes.
+execFileSync("python3", [path.join(RACINE, "scripts", "build-page.py")], { stdio: "pipe" });
 const page = fs.readFileSync(GABARIT, "utf8")
   .split("__RD_DOMAIN__").join("localhost")
   .split("__RD_PUBLIC_KEY__").join(CLE)

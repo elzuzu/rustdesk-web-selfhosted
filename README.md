@@ -28,7 +28,10 @@ that was missing**: the original client wires up display and nothing else.
 | | |
 |---|---|
 | Video | **hardware** H265 or H264 on both ends via WebCodecs, then AV1, VP9, and software as a last resort |
-| Mouse | movement, left/right click, wheel, correctly scaled coordinates |
+| Mouse | movement, left/right click, correctly scaled coordinates; a drag that ends outside the image still releases the button |
+| Wheel, trackpad | pixels are accumulated into notches, so a trackpad no longer scrolls ten times too fast |
+| Touch | one finger drives the mouse (tap, drag, long press = right click), two fingers scroll; a button brings up the device keyboard |
+| Full screen | with keyboard capture on Chromium: Esc, Alt+Tab, Cmd+W go to the remote machine |
 | Keyboard | text, accents, non-US layouts, dead keys, control keys |
 | `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
 | Clipboard | text both ways; **images and rich text** too, on Chromium |
@@ -43,10 +46,13 @@ that was missing**: the original client wires up display and nothing else.
 | Auto-reconnect | a dropped session retries on its own, with backoff — no fallback to the connect form |
 | Settings | quality, frame-rate cap and codec are **remembered** and reapplied on every session, including after an auto-reconnect |
 | Settings bar | collapses to a small handle: the top-right corner of the remote screen stays clickable |
-| Recent connections | the last ten IDs, under the login field |
+| Recent connections | the last ten machines, by name and ID, under the login field |
+| Language | French or English, following the browser or the choice made on the login screen |
+| Installable | a web app manifest: the page installs as an application, in a window without tabs |
 | Screen wake lock | the display never sleeps while a session is live, like YouTube during playback |
 | Metrics | p50/p95/p99 percentiles for latency and decode time, as an overlay |
 | Access | Basic authentication plus a 90-day session cookie |
+| Hardening | content security policy, no third-party request, peer-supplied text never injected as HTML |
 
 **Not supported**: pasting a file from the Mac into your local file manager. See
 [File transfer](#file-transfer) — that is a limit of the web platform, not of
@@ -124,7 +130,7 @@ Two containers. Configuration and assets are baked into the images; only the
 | `web` | `nginx:alpine` | assets, authentication, WebSocket proxy |
 | `tls` | `caddy:2-alpine` | TLS termination on 443, automatic ACME |
 
-## The five bundle patches
+## The six bundle patches
 
 `scripts/patch-assets.sh` reapplies them idempotently from
 `html/js/dist/index.js.orig`. Without them, nothing works:
@@ -143,6 +149,10 @@ Two containers. Configuration and assets are baked into the images; only the
    function, sized for a 128 KiB file block) and `window.__rdZstdDecoder` (the
    decoder itself, so the page chooses the destination size — see
    [Rich clipboard](#rich-clipboard-what-works-and-where)).
+6. **Peer text injected as HTML** — the waiting screen wrote the error message
+   through `innerHTML`, and that message comes from the peer
+   (`LoginResponse.error`). A hostile peer could run script in the page, which
+   holds the remembered passwords. The text is now escaped.
 
 ## File transfer
 
@@ -252,8 +262,9 @@ Console diagnostics: `rdFiles()`.
 
 ## What was reimplemented
 
-The V1 client wires up **display only**. Everything else lives in
-`web/index.html.template`, through `window.curConn` and `setByName`, **without
+The V1 client wires up **display only**. Everything else lives in `web/src/`,
+assembled into one page by `scripts/build-page.py` (see
+[Source layout](#source-layout)), through `window.curConn` and `setByName`, **without
 ever patching the bundle**: the two functions the bridge expects from its host
 (`onGlobalEvent`, `onRgba`), the full mouse and keyboard layer, outbound
 clipboard, resolution control, remote cursor, and the WebCodecs decoder.
@@ -288,9 +299,16 @@ of that corner. To go back to the old always-open bar, expand it once.
 first. An entry is recorded when a session **succeeds**, not when you click
 Connect, so typos do not pile up. Clicking one fills the field (digits only — the
 bundle does not strip spaces) and moves focus to Connect; `Del` on a focused entry
-removes it, the × does the same with the mouse, "Effacer" empties the list. Only
-digits and timestamps are stored (`rd-recent`) — never a host, never a password
-(the bundle's own `peers` entry holds the remembered passwords and is left alone).
+removes it, the × does the same with the mouse, "Clear" empties the list. What is
+stored (`rd-recent`) is the ID, a timestamp, and the machine name the peer
+announced — never a server host, never a password (the bundle's own `peers` entry
+holds the remembered passwords).
+
+**Remembered passwords.** The bundle keeps a peer's password **in clear text** in
+the browser's storage. The page used to force that on; it is now the "Remember
+passwords on this device" box of the login screen, ticked by default. Unticking it
+erases the stored passwords at once and stops the bundle from keeping new ones.
+Untick it on any machine that is not yours.
 The list is seeded once from the IDs the bundle already knew.
 
 ## Codec
@@ -343,6 +361,48 @@ The **Actions** menu of the toolbar does.
 - **2FA**: on `2FA Required` the page prompts for the six-digit code and sends
   it as `auth_2fa`. Untested against a real 2FA peer; "trust this device" is not
   implemented, so the code is asked at every connection.
+
+## Source layout
+
+```
+web/src/page.html          the skeleton: head, the bundle's script tags, include lines
+web/src/style.css          all the styles
+web/src/00-stockage.js     storage guards, the server host and key baked by the deployment
+web/src/10-diagnostic.js   connection diagnostics, shared state, remote cursor
+web/src/20-rdlib.js        RDLib: pure logic, no DOM — what the Node bench tests directly
+web/src/30-session.js      input, video, clipboard, toolbar, login screen
+web/src/40-fichiers.js     the file panel
+```
+
+`python3 scripts/build-page.py` assembles them into `web/index.html.template`,
+which is **not versioned**: `setup.sh`, `verify.sh`, CI and both test benches
+rebuild it before using it. The served page is still one file of inline blocks —
+only the sources are split.
+
+## Input: touch, wheel, full screen
+
+- **Touch.** One finger is the mouse: a tap is a left click where you touched, a
+  touch-then-drag holds the button, a long press without moving is a right click.
+  Two fingers moving together scroll, in the "natural" direction. The **Keyboard**
+  button, shown on touch devices, brings up the device keyboard. Tested in
+  Chromium's touch emulation, not on a physical tablet.
+- **Wheel.** The peer counts notches. One notch is sent per 100 px of accumulated
+  scroll, which leaves a mouse wheel unchanged and tames a trackpad.
+- **Full screen.** On Chromium the Keyboard Lock API hands the remote machine the
+  shortcuts the browser or the system normally keep; hold Esc to leave. Firefox
+  and Safari go full screen without the capture.
+
+## Deployment hardening
+
+- nginx does **not** inherit `add_header` from the `server` level into a
+  `location` that declares one of its own. The three locations that set the
+  session cookie were therefore served without `X-Frame-Options` or `nosniff`.
+  The headers are now repeated in each, and a test fails if one goes missing.
+- A content security policy forbids any script, image or connection to another
+  host. It keeps `'unsafe-inline'`: the page is made of inline blocks and the
+  bundle's form uses `onclick` attributes. The real-browser bench runs under this
+  exact policy, read from `nginx.conf.template`.
+- HSTS is sent by Caddy, where TLS terminates.
 
 ## Verifying a change
 

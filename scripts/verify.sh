@@ -60,8 +60,13 @@ for s in setup.sh scripts/*.sh; do bash -n "$s"; done
 vert "  ✓ tous les scripts se parsent"
 
 titre "Syntaxe Python des outils"
-python3 -m py_compile scripts/relay-probe.py
-vert "  ✓ scripts/relay-probe.py"
+python3 -m py_compile scripts/relay-probe.py scripts/build-page.py
+vert "  ✓ scripts/relay-probe.py, scripts/build-page.py"
+
+titre "Assemblage de la page"
+# web/index.html.template est un produit de web/src/ : tout ce qui suit le lit.
+rm -f web/index.html.template
+python3 scripts/build-page.py
 
 titre "Le piege retire doit rester retire"
 # « docker exec hbbs cat /root/id_ed25519.pub » a ete la seule instruction que

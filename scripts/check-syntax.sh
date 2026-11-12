@@ -20,7 +20,11 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 FICHIERS=("$@")
-[ ${#FICHIERS[@]} -eq 0 ] && FICHIERS=("web/index.html.template")
+if [ ${#FICHIERS[@]} -eq 0 ]; then
+  # Le gabarit est assemble depuis web/src/ : on controle ce qui sera servi.
+  python3 scripts/build-page.py >/dev/null
+  FICHIERS=("web/index.html.template")
+fi
 
 TMPD=$(mktemp -d); trap 'rm -rf "$TMPD"' EXIT
 echec=0
