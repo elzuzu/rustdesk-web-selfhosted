@@ -868,7 +868,16 @@
     "Fichier collé sur le poste distant.": "File pasted on the remote machine.",
     "{0} fichiers collés sur le poste distant.": "{0} files pasted on the remote machine.",
     "Lecture impossible : {0}": "Cannot read: {0}",
-    "Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image.": "Folders do not go through the clipboard: drop them on the image.",
+    "Lecture du dossier…": "Reading the folder…",
+    "Lecture du dossier impossible.": "Could not read the folder.",
+    "Dossier trop grand pour le presse-papier : plus de {0} éléments.": "Folder too large for the clipboard: more than {0} items.",
+    "{0} élément(s) laissé(s) de côté : nom inutilisable ou chemin de plus de 259 caractères.": "{0} item(s) left out: unusable name or path longer than 259 characters.",
+    "Ce navigateur ne laisse pas lire le dossier « {0} » depuis le presse-papier.": "This browser does not let a page read the folder “{0}” from the clipboard.",
+    "Dossier copié ⇩": "Folder copied ⇩",
+    "{0} éléments copiés ⇩": "{0} items copied ⇩",
+    "Télécharger ici ce qui a été copié sur le poste distant. Un dossier arrive en archive .zip, qui le reconstitue à l'ouverture.": "Download here what was copied on the remote machine. A folder arrives as a .zip archive that rebuilds it when opened.",
+    "{0} dossier(s) téléchargé(s) depuis le poste distant, en archive .zip.": "{0} folder(s) downloaded from the remote machine, as .zip archive(s).",
+    "{0} dossier(s) de plus de 4 Gio ou de 65535 éléments : à récupérer par le panneau Fichiers.": "{0} folder(s) over 4 GiB or 65535 items: fetch them from the Files panel.",
     "Ce poste ({0}, RustDesk {1}) ne prend pas les fichiers par le presse-papier. Le panneau Fichiers reste disponible.": "This machine ({0}, RustDesk {1}) does not take files through the clipboard. The Files panel remains available.",
     "le poste distant ne répond pas": "the remote machine does not answer",
     "le poste distant a refusé la lecture": "the remote machine refused the read",
@@ -1109,7 +1118,7 @@
     DESCRIPTEUR: 592, NOM_UNITES: 260, NOM_MAX: 259,
     BLOC: 1048576,                // ce que NOUS demandons par plage (le pair, lui, demande 4 Mio)
     PLAGE_MAX: 8388608,           // plus grande plage que nous acceptons de servir d'un coup
-    FICHIERS_MAX: 2048,           // au-dela, une liste recue est refusee (592 octets par fichier)
+    FICHIERS_MAX: 10000,          // au-dela, une liste est refusee, recue ou annoncee (592 octets par entree)
     TAILLE_MAX: 2147483648,       // un fichier recu est assemble en memoire : 2 Gio au plus
     OK: 1, ECHEC: 2
   };
@@ -1143,6 +1152,21 @@
     nom = String(nom == null ? "" : nom).replace(/[\\\/]/g, "_").replace(/[\u0000-\u001f]/g, "");
     if (!nom || nom === "." || nom === ".." || nom.length > FPP.NOM_MAX) return null;
     return nom;
+  }
+  // Le chemin sous lequel un element d'un DOSSIER local est annonce : ses
+  // composants depuis le dossier colle, separes par « \ » comme le pair les
+  // ecrit lui-meme (local_file.rs). null si un composant est inutilisable ou si
+  // l'ensemble depasse le champ du descripteur.
+  function fppCheminAnnonce(composants){
+    if (!Array.isArray(composants) || !composants.length) return null;
+    var parts = [];
+    for (var i = 0; i < composants.length; i++){
+      var c = fppNomAnnonce(composants[i]);
+      if (c === null) return null;
+      parts.push(c);
+    }
+    var chemin = parts.join("\\");
+    return chemin.length > FPP.NOM_MAX ? null : chemin;
   }
   // Le chemin relatif annonce par le pair, separe par « \ » : rendu avec « / »,
   // ou null s'il n'est pas un chemin relatif normalise (absolu, vide, « . »,
@@ -1214,9 +1238,27 @@
       if (taille > Number.MAX_SAFE_INTEGER) throw fppErreur("taille de fichier inutilisable");
       var t = v.getUint32(b + 60, true) * DEUX32 + v.getUint32(b + 56, true);
       var mtime = ((drapeaux & FD_DATE) && t >= FPP_1970) ? Math.round((t - FPP_1970) / 10000) : 0;
-      res.push({ nom: chemin, taille: taille, dossier: !!(attributs & ATTR_DOSSIER), mtime: mtime, index: i });
+      var mode = (drapeaux & FD_MODE_UNIX) ? (v.getUint32(b + 52, true) & 511) : 0;
+      res.push({ nom: chemin, taille: taille, dossier: !!(attributs & ATTR_DOSSIER), mtime: mtime, index: i, mode: mode });
     }
     return res;
+  }
+  // Une liste recue, regroupee comme l'utilisateur l'a copiee : un ELEMENT par
+  // nom de premier niveau, dans l'ordre d'apparition. Un fichier isole est un
+  // element a lui seul ; un dossier porte toutes ses entrees (sous-dossiers
+  // compris, meme vides).
+  //   -> [{ nom, dossier, entrees: [entree de fppLire…] }]
+  function fppElements(liste){
+    var ordre = [], parNom = Object.create(null);
+    (Array.isArray(liste) ? liste : []).forEach(function(e){
+      if (!e || typeof e.nom !== "string" || !e.nom) return;
+      var i = e.nom.indexOf("/"), racine = i < 0 ? e.nom : e.nom.slice(0, i);
+      var el = parNom[racine];
+      if (!el){ el = parNom[racine] = { nom: racine, dossier: false, entrees: [] }; ordre.push(el); }
+      if (i >= 0 || e.dossier) el.dossier = true;
+      el.entrees.push(e);
+    });
+    return ordre;
   }
   // Une demande de contenu du pair, decodee. Les positions et longueurs sont des
   // entiers NON signes transportes dans des champs signes.
@@ -1278,6 +1320,89 @@
     return "Linux";
   }
 
+  // ---------------------------------------------------------------------------
+  // Archive ZIP, sans compression : un DOSSIER copie sur le poste distant ne peut
+  // pas etre depose tel quel par un navigateur (un telechargement est un fichier).
+  // Il arrive donc en une archive qui le reconstitue a l'ouverture. Format ZIP
+  // classique (APPNOTE 6.3.3, methode 0), noms en UTF-8, droits unix : pas de
+  // ZIP64, d'ou les plafonds — 4 Gio et 65535 entrees par archive.
+  var ZIP = { TAILLE_MAX: 4294967295, ENTREES_MAX: 65535 };
+  var ZIP_TABLE = null;
+  function zipTable(){
+    if (ZIP_TABLE) return ZIP_TABLE;
+    ZIP_TABLE = new Uint32Array(256);
+    for (var n = 0; n < 256; n++){
+      var c = n;
+      for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      ZIP_TABLE[n] = c >>> 0;
+    }
+    return ZIP_TABLE;
+  }
+  // CRC-32 par morceaux : zipCrc(0, a) puis zipCrc(crc, b) vaut zipCrc(0, a+b).
+  function zipCrc(crc, octets){
+    var t = zipTable(), c = (crc ^ 0xFFFFFFFF) >>> 0;
+    for (var i = 0; i < octets.length; i++) c = t[(c ^ octets[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function zipUtf8(texte){
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(texte);
+    var u = unescape(encodeURIComponent(texte)), o = new Uint8Array(u.length);
+    for (var i = 0; i < u.length; i++) o[i] = u.charCodeAt(i);
+    return o;
+  }
+  // Date et heure au format MS-DOS (heure LOCALE, pas avant 1980).
+  function zipDate(ms){
+    var d = new Date(ms > 0 ? ms : 0);
+    if (!(d.getFullYear() >= 1980)) return { date: 0x0021, heure: 0 };
+    return { date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+             heure: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1) };
+  }
+  // Une entree normalisee : { nom (avec « / », un dossier finit par « / »), taille, crc, mtime, dossier, mode, decalage }.
+  function zipEntree(e){
+    var nom = String(e && e.nom || "");
+    var dossier = !!(e && e.dossier);
+    if (dossier && nom.charAt(nom.length - 1) !== "/") nom += "/";
+    var octets = zipUtf8(nom);
+    if (!nom || octets.length > 65535) throw fppErreur("nom d'entree d'archive inutilisable");
+    var mode = (e && e.mode) ? (e.mode & 511) : (dossier ? 493 : 420);       // 0755 / 0644
+    if (dossier) mode |= 448;                                                // un dossier reste ouvrable par son proprietaire
+    return { nom: octets, taille: dossier ? 0 : (Number(e.taille) || 0), crc: dossier ? 0 : (e.crc >>> 0),
+             date: zipDate(Number(e.mtime) || 0), dossier: dossier, mode: mode, decalage: Number(e.decalage) || 0 };
+  }
+  // L'en-tete qui PRECEDE les octets d'une entree.
+  function zipEntete(e){
+    var x = zipEntree(e), o = new Uint8Array(30 + x.nom.length), v = new DataView(o.buffer);
+    v.setUint32(0, 0x04034b50, true); v.setUint16(4, 20, true); v.setUint16(6, 0x0800, true); v.setUint16(8, 0, true);
+    v.setUint16(10, x.date.heure, true); v.setUint16(12, x.date.date, true);
+    v.setUint32(14, x.crc, true); v.setUint32(18, x.taille, true); v.setUint32(22, x.taille, true);
+    v.setUint16(26, x.nom.length, true); v.setUint16(28, 0, true);
+    o.set(x.nom, 30);
+    return o;
+  }
+  // Le repertoire central et la fin d'archive : `entrees` porte, pour chacune,
+  // le decalage de son en-tete ; `debut` est la taille de tout ce qui precede.
+  function zipFin(entrees, debut){
+    if (entrees.length > ZIP.ENTREES_MAX) throw fppErreur("trop d'entrees pour une archive");
+    var xs = entrees.map(zipEntree), taille = 22;
+    xs.forEach(function(x){ taille += 46 + x.nom.length; });
+    if (debut + taille > ZIP.TAILLE_MAX) throw fppErreur("archive de plus de 4 Gio");
+    var o = new Uint8Array(taille), v = new DataView(o.buffer), p = 0;
+    xs.forEach(function(x){
+      v.setUint32(p, 0x02014b50, true); v.setUint16(p + 4, 0x0314, true);     // fait sous unix : les droits sont lus
+      v.setUint16(p + 6, 20, true); v.setUint16(p + 8, 0x0800, true); v.setUint16(p + 10, 0, true);
+      v.setUint16(p + 12, x.date.heure, true); v.setUint16(p + 14, x.date.date, true);
+      v.setUint32(p + 16, x.crc, true); v.setUint32(p + 20, x.taille, true); v.setUint32(p + 24, x.taille, true);
+      v.setUint16(p + 28, x.nom.length, true);
+      v.setUint32(p + 38, ((((x.dossier ? 16384 : 32768) | x.mode) << 16) | (x.dossier ? 0x10 : 0)) >>> 0, true);
+      v.setUint32(p + 42, x.decalage >>> 0, true);
+      o.set(x.nom, p + 46);
+      p += 46 + x.nom.length;
+    });
+    v.setUint32(p, 0x06054b50, true); v.setUint16(p + 8, xs.length, true); v.setUint16(p + 10, xs.length, true);
+    v.setUint32(p + 12, taille - 22, true); v.setUint32(p + 16, debut >>> 0, true);
+    return o;
+  }
+
   window.RDLib = {
     v: 1,
     i18n: { creer: creerI18n, langue: langueDe, EN: EN, STATUTS: STATUTS },
@@ -1303,7 +1428,9 @@
     },
     prefs:  { create: creerPrefs, OK: PREFS_OK },
     recent: { create: creerRecent },
-    fpp: { C: FPP, formats: fppFormats, idListe: fppIdListe, nomAnnonce: fppNomAnnonce, cheminRecu: fppCheminRecu,
+    zip: { C: ZIP, crc: zipCrc, entete: zipEntete, fin: zipFin },
+    fpp: { C: FPP, formats: fppFormats, idListe: fppIdListe, nomAnnonce: fppNomAnnonce, cheminAnnonce: fppCheminAnnonce,
+           elements: fppElements, cheminRecu: fppCheminRecu,
            nomLocal: fppNomLocal, descripteur: fppDescripteur, liste: fppListe, lire: fppLire, demande: fppDemande,
            taille: fppTaille, demanderPlage: fppDemanderPlage, annonce: fppAnnonce, disponible: fppDisponible,
            plateforme: fppPlateforme }

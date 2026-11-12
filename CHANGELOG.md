@@ -48,7 +48,12 @@ la console présente** — une seule implémentation par fonction, et la console
   `TogglePrivacyMode` pour le mode confidentialité.
 - Format vérifié contre les tests du pair (RustDesk 1.5.3) : descripteur de 592 octets, dates, plages en entiers non signés.
   Une liste reçue mal formée, trop longue ou dont un nom remonte l'arborescence est rejetée en entier.
-- Limites : pas de dossiers par le presse-papier ; 2 Gio par fichier reçu.
+- **Les dossiers passent aussi.** Un dossier collé ici part avec toute son arborescence (chaque dossier annoncé avant son
+  contenu, comme le fait le client natif ; sous-dossiers vides compris). Un dossier copié sur le poste se télécharge en une
+  archive `.zip` qui le reconstitue — un navigateur ne sait pas déposer une arborescence. Le bouton dit « Dossier copié ⇩ »
+  ou « N éléments copiés ⇩ ».
+- Limites : 10 000 éléments et des chemins de 259 caractères par collage ; coller un dossier demande Chrome ou Edge (ailleurs,
+  la page dit qu'elle ne peut pas le lire) ; 2 Gio par fichier reçu, 4 Gio et 65 535 éléments par archive de dossier.
 
 ### Installation (révélé par un conteneur candidat monté à côté du site en service, le 2026-11-12)
 - **Installation neuve : la page répondait 403 à l'utilisateur connecté.** `setup.sh` passe en `umask 077` pour protéger `.env`

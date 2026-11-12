@@ -276,13 +276,17 @@ synchrone (le délai de rejeu ci-dessus est une supposition), et ce qu'il fait d
 C'est le presse-papier de fichiers de RustDesk lui-même (messages `Cliprdr`), pas un
 transfert déguisé : rien n'est lu ni envoyé tant que l'application d'en face ne colle pas.
 
-- **De ta machine vers le poste distant.** Copie un ou plusieurs fichiers dans le
-  Finder ou l'Explorateur, puis `Ctrl+V` / `Cmd+V` dans la session : ils arrivent là
-  où se trouve le curseur du poste (dossier du Finder, bureau…). La page les annonce,
+- **De ta machine vers le poste distant.** Copie un ou plusieurs fichiers ou dossiers
+  dans le Finder ou l'Explorateur, puis `Ctrl+V` / `Cmd+V` dans la session : ils arrivent
+  là où se trouve le curseur du poste (dossier du Finder, bureau…). La page les annonce,
   rejoue la frappe de collage, puis sert la liste et le contenu à la demande du poste.
-- **Du poste distant vers ta machine.** Copie des fichiers sur le poste : un bouton
-  vert « Fichier copié ⇩ » apparaît, même barre repliée. Un clic les télécharge. Rien
-  n'est téléchargé sans ce clic — copier un fichier sur le poste ne remplit pas ton disque.
+  Un dossier part avec toute son arborescence, sous-dossiers vides compris.
+- **Du poste distant vers ta machine.** Copie des fichiers ou des dossiers sur le poste :
+  un bouton vert « Fichier copié ⇩ » (ou « Dossier copié ⇩ ») apparaît, même barre repliée.
+  Un clic les télécharge : chaque fichier tel quel, chaque dossier en une archive `.zip`
+  qui le reconstitue à l'ouverture — un téléchargement est un fichier, un navigateur ne
+  sait pas déposer une arborescence. Rien n'est téléchargé sans ce clic — copier sur le
+  poste ne remplit pas ton disque.
 - **Conditions.** Le poste doit connaître ce presse-papier (`has_file_clipboard` dans ce
   qu'il annonce, RustDesk 1.3.8 ou plus récent sous macOS et Linux, transfert de fichiers
   autorisé chez lui). La page annonce pour cela la version 1.3.9 à la connexion ; avant,
@@ -296,8 +300,12 @@ transfert déguisé : rien n'est lu ni envoyé tant que l'application d'en face 
   presse-papier, la page le dit à l'écran avec ce qu'il est (système, version) et rien
   d'autre ne se passe. La console du navigateur garde la ligne `[fichiers] presse-papier
   de fichiers …` écrite au début de chaque session : système, version et annonce du poste.
-- **Limites.** Les dossiers ne passent pas par le presse-papier (glisse-les sur l'image) ;
-  un fichier reçu du poste est assemblé en mémoire, 2 Gio au plus.
+- **Limites.** Un collage porte 10 000 éléments au plus (au-delà il est refusé en entier,
+  jamais tronqué) et des chemins de 259 caractères au plus (un élément plus long est
+  laissé de côté, et la page le dit). Coller un dossier demande un navigateur qui en donne
+  le contenu à la page : Chrome et Edge le font ; ailleurs la page dit qu'elle ne peut pas
+  le lire. Un fichier reçu du poste fait 2 Gio au plus ; l'archive d'un dossier, 4 Gio et
+  65 535 éléments au plus (au-delà : panneau Fichiers).
 
 ### Ce qui ne sera jamais possible
 

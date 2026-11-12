@@ -28,6 +28,7 @@ import vm from "node:vm";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveObjectURL } from "node:buffer";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -3629,9 +3630,9 @@ test("fpp liste : aller-retour, chemins relatifs du pair, et refus de tout ce qu
   const liste = octetsDe(fpp.liste([{ nom: "a.txt", taille: 3, mtime: 1700000000000 }, { nom: "gros.iso", taille: 2 ** 33 + 5, mtime: 0 }, { nom: "dossier", taille: 0, dossier: true }]));
   assert.equal(liste.length, 4 + 592 * 3);
   assert.deepEqual(plat(fpp.lire(liste)), [
-    { nom: "a.txt", taille: 3, dossier: false, mtime: 1700000000000, index: 0 },
-    { nom: "gros.iso", taille: 2 ** 33 + 5, dossier: false, mtime: 0, index: 1 },
-    { nom: "dossier", taille: 0, dossier: true, mtime: 0, index: 2 }]);
+    { nom: "a.txt", taille: 3, dossier: false, mtime: 1700000000000, index: 0, mode: 0o644 },
+    { nom: "gros.iso", taille: 2 ** 33 + 5, dossier: false, mtime: 0, index: 1, mode: 0o644 },
+    { nom: "dossier", taille: 0, dossier: true, mtime: 0, index: 2, mode: 0o755 }]);
   assert.deepEqual(plat(fpp.lire(new Uint8Array(4))), [], "liste vide");
   // Le pair separe par « \ » : rendu avec « / » (son propre test : folder/nested/file.txt).
   const avecNom = (nom) => { const l = octetsDe(fpp.liste([{ nom: "x", taille: 1 }])); const v = new DataView(l.buffer);
@@ -3699,15 +3700,31 @@ async function montageFichiers({ dispo = true, plateforme = "Mac OS", additions 
   m.messages = () => m.toasts().slice(dejaDits).map((t) => t.texte);
   m.cliprdr = () => m.envoyes.filter((x) => x.cliprdr).map((x) => x.cliprdr);
   m.recevoir = async (c) => { m.w.__rdFppRecevoir({ cliprdr: c }); await m.vider(); };
-  m.coller = async (fichiers, dossiers = 0) => {
+  m.coller = async (fichiers) => {
     const items = fichiers.map((f) => ({ kind: "file", type: f.type, getAsFile: () => f, webkitGetAsEntry: () => ({ isDirectory: false }) }));
-    for (let i = 0; i < dossiers; i++) items.push({ kind: "file", type: "", getAsFile: () => new File([], "dossier"), webkitGetAsEntry: () => ({ isDirectory: true }) });
     (m.ecouteurs.paste || []).forEach((f) => f({ preventDefault() {}, clipboardData: { items, files: fichiers, getData: () => "" } }));
     await m.vider();
   };
-  m.telechargements = [];
+  // sources : [{ ent (entree du navigateur, ou null), fichier (File, absent pour un dossier) }]
+  m.collerSources = async (sources) => {
+    const items = sources.map((s) => ({ kind: "file", type: s.fichier ? s.fichier.type : "", getAsFile: () => s.fichier || new File([], s.ent.name), webkitGetAsEntry: () => s.ent }));
+    (m.ecouteurs.paste || []).forEach((f) => f({ preventDefault() {}, clipboardData: { items, files: sources.map((s) => s.fichier || new File([], s.ent.name)), getData: () => "" } }));
+    await m.vider();
+  };
+  // Le « poste » repond a chaque demande de contenu, jusqu'a ce qu'il n'en vienne plus.
+  m.servir = async (contenus) => {
+    let vus = 0;
+    for (let tour = 0; tour < 500; tour++) {
+      await m.vider();
+      const d = m.envoyes.filter((x) => x.cliprdr && x.cliprdr.file_contents_request).map((x) => x.cliprdr.file_contents_request);
+      if (d.length === vus) return;
+      for (; vus < d.length; vus++) { const r = d[vus];
+        await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: r.stream_id, requested_data: Uint8Array.from(contenus[r.list_index].slice(r.n_position_low, r.n_position_low + r.cb_requested)) } }); }
+    }
+  };
+  m.telechargements = []; m.liens = [];
   const creer = m.doc.createElement;
-  m.doc.createElement = (t) => { const e = creer(t); if (t === "a") e.click = () => m.telechargements.push(e.download); return e; };
+  m.doc.createElement = (t) => { const e = creer(t); if (t === "a") e.click = () => { m.telechargements.push(e.download); m.liens.push(e.href); }; return e; };
   m.bouton = () => m.bar.querySelector('.rdppbtn[data-kind="fichiers"]');
   return m;
 }
@@ -3814,7 +3831,7 @@ test("fpp poste Windows : il repond « faux » a un client qui n'est pas Windows
     "la liste est demandee sous l'identifiant du poste, pas sous le notre");
 });
 
-test("fpp collage : pair sans presse-papier de fichiers -> un message a l'ecran, JAMAIS le panneau Fichiers ; dossiers signales ; image toujours prioritaire", async () => {
+test("fpp collage : pair sans presse-papier de fichiers -> un message a l'ecran, JAMAIS le panneau Fichiers ; image toujours prioritaire", async () => {
   // Rien d'annonce (pair ancien, mobile), ou « faux » ailleurs que sous Windows : meme refus, dit avec ce que le poste est.
   for (const [plateforme, additions] of [["Linux", {}], ["Mac OS", { has_file_clipboard: false }], ["Android", {}]]) {
     const sans = await montageFichiers({ plateforme, additions });
@@ -3826,10 +3843,11 @@ test("fpp collage : pair sans presse-papier de fichiers -> un message a l'ecran,
     await sans.recevoir({ format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } });
     assert.equal(sans.cliprdr().length, 0, plateforme + " : un pair qui n'a rien annonce n'est pas ecoute");
   }
-  const m = await montageFichiers();
-  await m.coller([fichierTest("a.txt", [1])], 1);
-  assert.equal(m.cliprdr().length, 1);
-  assert.match(m.toasts().map((t) => t.texte).join("|"), /dossiers ne passent pas par le presse-papier/);
+  // Un dossier, sur un poste qui ne prend rien : meme refus, sans parcourir quoi que ce soit.
+  const refus = await montageFichiers({ plateforme: "Linux", additions: {} });
+  await refus.collerSources([{ ent: { isDirectory: true, name: "D", createReader() { throw new Error("ne doit pas etre parcouru"); } } }]);
+  assert.equal(refus.cliprdr().length, 0);
+  assert.deepEqual(refus.messages(), ["Ce poste (Linux, RustDesk 1.4.2) ne prend pas les fichiers par le presse-papier. Le panneau Fichiers reste disponible."]);
   // Une image reste une IMAGE du presse-papier (elle doit pouvoir etre collee dans un document), pas un fichier.
   const img = await montageFichiers();
   await img.collerImage(new Blob([new Uint8Array(8)], { type: "image/png" }));
@@ -3846,9 +3864,9 @@ test("fpp reception : des fichiers copies SUR LE POSTE -> liste demandee, bouton
   await m.recevoir({ format_list: { formats: [{ id: 7, format: "FileGroupDescriptorW" }, { id: 8, format: "FileContents" }] } });
   assert.deepEqual(plat(m.cliprdr()), [{ format_list_response: { msg_flags: 1 } }, { format_data_request: { requested_format_id: 7 } }], "la liste est demandee sous l'identifiant du PAIR");
   assert.equal(m.bouton(), null, "pas de bouton avant de savoir quoi");
-  const liste = fpp.liste([{ nom: "photos\\plage.jpg", taille: 5, mtime: 1700000000000 }, { nom: "photos", taille: 0, dossier: true }, { nom: "notes.txt", taille: 3, mtime: 0 }]);
+  const liste = fpp.liste([{ nom: "pla:ge.jpg", taille: 5, mtime: 1700000000000 }, { nom: "notes.txt", taille: 3, mtime: 0 }]);
   await m.recevoir({ format_data_response: { msg_flags: 1, format_data: liste } });
-  assert.equal(m.bouton().textContent, "2 fichiers copiés ⇩", "les dossiers ne sont pas des fichiers a recuperer");
+  assert.equal(m.bouton().textContent, "2 fichiers copiés ⇩");
   assert.equal(m.bar.classList.contains("attention"), true, "visible meme barre repliee");
   assert.equal(m.envoyes.filter((x) => x.cliprdr && x.cliprdr.file_contents_request).length, 0, "RIEN n'est telecharge sans clic : copier sur le poste ne doit pas remplir ce disque");
   // Le clic : chaque fichier est demande par plages, sous son index dans la liste du pair.
@@ -3862,12 +3880,176 @@ test("fpp reception : des fichiers copies SUR LE POSTE -> liste demandee, bouton
   await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 0, requested_data: Uint8Array.from([1, 2, 3]) } });
   assert.deepEqual(demandes()[1], { stream_id: 0, list_index: 0, dw_flags: 2, n_position_low: 3, n_position_high: 0, cb_requested: 2, have_clip_data_id: false, clip_data_id: 0 }, "une plage plus courte que demande : on reprend ou elle s'arrete");
   await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 0, requested_data: Uint8Array.from([4, 5]) } });
-  assert.equal(demandes()[2].list_index, 2, "puis le fichier suivant, sous SON index (le dossier, index 1, est saute)");
-  await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 2, requested_data: Uint8Array.from([7, 8, 9]) } });
+  assert.equal(demandes()[2].list_index, 1, "puis le fichier suivant, sous SON index");
+  await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 1, requested_data: Uint8Array.from([7, 8, 9]) } });
   await fini; await m.vider();
-  assert.deepEqual(m.telechargements, ["plage.jpg", "notes.txt"], "enregistres sous leur seul nom, jamais sous un chemin venu du pair");
+  assert.deepEqual(m.telechargements, ["pla_ge.jpg", "notes.txt"], "enregistres sous un nom que le systeme local accepte");
   assert.deepEqual(m.messages(), ["2 fichiers téléchargés depuis le poste distant."]);
   assert.equal(m.bouton().textContent, "2 fichiers copiés ⇩", "le bouton reste : on peut les reprendre tant que le poste les garde");
+});
+
+// ---- dossiers par le presse-papier
+// Une arborescence telle que le navigateur la donne pour un dossier colle (webkitGetAsEntry) :
+// readEntries rend ses entrees par LOTS, jusqu'au lot vide.
+const entreeFichier = (f) => ({ isFile: true, isDirectory: false, name: f.name, file: (ok) => ok(f) });
+const entreeDossier = (name, enfants, lot = 2) => ({ isFile: false, isDirectory: true, name,
+  createReader() { let i = 0; return { readEntries(ok) { const part = enfants.slice(i, i + lot); i += lot; ok(part); } }; } });
+// Ce qu'un outil du systeme lit dans une archive : [nom, taille, dossier ?, droits, contenu en hexadecimal].
+const lireZip = (octets) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "rd-zip-")), f = path.join(d, "a.zip");
+  try {
+    fs.writeFileSync(f, octets);
+    const code = "import zipfile,sys,json\nz=zipfile.ZipFile(sys.argv[1])\nassert z.testzip() is None\n" +
+      "print(json.dumps([[i.filename,i.file_size,i.is_dir(),(i.external_attr>>16)&0o777,z.read(i).hex()] for i in z.infolist()]))";
+    return JSON.parse(execFileSync("python3", ["-I", "-c", code, f], { encoding: "utf8" }));
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+};
+const hex = (octets) => Buffer.from(octets).toString("hex");
+
+test("zip : une archive sans compression que les outils du systeme relisent — arborescence, UTF-8, CRC, droits", () => {
+  const { zip } = chargerLib();
+  assert.equal(zip.crc(0, Buffer.from("123456789")), 0xcbf43926, "valeur de controle du CRC-32");
+  assert.equal(zip.crc(zip.crc(0, Buffer.from("1234")), Buffer.from("56789")), 0xcbf43926, "par morceaux : meme resultat");
+  assert.equal(zip.crc(0, new Uint8Array(0)), 0);
+  const sources = [
+    { nom: "Projet", dossier: true, mtime: 1700000000000 },
+    { nom: "Projet/été.txt", data: Buffer.from("bonjour"), mtime: 1700000000000, mode: 0o755 },
+    { nom: "Projet/vide", dossier: true },
+    { nom: "Projet/src/a.bin", data: Buffer.from([0, 1, 2, 255]), mtime: 1700000000000 },
+    { nom: "Projet/zéro", data: Buffer.alloc(0) }];
+  const parts = [], entrees = []; let decalage = 0;
+  for (const s of sources) {
+    const e = s.dossier ? { nom: s.nom, dossier: true, mtime: s.mtime, decalage }
+                        : { nom: s.nom, taille: s.data.length, crc: zip.crc(0, s.data), mtime: s.mtime, mode: s.mode, decalage };
+    const tete = octetsDe(zip.entete(e)); parts.push(tete); decalage += tete.length;
+    if (!s.dossier) { parts.push(s.data); decalage += s.data.length; }
+    entrees.push(e);
+  }
+  parts.push(octetsDe(zip.fin(entrees, decalage)));
+  assert.deepEqual(lireZip(Buffer.concat(parts)), [
+    ["Projet/", 0, true, 0o755, ""],
+    ["Projet/été.txt", 7, false, 0o755, hex(Buffer.from("bonjour"))],
+    ["Projet/vide/", 0, true, 0o755, ""],
+    ["Projet/src/a.bin", 4, false, 0o644, "000102ff"],
+    ["Projet/zéro", 0, false, 0o644, ""]], "relu par zipfile (Python) : noms, tailles, droits, contenu, CRC verifie");
+  // Sans ZIP64 : au-dela des plafonds, un refus net plutot qu'une archive illisible.
+  assert.throws(() => zip.fin([{ nom: "a", taille: 1, crc: 0, decalage: 0 }], zip.C.TAILLE_MAX), /4 Gio/);
+  assert.throws(() => zip.fin(new Array(zip.C.ENTREES_MAX + 1).fill({ nom: "a", taille: 0, crc: 0, decalage: 0 }), 0), /trop d'entrees/);
+  assert.throws(() => zip.entete({ nom: "", taille: 0, crc: 0 }), /nom d'entree/);
+});
+
+test("fpp arborescences : chemin annonce d'un element de dossier, elements d'une liste recue, droits unix", () => {
+  const { fpp } = chargerLib();
+  assert.equal(fpp.cheminAnnonce(["Projet", "src", "a.txt"]), "Projet\\src\\a.txt", "separateur du pair : « \\ »");
+  assert.equal(fpp.cheminAnnonce(["a/b", "c\\d"]), "a_b\\c_d", "un separateur DANS un nom ne cree pas de niveau");
+  for (const c of [[], null, ["a", ""], ["a", ".."], [".", "a"], ["x".repeat(200), "y".repeat(59)]]) assert.equal(fpp.cheminAnnonce(c), null, JSON.stringify(c));
+  assert.equal(fpp.cheminAnnonce(["x".repeat(200), "y".repeat(58)]).length, 259, "259 unites : le champ du descripteur, zero final compris");
+  // Une liste recue, regroupee comme elle a ete copiee : un fichier isole, un dossier et tout ce qu'il porte.
+  const liste = fpp.lire(octetsDe(fpp.liste([
+    { nom: "notes.txt", taille: 3 }, { nom: "photos", taille: 0, dossier: true }, { nom: "photos\\plage.jpg", taille: 5 },
+    { nom: "photos\\vide", taille: 0, dossier: true }, { nom: "seul", taille: 0, dossier: true }, { nom: "sans\\entree.txt", taille: 1 }])));
+  assert.deepEqual(plat(fpp.elements(liste)).map((e) => [e.nom, e.dossier, e.entrees.map((x) => x.index)]),
+    [["notes.txt", false, [0]], ["photos", true, [1, 2, 3]], ["seul", true, [4]], ["sans", true, [5]]],
+    "un chemin imbrique fait un dossier meme si le pair n'a pas envoye l'entree du dossier lui-meme");
+  assert.deepEqual(plat(fpp.elements([])), []); assert.deepEqual(plat(fpp.elements(null)), []);
+  // Droits unix : lus quand le pair les donne (drapeau 0x08), nuls sinon (pair Windows).
+  const d = octetsDe(fpp.liste([{ nom: "run.sh", taille: 1 }])), v = new DataView(d.buffer);
+  assert.equal(fpp.lire(d)[0].mode, 0o644, "nos propres descripteurs portent 0644");
+  v.setUint32(4 + 52, 0o100755, true);
+  assert.equal(fpp.lire(d)[0].mode, 0o755, "seuls les droits, pas le type de fichier");
+  v.setUint32(4, v.getUint32(4, true) & ~0x08, true);
+  assert.equal(fpp.lire(d)[0].mode, 0, "sans le drapeau, le champ n'est pas des droits");
+});
+
+test("fpp dossier colle ICI : toute l'arborescence est annoncee a plat, chaque dossier avant son contenu, puis servie", async () => {
+  // Poste Windows : l'Explorateur cree les dossiers dans l'ordre de la liste.
+  const m = await montageFichiers({ plateforme: "Windows", additions: { has_file_clipboard: false } });
+  const { fpp } = chargerLib();
+  const a = fichierTest("a.txt", [1, 2, 3]), b = fichierTest("b é.bin", [9, 8]), seul = fichierTest("seul.txt", [7]);
+  const arbre = entreeDossier("Projet", [entreeDossier("vide", []), entreeFichier(b), entreeDossier("src", [entreeFichier(a)])]);
+  await m.collerSources([{ ent: arbre }, { ent: entreeFichier(seul), fichier: seul }]);
+  assert.deepEqual(m.cliprdr().map((c) => Object.keys(c)[0]), ["format_list"], "une seule annonce, apres le parcours");
+  assert.equal(m.rejeux().filter((t) => t.ms !== 800).length, 1, "et la frappe de collage rejouee UNE fois");
+  assert.equal(m.depotsFichiers.n, 0, "toujours pas de panneau Fichiers");
+  assert.deepEqual(m.messages(), []);
+  m.envoyes.length = 0;
+  await m.recevoir({ format_data_request: { requested_format_id: 49334 } });
+  const brut = octetsDe(m.cliprdr()[0].format_data_response.format_data);
+  assert.deepEqual(plat(fpp.lire(brut)).map((f) => [f.nom, f.dossier, f.taille]), [
+    ["Projet", true, 0], ["Projet/b é.bin", false, 2], ["Projet/src", true, 0], ["Projet/src/a.txt", false, 3], ["Projet/vide", true, 0], ["seul.txt", false, 1]],
+    "ordre stable (par nom), dossier AVANT contenu, dossier vide garde, fichier isole a la racine");
+  const nomBrut = (i) => { let s = ""; const v = new DataView(brut.buffer, brut.byteOffset); for (let k = 0; ; k++) { const u = v.getUint16(4 + 592 * i + 72 + 2 * k, true); if (!u) return s; s += String.fromCharCode(u); } };
+  assert.equal(nomBrut(3), "Projet\\src\\a.txt", "sur le fil, le separateur est « \\ »");
+  assert.equal(new DataView(brut.buffer, brut.byteOffset).getUint32(4 + 592 * 2 + 36, true), 0x10, "attribut « dossier »");
+  // Un fichier imbrique est servi sous SON index ; un dossier n'a pas de contenu.
+  m.envoyes.length = 0;
+  await m.recevoir({ file_contents_request: { stream_id: 77, list_index: 3, dw_flags: 2, n_position_low: 1, n_position_high: 0, cb_requested: 10 } });
+  await m.recevoir({ file_contents_request: { stream_id: 5, list_index: 0, dw_flags: 1 } });
+  await m.recevoir({ file_contents_request: { stream_id: 6, list_index: 0, dw_flags: 2, cb_requested: 4 } });
+  assert.deepEqual(m.cliprdr().map((c) => [c.file_contents_response.msg_flags, c.file_contents_response.stream_id, [...octetsDe(c.file_contents_response.requested_data)]]),
+    [[1, 77, [2, 3]], [1, 5, [0, 0, 0, 0, 0, 0, 0, 0]], [2, 6, []]]);
+  // Tout est parti : le message compte les FICHIERS, pas les dossiers.
+  for (const [i, n] of [[1, 2], [3, 3], [5, 1]]) await m.recevoir({ file_contents_request: { stream_id: i, list_index: i, dw_flags: 2, n_position_low: 0, n_position_high: 0, cb_requested: n } });
+  assert.deepEqual(m.messages(), ["3 fichiers collés sur le poste distant."]);
+});
+
+test("fpp dossier colle : trop grand -> refus entier ; chemin trop long -> laisse de cote ; dossier illisible -> dit, rien n'est annonce", async () => {
+  const { fpp } = chargerLib();
+  // Jamais une arborescence tronquee.
+  const gros = await montageFichiers();
+  const beaucoup = []; for (let i = 0; i < fpp.C.FICHIERS_MAX; i++) beaucoup.push(entreeFichier(fichierTest("f" + i, [])));
+  await gros.collerSources([{ ent: entreeDossier("Enorme", beaucoup, 500) }]);
+  assert.equal(gros.cliprdr().length, 0, "rien n'est annonce");
+  assert.equal(gros.rejeux().filter((t) => t.ms !== 800).length, 0, "aucune frappe rejouee");
+  assert.deepEqual(gros.messages(), [`Dossier trop grand pour le presse-papier : plus de ${fpp.C.FICHIERS_MAX} éléments.`]);
+  // Un chemin qui ne tient pas dans le descripteur : cet element seul est laisse, le reste part.
+  const long = await montageFichiers();
+  await long.collerSources([{ ent: entreeDossier("D", [entreeFichier(fichierTest("x".repeat(258), [1])), entreeFichier(fichierTest("ok.txt", [2]))]) }]);
+  long.envoyes.length = 0;
+  await long.recevoir({ format_data_request: { requested_format_id: 49334 } });
+  assert.deepEqual(plat(fpp.lire(octetsDe(long.cliprdr()[0].format_data_response.format_data))).map((f) => f.nom), ["D", "D/ok.txt"]);
+  assert.deepEqual(long.messages(), ["1 élément(s) laissé(s) de côté : nom inutilisable ou chemin de plus de 259 caractères."]);
+  // Navigateur qui ne donne pas d'entree : un « fichier » sans type qui ne se lit pas est un dossier. On le dit.
+  const illisible = { name: "Dossier", type: "", size: 64, lastModified: 0, slice: () => ({ arrayBuffer: () => Promise.reject(new Error("NotFoundError")) }) };
+  const sans = await montageFichiers();
+  await sans.collerSources([{ ent: null, fichier: illisible }]);
+  assert.equal(sans.cliprdr().length, 0);
+  assert.deepEqual(sans.messages(), ["Ce navigateur ne laisse pas lire le dossier « Dossier » depuis le presse-papier."]);
+  // Le meme navigateur, un vrai fichier sans type (Makefile) : sonde, puis annonce comme n'importe quel fichier.
+  const makefile = new File([Uint8Array.from([1, 2])], "Makefile", { lastModified: 1700000000000 });
+  const vrai = await montageFichiers();
+  await vrai.collerSources([{ ent: null, fichier: makefile }]);
+  assert.deepEqual(vrai.cliprdr().map((c) => Object.keys(c)[0]), ["format_list"]);
+  assert.deepEqual(vrai.messages(), []);
+});
+
+test("fpp reception d'un DOSSIER : un element, un clic, UNE archive .zip qui le reconstitue ; un fichier isole reste un fichier", async () => {
+  const m = await montageFichiers();
+  const { fpp } = chargerLib();
+  await m.recevoir({ format_list: { formats: [{ id: 7, format: "FileGroupDescriptorW" }, { id: 8, format: "FileContents" }] } });
+  const contenus = { 1: [1, 2, 3, 4, 5], 3: [9, 8], 4: [7, 7, 7] };
+  await m.recevoir({ format_data_response: { msg_flags: 1, format_data: fpp.liste([
+    { nom: "photos", taille: 0, dossier: true, mtime: 1700000000000 }, { nom: "photos\\plage.jpg", taille: 5, mtime: 1700000000000 },
+    { nom: "photos\\vide", taille: 0, dossier: true }, { nom: "photos\\été\\a.txt", taille: 2, mtime: 1700000000000 },
+    { nom: "notes.txt", taille: 3, mtime: 1700000000000 }]) } });
+  assert.equal(m.bouton().textContent, "2 éléments copiés ⇩", "un dossier et un fichier : deux elements, comme sur le poste");
+  assert.match(m.bouton().title, /archive \.zip/);
+  m.envoyes.length = 0;
+  const fini = m.bouton().onclick();
+  await m.servir(contenus);
+  await fini; await m.vider();
+  assert.deepEqual(m.telechargements, ["photos.zip", "notes.txt"]);
+  const archive = Buffer.from(await resolveObjectURL(m.liens[0]).arrayBuffer());
+  assert.deepEqual(lireZip(archive), [
+    ["photos/", 0, true, 0o755, ""], ["photos/plage.jpg", 5, false, 0o644, "0102030405"],
+    ["photos/vide/", 0, true, 0o755, ""], ["photos/été/a.txt", 2, false, 0o644, "0908"]],
+    "l'arborescence entiere, dossier vide compris, relue par un outil du systeme");
+  assert.deepEqual([...Buffer.from(await resolveObjectURL(m.liens[1]).arrayBuffer())], [7, 7, 7], "le fichier isole arrive tel quel");
+  assert.deepEqual(m.messages(), ["1 dossier(s) téléchargé(s) depuis le poste distant, en archive .zip."]);
+  // Un seul dossier : le bouton le dit.
+  await m.recevoir({ format_list: { formats: fpp.formats() } });
+  await m.recevoir({ format_data_response: { msg_flags: 1, format_data: fpp.liste([{ nom: "docs", taille: 0, dossier: true }, { nom: "docs\\a.txt", taille: 1 }]) } });
+  assert.equal(m.bouton().textContent, "Dossier copié ⇩");
 });
 
 test("fpp reception : liste non demandee, refusee, ou piegee -> rien ; refus du poste en cours de route -> message, pas de fichier", async () => {

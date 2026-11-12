@@ -2020,7 +2020,7 @@ await test("files-copy-remote-to-local : des fichiers copies sur le poste -> un 
   await sessionFichiers(p);
   // La liste que le pair enverrait, fabriquee par la meme bibliotheque (le format est verifie au banc du gabarit).
   await p.evaluate(() => { window.__rdFppRecevoir({ cliprdr: { format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } } });
-    window.__rdFppRecevoir({ cliprdr: { format_data_response: { msg_flags: 1, format_data: window.RDLib.fpp.liste([{ nom: "photos\\plage.jpg", taille: 4, mtime: 1700000000000 }]) } } }); });
+    window.__rdFppRecevoir({ cliprdr: { format_data_response: { msg_flags: 1, format_data: window.RDLib.fpp.liste([{ nom: "pla:ge.jpg", taille: 4, mtime: 1700000000000 }]) } } }); });
   const b = p.locator('#rdbar .rdppbtn[data-kind="fichiers"]');
   await b.waitFor({ state: "visible", timeout: 5000 });
   assert.equal(await b.textContent(), "Fichier copié ⇩");
@@ -2031,9 +2031,61 @@ await test("files-copy-remote-to-local : des fichiers copies sur le poste -> un 
     const r = m.cliprdr && m.cliprdr.file_contents_request;
     if (r) setTimeout(() => window.__rdFppRecevoir({ cliprdr: { file_contents_response: { msg_flags: 1, stream_id: r.stream_id, requested_data: new Uint8Array([1, 2, 3, 4]).subarray(r.n_position_low, r.n_position_low + r.cb_requested) } } }), 0); }; });
   const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 8000 }), b.click()]);
-  assert.equal(dl.suggestedFilename(), "plage.jpg", "sous son seul nom, jamais sous le chemin venu du pair");
+  assert.equal(dl.suggestedFilename(), "pla_ge.jpg", "sous un nom que le systeme local accepte");
   const chemin = await dl.path();
   assert.deepEqual([...fs.readFileSync(chemin)], [1, 2, 3, 4], "les octets recus, dans l'ordre");
+});
+
+// Un dossier, dans les deux sens. Le presse-papier du SYSTEME n'est pas a la portee d'un banc : l'evenement de collage
+// porte donc les entrees que Chromium donne pour un dossier colle (webkitGetAsEntry), avec de VRAIS File dedans.
+await test("files-folder-paste : un dossier colle ici est annonce avec toute son arborescence, puis servi a la demande", async (p) => {
+  await sessionFichiers(p);
+  await p.evaluate(() => {
+    const fichier = (nom, octets) => new File([new Uint8Array(octets)], nom, { type: "application/octet-stream", lastModified: 1700000000000 });
+    const eF = (f) => ({ isFile: true, isDirectory: false, name: f.name, file: (ok) => setTimeout(() => ok(f), 0) });
+    const eD = (name, enfants) => ({ isFile: false, isDirectory: true, name, createReader() { let i = 0;
+      return { readEntries(ok) { const part = enfants.slice(i, i + 1); i += 1; setTimeout(() => ok(part), 0); } }; } });
+    const arbre = eD("Projet", [eD("vide", []), eF(fichier("lisez-moi.txt", [10, 11, 12, 13])), eD("src", [eF(fichier("main.c", [1, 2, 3]))])]);
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", { value: { getData: () => "", files: [new File([], "Projet")],
+      items: [{ kind: "file", type: "", getAsFile: () => new File([], "Projet"), webkitGetAsEntry: () => arbre }] } });
+    document.activeElement.dispatchEvent(ev);
+  });
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.cliprdr && m.cliprdr.format_list), null, { timeout: 5000 });
+  // La frappe de collage ne part qu'une fois l'arborescence lue et annoncee.
+  await p.waitForFunction(() => window.__touches.some(([n, v]) => n === "input_key" && JSON.parse(v).name === "v" && JSON.parse(v).down === "true"), null, { timeout: 5000 });
+  const liste = await p.evaluate(() => { window.__envoyes.length = 0; window.__rdFppRecevoir({ cliprdr: { format_data_request: { requested_format_id: 49334 } } });
+    const r = window.__envoyes.find((m) => m.cliprdr && m.cliprdr.format_data_response).cliprdr.format_data_response;
+    return window.RDLib.fpp.lire(r.format_data).map((f) => [f.nom, f.dossier, f.taille]); });
+  assert.deepEqual(liste, [["Projet", true, 0], ["Projet/lisez-moi.txt", false, 4], ["Projet/src", true, 0], ["Projet/src/main.c", false, 3], ["Projet/vide", true, 0]],
+    "chaque dossier avant son contenu, dossier vide compris");
+  await p.evaluate(() => { window.__envoyes.length = 0;
+    window.__rdFppRecevoir({ cliprdr: { file_contents_request: { stream_id: 9, list_index: 3, dw_flags: 2, n_position_low: 0, n_position_high: 0, cb_requested: 4096 } } }); });
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.cliprdr && m.cliprdr.file_contents_response), null, { timeout: 5000 });
+  assert.deepEqual((await cliprdr(p))[0].file_contents_response, { msg_flags: 1, stream_id: 9, requested_data: [1, 2, 3] }, "le fichier imbrique, sous son index");
+  assert.equal(await p.evaluate(() => { const f = document.getElementById("rdfiles"); return !!f && getComputedStyle(f).display !== "none"; }), false, "le panneau Fichiers ne s'ouvre pas");
+});
+
+await test("files-folder-copy-remote : un dossier copie sur le poste arrive en UNE archive .zip, relue par un outil du systeme", async (p) => {
+  await sessionFichiers(p);
+  await p.evaluate(() => { window.__rdFppRecevoir({ cliprdr: { format_list: { formats: [{ id: 49161, format: "FileGroupDescriptorW" }, { id: 49158, format: "FileContents" }] } } });
+    window.__rdFppRecevoir({ cliprdr: { format_data_response: { msg_flags: 1, format_data: window.RDLib.fpp.liste([
+      { nom: "docs", taille: 0, dossier: true, mtime: 1700000000000 }, { nom: "docs\\été.txt", taille: 4, mtime: 1700000000000 },
+      { nom: "docs\\sous", taille: 0, dossier: true }, { nom: "docs\\sous\\b.bin", taille: 3, mtime: 1700000000000 }, { nom: "docs\\vide", taille: 0, dossier: true }]) } } }); });
+  const b = p.locator('#rdbar .rdppbtn[data-kind="fichiers"]');
+  await b.waitFor({ state: "visible", timeout: 5000 });
+  assert.equal(await b.textContent(), "Dossier copié ⇩");
+  // Le « poste » sert chaque fichier sous son index dans sa liste.
+  await p.evaluate(() => { const contenus = { 1: [1, 2, 3, 4], 3: [9, 8, 7] }; const env = window.curConn._ws.sendMessage; window.curConn._ws.sendMessage = function (m) { env.call(this, m);
+    const r = m.cliprdr && m.cliprdr.file_contents_request;
+    if (r) setTimeout(() => window.__rdFppRecevoir({ cliprdr: { file_contents_response: { msg_flags: 1, stream_id: r.stream_id,
+      requested_data: new Uint8Array(contenus[r.list_index]).subarray(r.n_position_low, r.n_position_low + r.cb_requested) } } }), 0); }; });
+  const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 8000 }), b.click()]);
+  assert.equal(dl.suggestedFilename(), "docs.zip", "un seul telechargement : l'archive du dossier");
+  const code = "import zipfile,sys,json\nz=zipfile.ZipFile(sys.argv[1])\nassert z.testzip() is None\nprint(json.dumps([[i.filename,i.file_size,i.is_dir(),z.read(i).hex()] for i in z.infolist()]))";
+  assert.deepEqual(JSON.parse(execFileSync("python3", ["-I", "-c", code, await dl.path()], { encoding: "utf8" })),
+    [["docs/", 0, true, ""], ["docs/été.txt", 4, false, "01020304"], ["docs/sous/", 0, true, ""], ["docs/sous/b.bin", 3, false, "090807"], ["docs/vide/", 0, true, ""]],
+    "l'arborescence entiere, avec ses octets, CRC verifies par zipfile");
 });
 
 // ---------------------------------------------------------------------- bilan

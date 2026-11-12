@@ -270,13 +270,16 @@ quality preset.
 This is RustDesk's own file clipboard (`Cliprdr` messages), not a disguised transfer:
 nothing is read or sent until the application on the other side pastes.
 
-- **From your machine to the remote one.** Copy one or more files in Finder or
-  Explorer, then `Ctrl+V` / `Cmd+V` in the session: they land wherever the remote
+- **From your machine to the remote one.** Copy one or more files or folders in Finder
+  or Explorer, then `Ctrl+V` / `Cmd+V` in the session: they land wherever the remote
   cursor is (a Finder folder, the desktop…). The page announces them, replays the paste
   keystroke, then serves the list and the content as the remote machine asks for them.
-- **From the remote machine to yours.** Copy files on the remote machine: a green
-  "File copied ⇩" button appears, even with the bar collapsed. One click downloads them.
-  Nothing is downloaded without that click — copying a file remotely does not fill your disk.
+  A folder travels with its whole tree, empty subfolders included.
+- **From the remote machine to yours.** Copy files or folders on the remote machine: a
+  green "File copied ⇩" (or "Folder copied ⇩") button appears, even with the bar
+  collapsed. One click downloads them: each file as it is, each folder as one `.zip`
+  archive that rebuilds it when opened — a download is a file, a browser cannot drop a
+  tree. Nothing is downloaded without that click — copying remotely does not fill your disk.
 - **Requirements.** The remote machine must know this clipboard (`has_file_clipboard` in
   what it announces, RustDesk 1.3.8 or newer on macOS and Linux, file transfer allowed on
   its side). To that end the page announces version 1.3.9 when logging in; it used to
@@ -290,8 +293,12 @@ nothing is read or sent until the application on the other side pastes.
   clipboard, the page says so on screen, naming what the machine is (system, version), and
   nothing else happens. The browser console keeps the `[fichiers] presse-papier de
   fichiers …` line written when each session starts: system, version and announcement.
-- **Limits.** Folders do not go through the clipboard (drop them on the image); a file
-  received from the remote machine is assembled in memory, 2 GiB at most.
+- **Limits.** A paste carries at most 10,000 items (beyond that it is refused as a whole,
+  never truncated) and paths of at most 259 characters (a longer item is left out, and
+  the page says so). Pasting a folder needs a browser that hands its content to the page:
+  Chrome and Edge do; elsewhere the page says it cannot read it. A file received from the
+  remote machine is 2 GiB at most; a folder's archive, 4 GiB and 65,535 items at most
+  (beyond that: Files panel).
 
 ### What will never be possible
 

@@ -1489,14 +1489,21 @@
   // liste, puis le contenu, plage par plage. Rien n'est lu avant.
   function fppColler(fichiers, rejouer){
     if (!fpp.dispo || !RD.ready || !fichiers || !fichiers.length) return false;
-    var liste = [], total = 0;
+    var liste = [];
     for (var i = 0; i < fichiers.length; i++){
       var f = fichiers[i], nom = RDLib.fpp.nomAnnonce(f && f.name);
       if (!f || nom === null) continue;
       liste.push({ fichier: f, nom: nom, taille: f.size, mtime: f.lastModified, dossier: false, envoyes: 0 });
-      total += f.size;
     }
-    if (!liste.length){
+    return fppAnnoncer(liste, rejouer);
+  }
+  window.__rdFppColler = fppColler;
+
+  // liste : des entrees { fichier (File, ou null pour un dossier), nom, taille, mtime, dossier, envoyes },
+  // chaque dossier AVANT ce qu'il contient.
+  function fppAnnoncer(liste, rejouer){
+    if (!fpp.dispo || !RD.ready) return false;
+    if (!liste || !liste.length){
       notifier(T("Ces fichiers ne peuvent pas être collés (nom vide ou trop long)."), "erreur");
       return true;
     }
@@ -1504,12 +1511,104 @@
       notifier(T(RDLib.messages.NOSEND), "erreur");
       return true;
     }
+    var total = 0, dossiers = 0;
+    liste.forEach(function(e){ if (e.dossier) dossiers++; else total += e.taille; });
     fpp.sortants = liste; fpp.sortants.fini = false;
-    console.log("[fichiers] " + liste.length + " fichier(s) annonce(s) au poste distant (" + total + " octets)");
+    console.log("[fichiers] " + (liste.length - dossiers) + " fichier(s)" + (dossiers ? " et " + dossiers + " dossier(s)" : "")
+      + " annonce(s) au poste distant (" + total + " octets)");
     if (rejouer) rejouer();
     return true;
   }
-  window.__rdFppColler = fppColler;
+
+  // ---- un DOSSIER colle ici : son arborescence, parcourue avant l'annonce.
+  // Le pair attend une liste A PLAT ou chaque dossier precede ce qu'il contient
+  // (sa propre construction : local_file.rs, constr_file_lst) ; l'Explorateur
+  // comme le Finder creent les dossiers dans cet ordre. Chromium donne un
+  // dossier colle sous forme d'entree parcourable (webkitGetAsEntry), comme
+  // pour un depot.
+  function fppEnfants(ent){
+    return new Promise(function(ok){
+      var lect, tout = [];
+      try { lect = ent.createReader(); } catch(_){ ok(tout); return; }
+      (function lot(){
+        lect.readEntries(function(es){                  // rend les entrees par lots : on relit jusqu'au lot vide
+          if (!es || !es.length){ ok(tout); return; }
+          tout = tout.concat(Array.prototype.slice.call(es));
+          lot();
+        }, function(){ ok(tout); });
+      })();
+    });
+  }
+  function fppFichierDe(ent){
+    return new Promise(function(ok){
+      try { ent.file(function(f){ ok(f); }, function(){ ok(null); }); } catch(_){ ok(null); }
+    });
+  }
+  // Un File sans type et sans entree peut etre un DOSSIER que le navigateur ne
+  // sait pas ouvrir : en lire un octet le dit, avant d'annoncer quoi que ce soit.
+  function fppLisible(f){
+    try { return f.slice(0, 1).arrayBuffer().then(function(){ return true; }, function(){ return false; }); }
+    catch(_){ return Promise.resolve(false); }
+  }
+  // sources : [{ ent (entree, ou null), fichier (File, ou null) }], relevees PENDANT l'evenement de collage.
+  //   -> { liste, ecartes, illisibles, trop }
+  async function fppArbre(sources){
+    var r = { liste: [], ecartes: 0, illisibles: [], trop: false };
+    function ajouter(e){
+      if (r.liste.length >= FPP.FICHIERS_MAX){ r.trop = true; return false; }
+      r.liste.push(e);
+      return true;
+    }
+    async function descendre(ent, parents){
+      if (r.trop) return;
+      var composants = parents.concat([ent.name]), chemin = RDLib.fpp.cheminAnnonce(composants);
+      if (chemin === null){ r.ecartes++; return; }
+      if (ent.isDirectory){
+        if (!ajouter({ fichier: null, nom: chemin, taille: 0, mtime: Date.now(), dossier: true, envoyes: 0 })) return;
+        var enfants = await fppEnfants(ent);
+        enfants.sort(function(a, b){ return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+        for (var i = 0; i < enfants.length && !r.trop; i++) await descendre(enfants[i], composants);
+      } else {
+        var f = await fppFichierDe(ent);
+        if (!f){ r.ecartes++; return; }
+        ajouter({ fichier: f, nom: chemin, taille: f.size, mtime: f.lastModified, dossier: false, envoyes: 0 });
+      }
+    }
+    for (var i = 0; i < sources.length && !r.trop; i++){
+      var src = sources[i];
+      if (src.ent && src.ent.isDirectory){ await descendre(src.ent, []); continue; }
+      var f = src.fichier;
+      if (!f) continue;
+      if (!src.ent && !f.type && !(await fppLisible(f))){ r.illisibles.push(f.name); continue; }
+      var nom = RDLib.fpp.nomAnnonce(f.name);
+      if (nom === null){ r.ecartes++; continue; }
+      ajouter({ fichier: f, nom: nom, taille: f.size, mtime: f.lastModified, dossier: false, envoyes: 0 });
+    }
+    return r;
+  }
+  function fppCollerArbre(sources, rejouer){
+    var conn = window.curConn;
+    var lent = setTimeout(function(){ notifier(T("Lecture du dossier…")); }, 800);
+    return fppArbre(sources).then(function(r){
+      clearTimeout(lent);
+      if (window.curConn !== conn || !sessionVivante()) return;      // la session a change pendant le parcours
+      r.illisibles.forEach(function(n){
+        notifier(T("Ce navigateur ne laisse pas lire le dossier « {0} » depuis le presse-papier.", n), "erreur");
+      });
+      // Jamais une arborescence tronquee : un dossier colle a moitie tromperait plus qu'un refus.
+      if (r.trop){
+        notifier(T("Dossier trop grand pour le presse-papier : plus de {0} éléments.", FPP.FICHIERS_MAX), "erreur");
+        return;
+      }
+      if (r.liste.length || !r.illisibles.length) fppAnnoncer(r.liste, rejouer);
+      if (r.ecartes) notifier(T("{0} élément(s) laissé(s) de côté : nom inutilisable ou chemin de plus de 259 caractères.", r.ecartes), "erreur");
+    }, function(e){
+      clearTimeout(lent);
+      console.warn("[fichiers] parcours du dossier :", e);
+      notifier(T("Lecture du dossier impossible."), "erreur");
+    });
+  }
+  window.__rdFppArbre = fppArbre;
 
   function fppSuivre(e, debut, n){
     e.envoyes = Math.max(e.envoyes, debut + n);
@@ -1517,8 +1616,10 @@
     if (!l || l.fini) return;
     for (var i = 0; i < l.length; i++) if (l[i].envoyes < l[i].taille) return;
     l.fini = true;
-    console.log("[fichiers] " + l.length + " fichier(s) transmis au poste distant");
-    notifier(l.length === 1 ? T("Fichier collé sur le poste distant.") : T("{0} fichiers collés sur le poste distant.", l.length));
+    var nf = 0;
+    for (var k = 0; k < l.length; k++) if (!l[k].dossier) nf++;
+    console.log("[fichiers] " + nf + " fichier(s) transmis au poste distant");
+    notifier(nf === 1 ? T("Fichier collé sur le poste distant.") : T("{0} fichiers collés sur le poste distant.", nf));
   }
 
   async function fppServir(req){
@@ -1526,6 +1627,11 @@
     var e = d && fpp.sortants && fpp.sortants[d.index];
     function echec(){ fppEnvoyer({ file_contents_response: { msg_flags: FPP.ECHEC, stream_id: flux, requested_data: new Uint8Array(0) } }); }
     if (!e){ echec(); return; }
+    if (e.dossier){                                    // un dossier n'a pas de contenu : taille nulle, aucune plage
+      if (d.genre === "taille") fppEnvoyer({ file_contents_response: { msg_flags: FPP.OK, stream_id: d.flux, requested_data: RDLib.fpp.taille(0) } });
+      else echec();
+      return;
+    }
     if (d.genre === "taille"){
       fppEnvoyer({ file_contents_response: { msg_flags: FPP.OK, stream_id: d.flux, requested_data: RDLib.fpp.taille(e.taille) } });
       return;
@@ -1551,8 +1657,10 @@
     if (bar && !bar.querySelector(".rdppbtn")) bar.classList.remove("attention");
   }
   function fppLibelle(){
-    var n = fpp.entrants ? fpp.entrants.fichiers.length : 0;
-    return n === 1 ? T("Fichier copié ⇩") : T("{0} fichiers copiés ⇩", n);
+    var els = fpp.entrants ? fpp.entrants.elements : [], n = els.length, d = 0;
+    els.forEach(function(el){ if (el.dossier) d++; });
+    if (n === 1) return d ? T("Dossier copié ⇩") : T("Fichier copié ⇩");
+    return d ? T("{0} éléments copiés ⇩", n) : T("{0} fichiers copiés ⇩", n);
   }
   function fppBouton(){
     var bar = window.__rdBar;
@@ -1567,7 +1675,9 @@
     }
     b.disabled = false;
     b.textContent = fppLibelle();
-    b.title = T("Télécharger ici les fichiers copiés sur le poste distant. Un clic est nécessaire : un navigateur ne peut pas déposer un fichier dans le presse-papier du système.");
+    b.title = fpp.entrants.elements.some(function(el){ return el.dossier; })
+      ? T("Télécharger ici ce qui a été copié sur le poste distant. Un dossier arrive en archive .zip, qui le reconstitue à l'ouverture.")
+      : T("Télécharger ici les fichiers copiés sur le poste distant. Un clic est nécessaire : un navigateur ne peut pas déposer un fichier dans le presse-papier du système.");
     bar.classList.add("attention");
   }
   function fppPlage(index, debut, longueur){
@@ -1590,33 +1700,75 @@
     document.body.appendChild(a); a.click();
     setTimeout(function(){ try{ a.remove(); URL.revokeObjectURL(url); }catch(_){} }, 60000);
   }
+  // Un fichier du poste, lu plage par plage ; surBloc voit passer chaque bloc.
+  async function fppLireFichier(e, f, surBloc){
+    var morceaux = [], pos = 0;
+    while (pos < f.taille){
+      var octets = await fppPlage(f.index, pos, Math.min(FPP.BLOC, f.taille - pos));
+      if (fpp.entrants !== e) throw new Error(T("le presse-papier du poste distant a changé"));
+      if (!octets.length) throw new Error(T("le poste distant a refusé la lecture"));
+      morceaux.push(octets); pos += octets.length;
+      surBloc(octets);
+    }
+    return new Blob(morceaux);                           // un Blob : le navigateur peut le sortir de la memoire vive
+  }
+  // Un clic : chaque fichier copie est telecharge tel quel ; chaque DOSSIER
+  // arrive en une archive .zip qui le reconstitue (un telechargement est un
+  // fichier : un navigateur ne sait pas deposer une arborescence).
   async function fppRecuperer(){
     var e = fpp.entrants;
     if (!e || fpp.enCours) return;
     fpp.enCours = true;
     var bar = window.__rdBar, b = bar && bar.querySelector('.rdppbtn[data-kind="fichiers"]');
     if (b) b.disabled = true;
-    var recus = 0, ecartes = 0, total = 0, fait = 0;
+    var recus = 0, archives = 0, ecartes = 0, trop = 0, total = 0, fait = 0;
     e.fichiers.forEach(function(f){ if (!f.dossier && f.taille <= FPP.TAILLE_MAX) total += f.taille; });
+    function avancer(octets){
+      fait += octets.length;
+      if (b && total) b.textContent = "⇩ " + Math.floor(100 * fait / total) + " %";
+    }
     try {
-      for (var i = 0; i < e.fichiers.length; i++){
-        var f = e.fichiers[i];
-        if (f.dossier) continue;
-        if (f.taille > FPP.TAILLE_MAX){ ecartes++; continue; }
-        var morceaux = [], pos = 0;
-        while (pos < f.taille){
-          var octets = await fppPlage(f.index, pos, Math.min(FPP.BLOC, f.taille - pos));
-          if (fpp.entrants !== e) throw new Error(T("le presse-papier du poste distant a changé"));
-          if (!octets.length) throw new Error(T("le poste distant a refusé la lecture"));
-          morceaux.push(octets); pos += octets.length; fait += octets.length;
-          if (b && total) b.textContent = "⇩ " + Math.floor(100 * fait / total) + " %";
+      for (var i = 0; i < e.elements.length; i++){
+        var el = e.elements[i];
+        if (!el.dossier){
+          var f = el.entrees[0];
+          if (f.taille > FPP.TAILLE_MAX){ ecartes++; continue; }
+          fppTelecharger(await fppLireFichier(e, f, avancer), RDLib.fpp.nomLocal(f.nom));
+          recus++;
+          continue;
         }
-        fppTelecharger(new Blob(morceaux), RDLib.fpp.nomLocal(f.nom));
-        recus++;
+        // Tient-elle dans une archive ? Estimation par exces (noms en UTF-8 : 3 octets au plus par unite).
+        var prevu = 22;
+        el.entrees.forEach(function(x){
+          prevu += 76 + 6 * x.nom.length + ((x.dossier || x.taille > FPP.TAILLE_MAX) ? 0 : x.taille);
+        });
+        if (el.entrees.length > RDLib.zip.C.ENTREES_MAX || prevu > RDLib.zip.C.TAILLE_MAX){ trop++; continue; }
+        var parts = [], entrees = [], decalage = 0;
+        for (var k = 0; k < el.entrees.length; k++){
+          var x = el.entrees[k], ent, blob = null;
+          if (x.dossier) ent = { nom: x.nom, dossier: true, mtime: x.mtime, mode: x.mode, decalage: decalage };
+          else {
+            if (x.taille > FPP.TAILLE_MAX){ ecartes++; continue; }
+            var crc = { v: 0 };
+            blob = await fppLireFichier(e, x, (function(c){ return function(o){ c.v = RDLib.zip.crc(c.v, o); avancer(o); }; })(crc));
+            ent = { nom: x.nom, taille: blob.size, crc: crc.v, mtime: x.mtime, mode: x.mode, decalage: decalage };
+            recus++;
+          }
+          var tete = RDLib.zip.entete(ent);
+          parts.push(tete); decalage += tete.length;
+          if (blob){ parts.push(blob); decalage += blob.size; }
+          entrees.push(ent);
+        }
+        parts.push(RDLib.zip.fin(entrees, decalage));
+        fppTelecharger(new Blob(parts, { type: "application/zip" }), RDLib.fpp.nomLocal(el.nom) + ".zip");
+        archives++;
       }
-      console.log("[fichiers] " + recus + " fichier(s) recupere(s) du poste distant (" + fait + " octets)");
+      console.log("[fichiers] " + recus + " fichier(s) recupere(s) du poste distant (" + fait + " octets)"
+        + (archives ? ", dont " + archives + " dossier(s) en archive" : ""));
       if (ecartes) notifier(T("{0} fichier(s) de plus de 2 Gio : à récupérer par le panneau Fichiers.", ecartes), "erreur");
-      if (recus) notifier(recus === 1 ? T("Fichier téléchargé depuis le poste distant.") : T("{0} fichiers téléchargés depuis le poste distant.", recus));
+      if (trop) notifier(T("{0} dossier(s) de plus de 4 Gio ou de 65535 éléments : à récupérer par le panneau Fichiers.", trop), "erreur");
+      if (archives) notifier(T("{0} dossier(s) téléchargé(s) depuis le poste distant, en archive .zip.", archives));
+      else if (recus) notifier(recus === 1 ? T("Fichier téléchargé depuis le poste distant.") : T("{0} fichiers téléchargés depuis le poste distant.", recus));
     } catch(err){
       console.warn("[fichiers] recuperation :", err);
       notifier(T("Récupération interrompue : {0}", (err && err.message) || err), "erreur");
@@ -1650,12 +1802,13 @@
       if (!fpp.annonce) return;                          // une liste que nous n'avons pas demandee
       fpp.annonce = null;
       if ((cl.format_data_response.msg_flags | 0) !== FPP.OK) return;
-      var fichiers;
-      try { fichiers = RDLib.fpp.lire(cl.format_data_response.format_data).filter(function(f){ return !f.dossier; }); }
+      var tout, elements;
+      try { tout = RDLib.fpp.lire(cl.format_data_response.format_data); elements = RDLib.fpp.elements(tout); }
       catch(e){ console.warn("[fichiers] liste recue illisible :", e.message || e); return; }
-      if (!fichiers.length) return;
-      fpp.entrants = { fichiers: fichiers };
-      console.log("[fichiers] " + fichiers.length + " fichier(s) copie(s) sur le poste distant");
+      if (!elements.length) return;
+      fpp.entrants = { fichiers: tout, elements: elements };
+      var nd = tout.filter(function(f){ return f.dossier; }).length;
+      console.log("[fichiers] " + (tout.length - nd) + " fichier(s)" + (nd ? " et " + nd + " dossier(s)" : "") + " copie(s) sur le poste distant");
       fppBouton();
     } else if (cl.file_contents_request){
       fppServir(cl.file_contents_request);
@@ -1814,23 +1967,28 @@
       // panneau Fichiers : si le poste ne connait pas ce presse-papier, on le
       // dit a l'ecran, avec ce qu'il a annonce, et rien d'autre ne se passe.
       if (cd.files && cd.files.length){
-        var fichiers = [], dossiers = 0;
+        // Entrees et File se relevent ICI, pendant l'evenement : apres, le
+        // presse-papier n'est plus lisible. Le parcours d'un dossier, lui, peut attendre.
+        var sources = [], arbre = false;
         for (var k = 0; k < items.length; k++){
           if (items[k].kind !== "file") continue;
           var ent = null;
           try { ent = items[k].webkitGetAsEntry ? items[k].webkitGetAsEntry() : null; } catch(_){}
-          if (ent && ent.isDirectory){ dossiers++; continue; }
+          if (ent && ent.isDirectory){ sources.push({ ent: ent, fichier: null }); arbre = true; continue; }
           var fk = items[k].getAsFile();
-          if (fk) fichiers.push(fk);
+          if (!fk) continue;
+          if (!ent && !fk.type && items[k].webkitGetAsEntry) arbre = true;     // peut-etre un dossier illisible : a sonder
+          sources.push({ ent: ent, fichier: fk });
         }
-        if (!fichiers.length && !dossiers) fichiers = Array.prototype.slice.call(cd.files);
+        if (!sources.length) sources = Array.prototype.slice.call(cd.files).map(function(f){ return { ent: null, fichier: f }; });
         if (!fpp.dispo){
-          console.log("[fichiers] " + cd.files.length + " fichier(s) colle(s), mais le poste ne les prend pas par le presse-papier");
+          console.log("[fichiers] " + cd.files.length + " element(s) colle(s), mais le poste ne les prend pas par le presse-papier");
           notifier(fppRefus(), "erreur");
           return;
         }
-        if (fichiers.length) fppColler(fichiers, function(){ rejouerCollage(0, 250); });
-        if (dossiers) notifier(T("Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image."), "erreur");
+        var rejouer = function(){ rejouerCollage(0, 250); };
+        if (arbre) fppCollerArbre(sources, rejouer);
+        else fppColler(sources.map(function(x){ return x.fichier; }), rejouer);
         return;
       }
       var t="", h="";
