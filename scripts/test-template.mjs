@@ -2933,3 +2933,165 @@ test("clavier (cablage) : le relachement rejoue ce qui est parti, meme si Ctrl a
   haut({ key: "c", code: "KeyC" });
   assert.equal(m.touches.length, k);
 });
+
+// ====================================================================
+// Onglet cache : la liaison ne depend plus des minuteurs.
+// ====================================================================
+function horlogeLiaison() {
+  const h = { t: 0, ticks: [], reveil: null };
+  h.o = (delai = 12000) => ({ delai, maintenant: () => h.t,
+    chaque: (f) => { h.ticks.push(f); return () => { h.ticks = h.ticks.filter((x) => x !== f); }; },
+    poser: (f) => { h.reveil = f; } });
+  h.avancer = (ms) => { h.t += ms; h.ticks.slice().forEach((f) => f()); };
+  return h;
+}
+const issue = (p) => { const r = { etat: "attente" }; p.then((v) => { r.etat = "ok"; r.v = v; }, (e) => { r.etat = "rejet"; r.v = e; }); return r; };
+const souffle = () => new Promise((r) => setImmediate(r));
+
+test("liaison : un message reveille l'attente A SON ARRIVEE, sans qu'aucun minuteur ne tourne", async () => {
+  const { liaison } = chargerLib();
+  const h = horlogeLiaison(), ws = { _buf: [], _status: "open" };
+  const r = issue(liaison.attendre(ws, h.o()));
+  await souffle();
+  assert.equal(r.etat, "attente");
+  ws._buf.push("m1"); h.reveil();                       // l'evenement « message » du WebSocket
+  await souffle();
+  assert.deepEqual(r, { etat: "ok", v: "m1" }, "rendu sans avancer l'horloge : un onglet cache, aux minuteurs ralentis, lit quand meme");
+  assert.equal(h.ticks.length, 0, "le minuteur de filet est arrete");
+  assert.equal(h.reveil, null);
+  // Un message deja la est rendu tout de suite ; les suivants restent dans l'ordre.
+  ws._buf.push("m2", "m3");
+  assert.equal(await liaison.attendre(ws, h.o()), "m2");
+  assert.deepEqual(ws._buf, ["m3"]);
+});
+
+test("liaison : fermeture et vrai silence sont signales ; un minuteur en retard n'est PAS un silence", async () => {
+  const { liaison } = chargerLib();
+  // Fermeture pendant l'attente : rejet avec l'etat, comme le bundle.
+  let h = horlogeLiaison(), ws = { _buf: [], _status: "open" };
+  let r = issue(liaison.attendre(ws, h.o()));
+  ws._status = "ferme"; h.reveil(); await souffle();
+  assert.deepEqual(r, { etat: "rejet", v: "ferme" });
+  // Deja fermee : rejet immediat.
+  await assert.rejects(liaison.attendre({ _buf: [], _status: "" }, h.o()));
+  // Un vrai silence de 12 s, minuteur regulier : « Timeout ».
+  h = horlogeLiaison(); ws = { _buf: [], _status: "open" };
+  r = issue(liaison.attendre(ws, h.o()));
+  for (let i = 0; i < 47; i++) h.avancer(250);
+  await souffle();
+  assert.equal(r.etat, "attente", "11,75 s : pas encore");
+  for (let i = 0; i < 3; i++) h.avancer(250);
+  await souffle();
+  assert.deepEqual(r, { etat: "rejet", v: "Timeout" });
+  // La page a dormi une minute (onglet cache, minuteurs a un par minute) : le
+  // minuteur se reveille tard. Ce n'est pas la liaison qui s'est tue.
+  h = horlogeLiaison(); ws = { _buf: [], _status: "open" };
+  r = issue(liaison.attendre(ws, h.o()));
+  h.avancer(60000); await souffle();
+  assert.equal(r.etat, "attente", "l'ancien code declarait « Timeout » ici et fermait une session vivante");
+  ws._buf.push("apres"); h.reveil(); await souffle();
+  assert.deepEqual(r, { etat: "ok", v: "apres" });
+});
+
+test("liaison (cablage) : la classe de liaison du bundle est remplacee une fois, pour toutes ses instances", async () => {
+  const m = await montageSortant();
+  class Liaison {
+    constructor() { this._buf = []; this._status = "open"; this.ecoutes = {};
+      this._websocket = { readyState: 1, addEventListener: (t, f) => { (this.ecoutes[t] ||= []).push(f); } }; }
+    next() { return new Promise(() => {}); }             // l'attente par minuteur du bundle : ne rend jamais ici
+    sendMessage() {}
+  }
+  const video = new Liaison();
+  m.w.curConn = { ...m.w.curConn, handleVideoFrame() {}, draw() {}, _ws: video };
+  const fichiers = new Liaison();                        // une AUTRE instance, jamais passee a la page
+  const r = issue(fichiers.next());
+  await souffle();
+  assert.deepEqual(Object.keys(fichiers.ecoutes).sort(), ["close", "error", "message"]);
+  fichiers._buf.push({ test_delay: {} });
+  fichiers.ecoutes.message.forEach((f) => f());
+  await souffle();
+  assert.equal(r.etat, "ok", "la connexion « fichiers » en profite sans etre instrumentee");
+  // La liaison video garde son filtrage (presse-papier, retours du pair) par-dessus.
+  const v = issue(m.w.curConn._ws.next());
+  video._buf.push({ test_delay: { last_delay: 7 } });
+  video.ecoutes.message.forEach((f) => f());
+  await souffle(); await souffle();
+  assert.equal(v.etat, "ok");
+  assert.deepEqual(plat(m.w.RD.stats.delay), [7]);
+});
+
+test("onglet cache : les trames sont acquittees sans etre decodees ; au retour, image-cle et cadence d'avant", async () => {
+  const m = await montageVideo({ caps: { h265: true }, codec: "h265", init: { "rd-prefs": JSON.stringify({ v: 1, fps: 60 }) } });
+  m.trame("h265s");
+  assert.equal(m.decodes.length, 1);
+  m.doc.visibilityState = "hidden";
+  m.w.__rdVisibilite();
+  assert.deepEqual(plat(m.options().at(-1)), { custom_fps: 5 }, "personne ne regarde : 5 images par seconde suffisent");
+  const acks = m.acks.n;
+  for (let i = 0; i < 10; i++) m.trame("h265s", false);
+  assert.equal(m.decodes.length, 1, "rien n'est decode onglet cache");
+  assert.equal(m.acks.n, acks + 10, "mais chaque trame est acquittee : sans cela le flux se fige");
+  const cles = m.cles.n;
+  m.doc.visibilityState = "visible";
+  m.w.__rdVisibilite();
+  assert.deepEqual(plat(m.options().at(-1)), { custom_fps: 60 }, "le plafond choisi par l'utilisateur revient");
+  assert.equal(m.cles.n, cles + 1, "une image-cle est demandee");
+  m.trame("h265s", false);
+  assert.equal(m.decodes.length, 1, "un delta sans sa cle n'est pas decode");
+  m.trame("h265s", true);
+  assert.equal(m.decodes.length, 2);
+  // Sans preference : 30, la valeur par defaut du poste distant.
+  const n = await montageVideo({ caps: { h265: true }, codec: "h265" });
+  n.doc.visibilityState = "hidden"; n.w.__rdVisibilite();
+  n.doc.visibilityState = "visible"; n.w.__rdVisibilite();
+  assert.deepEqual(plat(n.options().at(-1)), { custom_fps: 30 });
+  // Un retour sans passage par « cache » n'envoie rien.
+  const k = n.options().length;
+  n.w.__rdVisibilite();
+  assert.equal(n.options().length, k);
+});
+
+// ====================================================================
+// Image : couleurs, nettete.
+// ====================================================================
+test("couleur : le decodeur est configure en BT.601, la matrice que RustDesk utilise sans le dire", async () => {
+  const { codec } = chargerLib();
+  assert.deepEqual(plat(codec.COULEUR), { primaries: "bt709", transfer: "bt709", matrix: "smpte170m", fullRange: false });
+  const m = await montageVideo({ caps: { h265: true }, codec: "h265" });
+  m.trame("h265s");
+  assert.deepEqual(plat(m.config.colorSpace), plat(codec.COULEUR));
+});
+
+test("affichage : cale au pixel physique pres quand l'ecart est minime, proportions gardees sinon", () => {
+  const { affichage } = chargerLib();
+  const e = (...a) => plat(affichage.echelle(...a));
+  // 1920x1080 dans une fenetre a peine plus grande : un pour un, aucun reechantillonnage.
+  assert.deepEqual(e(1920, 1080, 1936, 1100, 1), { w: 1920, h: 1080, net: true });
+  // Ecran a 125 % : 1920 pixels distants = 1536 pixels CSS = 1920 pixels physiques.
+  assert.deepEqual(e(1920, 1080, 1540, 900, 1.25), { w: 1536, h: 864, net: true });
+  // Ecran Retina (x2) devant un 1280x720 : chaque pixel distant en couvre exactement quatre.
+  assert.deepEqual(e(1280, 720, 1300, 740, 2), { w: 1280, h: 720, net: true });
+  // Fenetre plus petite que l'image : on reduit, en gardant les proportions.
+  assert.deepEqual(e(1920, 1080, 1200, 800, 1), { w: 1200, h: 675, net: false });
+  // Trop loin d'un rapport entier (x1,5) : pas de bande noire de 30 %.
+  assert.deepEqual(e(1280, 720, 1920, 1080, 1), { w: 1920, h: 1080, net: false });
+  // L'image calee ne depasse jamais la fenetre.
+  for (const [lw, lh, vw, vh, d] of [[1920, 1080, 1921, 1081, 1], [2560, 1440, 2100, 1200, 1.25], [1366, 768, 1400, 800, 1.5]]) {
+    const r = affichage.echelle(lw, lh, vw, vh, d);
+    assert.ok(r.w <= vw + 1e-6 && r.h <= vh + 1e-6, JSON.stringify([lw, lh, vw, vh, d, r]));
+    assert.ok(Math.abs(r.w / r.h - lw / lh) < 0.01);
+  }
+  assert.deepEqual(e(0, 0, 100, 100, 1), { w: 0, h: 0, net: false });
+});
+
+test("ajuster : la resolution distante est choisie en pixels PHYSIQUES de la fenetre", async () => {
+  const m = await montageSortant();
+  m.w.RD.res = [{ width: 1280, height: 720 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }];
+  m.w.innerWidth = 1280; m.w.innerHeight = 720;
+  const ajuster = m.bar.children[1];
+  ajuster.onclick();
+  assert.deepEqual(plat(m.envoyes.at(-1).misc.change_resolution), { width: 1280, height: 720 });
+  m.w.devicePixelRatio = 1.5;                            // ecran a 150 % : la fenetre a 1920 pixels reels
+  ajuster.onclick();
+  assert.deepEqual(plat(m.envoyes.at(-1).misc.change_resolution), { width: 1920, height: 1080 });
+});

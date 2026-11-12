@@ -107,9 +107,13 @@
   // les bandes noires DANS l'element, qui fausseraient les coordonnees souris.
   function fitCanvas(){
     var c = active(); if(!c || !c.width || !c.height) return;
-    var k = Math.min(window.innerWidth/c.width, window.innerHeight/c.height);
-    c.style.width  = Math.floor(c.width*k)+"px";
-    c.style.height = Math.floor(c.height*k)+"px";
+    // Au pixel pres quand c'est possible (RDLib.affichage) : image nette, et
+    // « pixelated » garantit qu'un doublement exact ne soit pas lisse.
+    var a = RDLib.affichage.echelle(c.width, c.height, window.innerWidth, window.innerHeight,
+                                    window.devicePixelRatio || 1);
+    c.style.width  = a.w+"px";
+    c.style.height = a.h+"px";
+    c.style.imageRendering = a.net ? "pixelated" : "";
     placerHud();
   }
   window.__rdFit = fitCanvas;
@@ -141,7 +145,8 @@
   var CODECS = RDLib.codec.CHAINES;
   function configDecodeur(){
     return { codec: CODECS[RD.codec], codedWidth: RD.W||1920, codedHeight: RD.H||1080,
-             hardwareAcceleration: "prefer-hardware", optimizeForLatency: true };
+             hardwareAcceleration: "prefer-hardware", optimizeForLatency: true,
+             colorSpace: RDLib.codec.COULEUR };
   }
   // TOUS les codecs sont sondes, pas seulement le premier accepte : le pair
   // choisit parmi ceux qu'on lui annonce, et le repli descend l'echelle.
@@ -732,6 +737,66 @@
   }
   window.__rdPairFiltrer = pairFiltrer;
 
+  // ------------------------------------------------ liaison reactive
+  // Remplace, sur la CLASSE de liaison du bundle, l'attente par minuteur par
+  // une attente pilotee par l'arrivee des messages (RDLib.liaison). Sur la
+  // classe et non sur l'instance : la connexion « fichiers » et les liaisons de
+  // rendez-vous en profitent, sans qu'on ait a les connaitre.
+  function liaisonReactive(ws){
+    try{
+      var proto = ws && Object.getPrototypeOf(ws);
+      if (!proto || proto === Object.prototype || proto.__rdReactive) return;
+      if (typeof proto.next !== "function" || !Array.isArray(ws._buf)) return;
+      Object.defineProperty(proto, "__rdReactive", { value: true });
+      proto.next = function(delai){
+        var moi = this;
+        // L'ecouteur est pose APRES ceux du bundle (onmessage, onclose) : a son
+        // appel, le message est deja dans le tampon, l'etat deja a jour.
+        if (!moi.__rdEcoute && moi._websocket && moi._websocket.addEventListener){
+          moi.__rdEcoute = true;
+          var reveil = function(){ if (moi.__rdReveil) moi.__rdReveil(); };
+          ["message", "close", "error"].forEach(function(t){ moi._websocket.addEventListener(t, reveil); });
+        }
+        return RDLib.liaison.attendre(moi, {
+          delai: delai === undefined ? 12000 : delai,
+          maintenant: function(){ return Date.now(); },
+          chaque: function(f, ms){ var id = setInterval(f, ms); return function(){ clearInterval(id); }; },
+          poser: function(f){ moi.__rdReveil = f; }
+        });
+      };
+      console.log("[liaison] lecture pilotee par l'arrivee des messages (plus de minuteur)");
+    }catch(e){ console.warn("[liaison]", e); }
+  }
+  window.__rdLiaisonReactive = liaisonReactive;
+
+  // ------------------------------------------------ onglet cache
+  // Personne ne regarde : decoder ne sert a rien, et le navigateur peut
+  // suspendre le decodeur materiel d'un onglet cache — sa file gonflait, la
+  // purge redemandait une image-cle toutes les trois secondes. Les trames sont
+  // donc acquittees sans etre decodees, la cadence demandee au poste distant
+  // tombe a 5 i/s, et le retour redemande une image-cle : l'image revient en
+  // une fraction de seconde, a jour.
+  var CADENCE_CACHE = 5;
+  function ongletCache(){ try{ return document.visibilityState === "hidden"; }catch(_){ return false; } }
+  function surVisibilite(){
+    if (!RD.ready || !sessionVivante()) return;
+    if (ongletCache()){
+      RD.cache = true;
+      if (rdSend({misc:{option:{custom_fps:CADENCE_CACHE}}}))
+        console.log("[onglet] cache : cadence demandee a " + CADENCE_CACHE + " i/s, decodage suspendu");
+      return;
+    }
+    if (!RD.cache) return;
+    RD.cache = false;
+    var cadence = prefs.get().fps || 30;
+    rdSend({misc:{option:{custom_fps:cadence}}});
+    RD.wantKey = true; RD.stats.pend.length = 0;
+    try{ window.curConn.refresh(); }catch(_){}
+    console.log("[onglet] de retour : cadence a " + cadence + " i/s, image-cle demandee");
+  }
+  try{ document.addEventListener("visibilitychange", surVisibilite); }catch(_){}
+  window.__rdVisibilite = surVisibilite;
+
   // ------------------------------------------- substitution sur curConn
   function patchConn(c){
     if (!c || !c._ws) return;
@@ -775,6 +840,9 @@
       if (!RD.codec || !evfs){
         return this.__rdOrigHandle.call(this, vf);   // chemin ogv d'origine
       }
+
+      // Onglet cache : acquitter suffit (voir surVisibilite).
+      if (RD.cache && ongletCache()){ RD.wantKey = true; this.sendVideoReceived(); return; }
 
       var dec;
       try { dec = ensureDecoder(); }
@@ -848,6 +916,7 @@
     // msgLoop() fait « const a = await this._ws.next() » puis aiguille :
     // envelopper next() est le seul point ou le message decode passe avant
     // l'aiguillage.
+    liaisonReactive(c._ws);
     if (c._ws && typeof c._ws.next === "function" && c._ws.__rdNext !== c._ws){
       c._ws.__rdNext = c._ws;
       var suivant = c._ws.next.bind(c._ws);
@@ -1095,6 +1164,28 @@
       console.warn("[veille] refus :", e.name, e.message);
       veille = null;
     }
+  }
+
+  // Contre le GEL de l'onglet. Chrome et Edge gelent les onglets caches
+  // (economie d'energie, « onglets en veille ») : plus rien ne s'y execute, donc
+  // plus aucune reponse au poste distant. Un onglet qui detient un verrou Web
+  // Locks n'est pas gele ; on en tient un pendant toute la session.
+  var gel = null;
+  function gelEmpecher(){
+    if (gel || !window.navigator.locks || !window.navigator.locks.request) return;
+    gel = { liberer: null };
+    var moi = gel;
+    try{
+      window.navigator.locks.request("rd-session", { mode: "shared" }, function(){
+        return new Promise(function(res){ moi.liberer = res; if (gel !== moi) res(); });
+      }).catch(function(e){ console.warn("[gel]", e && e.name); });
+      console.log("[gel] verrou tenu : l'onglet ne sera pas gele pendant la session");
+    }catch(e){ gel = null; }
+  }
+  function gelPermettre(){
+    if (!gel) return;
+    var g = gel; gel = null;
+    if (g.liberer) g.liberer();
   }
 
   async function veilleLiberer(){
@@ -1856,7 +1947,11 @@
     sel.onchange=function(){ if(!sel.value) return; var v=sel.value.split("x"); apply(+v[0],+v[1]); };
     fit.onclick=function(){
       var r=RD.res||[]; if(!r.length){ console.warn("[resolution] aucune liste"); return; }
-      var vw=window.innerWidth, vh=window.innerHeight, best=null, score=Infinity;
+      // En pixels PHYSIQUES : sur un ecran a 125 ou 150 %, la fenetre a plus de
+      // pixels que sa taille CSS ne le dit, et l'image choisie etait trop petite
+      // — donc agrandie, donc floue.
+      var dpr=window.devicePixelRatio||1;
+      var vw=window.innerWidth*dpr, vh=window.innerHeight*dpr, best=null, score=Infinity;
       r.forEach(function(m){
         var d=Math.abs(m.width-vw)+Math.abs(m.height-vh);
         if(Math.abs(m.width/m.height - vw/vh)<0.02) d*=0.5;
@@ -1919,7 +2014,7 @@
       // connexion, et reconnect() reutilise l'instance avec un _ws neuf.
       try{ patchConn(window.curConn); }catch(_){}
       var enSession = sessionVivante();
-      if (enSession) veilleActiver(); else veilleLiberer();
+      if (enSession){ veilleActiver(); gelEmpecher(); } else { veilleLiberer(); gelPermettre(); RD.cache = false; }
       // Transition « en session » -> « plus en session » : tenter une reprise.
       if (window.__rdEtait && !enSession){ repriseplanifier(); try{ document.title = "RustDesk"; }catch(_){} }
       if (enSession){ repriseAnnuler(); repriseInfo(""); }

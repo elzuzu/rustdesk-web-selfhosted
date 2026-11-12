@@ -27,7 +27,7 @@ that was missing**: the original client wires up display and nothing else.
 
 | | |
 |---|---|
-| Video | **hardware** H265 or H264 on both ends via WebCodecs, then AV1, VP9, and software as a last resort |
+| Video | **hardware** H265 or H264 on both ends via WebCodecs, then AV1, VP9, and software as a last resort; exact colours, pixel-exact display when the sizes allow |
 | Mouse | movement, left/right click, correctly scaled coordinates; a drag that ends outside the image still releases the button |
 | Wheel, trackpad | pixels are accumulated into notches, so a trackpad no longer scrolls ten times too fast |
 | Touch | one finger drives the mouse (tap, drag, long press = right click), two fingers scroll; a button brings up the device keyboard |
@@ -43,6 +43,7 @@ that was missing**: the original client wires up display and nothing else.
 | Cursor | the real remote cursor, with its hotspot |
 | Audio | Opus, with the audio context resumed on first gesture |
 | Zero-downtime deploys | the TLS layer waits for the web container instead of erroring out during a restart |
+| Hidden tab | the session survives a tab switch: reading no longer depends on timers the browser slows down |
 | Auto-reconnect | a dropped session retries on its own, with backoff — no fallback to the connect form |
 | Settings | quality, frame-rate cap and codec are **remembered** and reapplied on every session, including after an auto-reconnect |
 | Settings bar | collapses to a small handle: the top-right corner of the remote screen stays clickable |
@@ -498,6 +499,65 @@ login form. Without Playwright or a browser it skips itself with a message;
 
 The same steps run in CI, but this does not depend on it: a clone should be
 verifiable offline, and the loop is shorter than pushing to find out.
+
+## Hidden tab: why the session timed out, and what changed
+
+**The cause.** The bundle reads each incoming message by *polling* its buffer with
+`setTimeout(…, 1)`. In a hidden tab the browser slows timers down: once per
+second at first, then **once per minute** after five minutes. During that time the
+page reads nothing, so it neither answers the remote machine's probes nor
+acknowledges video frames — and the peer closes any connection that stays silent
+for 30 seconds (`connection.rs`: `last_recv_time.elapsed() >= SEC30` →
+`"Timeout"`). The messages themselves still arrive: a WebSocket's `message` event
+is not throttled. A second defect sat on top: the bundle's own 12-second
+"Timeout" was measured when the late timer finally fired, so a page that had only
+been asleep declared a live connection dead.
+
+**The fix.**
+
+- Reading is now driven by the **arrival** of a message, not by a timer. The
+  replacement is made on the bundle's connection class, so the file-transfer
+  connection gets it too. A timer remains as a safety net only, and a late timer
+  is recognised as "the page slept", not as silence.
+- While the tab is hidden, frames are **acknowledged without being decoded** and
+  the page asks the peer for 5 frames per second. Coming back restores your
+  frame-rate cap and requests a key frame: the picture is back, up to date, in a
+  fraction of a second. Nobody was watching, so this only removes load.
+- The session holds a **Web Lock**, which keeps Chrome and Edge from *freezing*
+  the tab (energy saver, sleeping tabs).
+
+**What can still cut a session.** A tab the browser **discards** to reclaim
+memory (Chrome's Memory Saver, Edge's sleeping tabs set to discard) is unloaded
+entirely; on return the page reloads and auto-reconnect is all that is left.
+Exclude the site in the browser's performance settings if that happens. A
+suspended computer cuts every connection, whatever the page does.
+
+Verified in the benches, including against the bundle's real connection class
+with timers disabled. **Not** verified over a real ten-minute hidden session.
+
+## Image quality at no extra cost
+
+- **Colours.** RustDesk converts the screen to YUV with libyuv, which means
+  BT.601, and writes nothing about it in the stream. With no indication the
+  browser assumes BT.709: pure green came back as (0, 216, 2) and pure red as
+  (255, 26, 1). The decoder is now told the matrix. Measured in Chromium on VP9,
+  H264 and AV1 — green returns as (0, 255, 2). The cost is nil: it is the same
+  computation with other coefficients, and a stream that does carry a colour tag
+  still takes precedence.
+- **Sharpness.** When the picture is within a few percent of a whole number of
+  physical pixels per remote pixel, it is snapped to it and drawn without
+  interpolation. A 1920-pixel picture shown on 1905 pixels was being resampled in
+  full for an invisible gain of space; on a 125 % or 150 % display it now lands
+  exactly on the physical pixels.
+- **"Fit"** picks the remote resolution in *physical* pixels. On a 150 % display
+  it used to choose a picture one third too small, then enlarge it.
+
+The best quality for the least load is therefore: click **Fit**, so the remote
+resolution matches your window. Fewer pixels to encode, none to interpolate.
+
+What was looked at and **not** done, because it does cost something: 4:4:4 chroma
+(sharper coloured text, about half as much data again), and a higher quality
+ratio — the page already asks for 1.5, RustDesk's "best".
 
 ## Troubleshooting: `invalid key` on the relay
 

@@ -654,6 +654,73 @@ await test("clipboard-sync-opt-in : sans accord, rien n'est lu ; le menu Actions
   assert.match(await p.evaluate(() => [...document.querySelector("#rdbar select.rdactions").options].find((o) => o.value === "sync").textContent), /^✓ /);
 }, OUVERTE);
 
+enTete("Liaison, couleurs, nettete — la vraie classe du bundle, le vrai decodeur");
+
+await test("reactive-link-real-class : sur la VRAIE classe de liaison du bundle, un message reveille l'attente sans minuteur", async (p) => {
+  await p.goto(URL_PAGE);
+  await p.waitForFunction(() => typeof window.connect === "function" && document.getElementById("id"));
+  const journal = []; p.on("console", (m) => journal.push(m.text()));
+  // Une vraie tentative de connexion : le bundle cree sa connexion et sa liaison (elle echouera, personne n'ecoute).
+  await p.evaluate(() => { document.getElementById("id").value = "123456789"; window.connect(); });
+  await p.waitForFunction(() => window.curConn && window.curConn._ws, null, { timeout: 10000 });
+  await p.waitForFunction(() => Object.getPrototypeOf(window.curConn._ws).__rdReactive === true, null, { timeout: 5000 });
+  const r = await p.evaluate(async () => {
+    const Classe = window.curConn._ws.constructor;
+    const ws = new Classe((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/id", false);
+    ws._status = "open";
+    // Les minuteurs sont neutralises : l'ancienne attente (setTimeout de 1 ms) ne rendrait jamais.
+    const st = window.setTimeout, si = window.setInterval;
+    window.setTimeout = () => 0; window.setInterval = () => 0;
+    try {
+      const attente = ws.next(5000);
+      ws._buf.push({ test_delay: { time: 1 } });
+      ws._websocket.dispatchEvent(new MessageEvent("message", { data: "x" }));
+      const m = await Promise.race([attente, new Promise((res) => st(() => res("jamais"), 1500))]);
+      return { m, restant: ws._buf.length };
+    } finally { window.setTimeout = st; window.setInterval = si; try { ws.close(); } catch (e) { /* liaison de test */ } }
+  });
+  assert.deepEqual(r, { m: { test_delay: { time: 1 } }, restant: 0 });
+  assert.ok(journal.some((l) => /lecture pilotee par l'arrivee des messages/.test(l)), "la classe du bundle a bien ete remplacee");
+});
+
+await test("colour-matrix : un flux sans etiquette, encode en BT.601, est rendu aux bonnes couleurs avec la configuration de la page", async (p) => {
+  await p.goto(URL_PAGE);
+  await p.waitForFunction(() => window.RDLib && window.RDLib.codec.COULEUR);
+  const r = await p.evaluate(async () => {
+    if (typeof VideoEncoder === "undefined") return { ignore: "VideoEncoder absent" };
+    const W = 640, H = 360, codec = "vp09.00.40.08";
+    const sup = await VideoEncoder.isConfigSupported({ codec, width: W, height: H, bitrate: 2e6, framerate: 30 }).catch(() => null);
+    if (!sup || !sup.supported) return { ignore: "encodeur VP9 absent" };
+    // Vert pur, converti comme libyuv ARGBToI420 : BT.601, plage limitee.
+    const [Y, U, V] = [Math.round(16 + 0.504 * 255), Math.round(128 - 0.291 * 255), Math.round(128 - 0.368 * 255)];
+    const buf = new Uint8Array(W * H * 3 / 2); buf.fill(Y, 0, W * H); buf.fill(U, W * H, W * H * 5 / 4); buf.fill(V, W * H * 5 / 4);
+    const chunks = [];
+    const enc = new VideoEncoder({ output: (c) => chunks.push(c), error: () => {} });
+    enc.configure({ codec, width: W, height: H, bitrate: 2e6, framerate: 30 });
+    const f = new VideoFrame(buf, { format: "I420", codedWidth: W, codedHeight: H, timestamp: 0,
+      colorSpace: { primaries: null, transfer: null, matrix: null, fullRange: null } });   // sans etiquette, comme RustDesk
+    enc.encode(f, { keyFrame: true }); f.close(); await enc.flush(); enc.close();
+    const lire = async (extra) => { let px = null;
+      const dec = new VideoDecoder({ output: (fr) => { const cv = new OffscreenCanvas(W, H), cx = cv.getContext("2d"); cx.drawImage(fr, 0, 0);
+        px = [...cx.getImageData(W / 2, H / 2, 1, 1).data].slice(0, 3); fr.close(); }, error: () => {} });
+      dec.configure({ codec, codedWidth: W, codedHeight: H, ...extra }); for (const c of chunks) dec.decode(c); await dec.flush(); dec.close(); return px; };
+    return { sans: await lire({}), avec: await lire({ colorSpace: window.RDLib.codec.COULEUR }) };
+  });
+  if (r.ignore) { console.log("      (mesure ignoree : " + r.ignore + ")"); return; }
+  assert.ok(r.sans[1] < 230, "sans la configuration, le navigateur suppose BT.709 et le vert est terni : " + JSON.stringify(r.sans));
+  assert.ok(r.avec[0] <= 3 && r.avec[1] >= 252 && r.avec[2] <= 5, "avec, le vert est le vert : " + JSON.stringify(r.avec));
+});
+
+await test("pixel-exact-fit : sur un ecran a 125 %, une image de 1920 est affichee sur 1920 pixels physiques, sans interpolation", async (p) => {
+  await sessionSimulee(p);
+  const r = await p.evaluate(() => { const c = window.__rdActive(); c.width = 1920; c.height = 1080; window.__rdFit();
+    const b = c.getBoundingClientRect(); return { css: b.width, phys: b.width * devicePixelRatio, rendu: getComputedStyle(c).imageRendering, dpr: devicePixelRatio }; });
+  assert.equal(r.dpr, 1.25);
+  assert.equal(r.css, 1536);
+  assert.equal(r.phys, 1920);
+  assert.equal(r.rendu, "pixelated");
+}, { contexte: { viewport: { width: 1560, height: 900 }, deviceScaleFactor: 1.25 } });
+
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
 
 await test("chips-under-id : sous le champ Id du VRAI formulaire, entre Id et Connect", async (p) => {

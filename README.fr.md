@@ -27,7 +27,7 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 
 | | |
 |---|---|
-| Vidéo | H265 ou H264 **matériel** des deux côtés via WebCodecs, puis AV1, VP9, et le logiciel en dernier recours |
+| Vidéo | H265 ou H264 **matériel** des deux côtés via WebCodecs, puis AV1, VP9, et le logiciel en dernier recours ; couleurs exactes, affichage au pixel près quand les tailles le permettent |
 | Souris | déplacement, clics gauche/droit, coordonnées mises à l'échelle ; un glisser terminé hors de l'image relâche quand même le bouton |
 | Molette, trackpad | les pixels sont cumulés en crans : un trackpad ne défile plus dix fois trop vite |
 | Tactile | un doigt pilote la souris (toucher, glisser, appui long = clic droit), deux doigts font défiler ; un bouton sort le clavier de l'appareil |
@@ -43,6 +43,7 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Curseur | le vrai curseur distant, avec son point chaud |
 | Audio | Opus, avec réveil du contexte au premier geste |
 | Déploiements sans coupure | la couche TLS patiente pendant un redémarrage du conteneur au lieu d'échouer |
+| Onglet caché | la session survit à un changement d'onglet : la lecture ne dépend plus de minuteurs que le navigateur ralentit |
 | Reprise automatique | une session coupée se relance seule, avec délai croissant — pas de retour au formulaire |
 | Réglages | qualité, plafond de cadence et codec sont **mémorisés** et réappliqués à chaque session, reprise automatique comprise |
 | Barre de réglages | se replie en une petite poignée : le coin haut-droit de l'écran distant reste cliquable |
@@ -516,6 +517,68 @@ le passe).
 Les mêmes étapes tournent en intégration continue, mais ce script n'en dépend
 pas : un dépôt cloné doit être vérifiable hors ligne, et la boucle est plus
 courte que de pousser pour savoir.
+
+## Onglet caché : pourquoi la session tombait en timeout, et ce qui a changé
+
+**La cause.** Le bundle lit chaque message en *interrogeant* son tampon par
+`setTimeout(…, 1)`. Dans un onglet caché, le navigateur ralentit les minuteurs :
+une fois par seconde d'abord, puis **une fois par minute** au bout de cinq
+minutes. Pendant ce temps la page ne lit rien : elle ne répond plus aux sondes du
+poste distant et n'acquitte plus les trames vidéo — et le pair ferme toute
+liaison restée muette 30 secondes (`connection.rs` :
+`last_recv_time.elapsed() >= SEC30` → `"Timeout"`). Les messages, eux, arrivent
+toujours : l'événement `message` d'un WebSocket n'est pas ralenti. Un second
+défaut s'y ajoutait : le « Timeout » de 12 secondes du bundle était mesuré quand
+le minuteur en retard se réveillait enfin, si bien qu'une page qui avait
+seulement dormi déclarait morte une liaison vivante.
+
+**La correction.**
+
+- La lecture est pilotée par l'**arrivée** d'un message, plus par un minuteur. Le
+  remplacement se fait sur la classe de liaison du bundle : la connexion de
+  transfert de fichiers en profite aussi. Un minuteur ne reste qu'en filet, et un
+  minuteur en retard est reconnu comme « la page dormait », pas comme un silence.
+- Tant que l'onglet est caché, les trames sont **acquittées sans être décodées**
+  et la page demande 5 images par seconde au pair. Le retour rétablit ton plafond
+  de cadence et redemande une image-clé : l'image revient, à jour, en une
+  fraction de seconde. Personne ne regardait : cela ne fait qu'enlever de la charge.
+- La session tient un **verrou Web Locks**, qui empêche Chrome et Edge de *geler*
+  l'onglet (économie d'énergie, onglets en veille).
+
+**Ce qui peut encore couper une session.** Un onglet que le navigateur
+**décharge** pour récupérer de la mémoire (économiseur de mémoire de Chrome,
+onglets en veille d'Edge réglés pour décharger) est entièrement retiré ; au
+retour la page se recharge, et il ne reste que la reprise automatique. Exclure le
+site dans les réglages de performances du navigateur si cela arrive. Un
+ordinateur mis en veille coupe toutes les liaisons, quoi que fasse la page.
+
+Vérifié dans les bancs, y compris sur la vraie classe de liaison du bundle,
+minuteurs neutralisés. **Pas** vérifié sur une vraie session cachée dix minutes.
+
+## Qualité d'image sans coût supplémentaire
+
+- **Couleurs.** RustDesk convertit l'écran en YUV avec libyuv, donc en BT.601, et
+  n'en écrit rien dans le flux. Sans indication, le navigateur suppose BT.709 : le
+  vert pur revenait en (0, 216, 2), le rouge pur en (255, 26, 1). Le décodeur
+  reçoit maintenant la matrice. Mesuré dans Chromium sur VP9, H264 et AV1 — le
+  vert revient en (0, 255, 2). Le coût est nul : c'est le même calcul avec
+  d'autres coefficients, et un flux qui porte une étiquette de couleur garde la
+  priorité.
+- **Netteté.** Quand l'image est à quelques pour cent d'un nombre entier de
+  pixels physiques par pixel distant, elle y est calée et dessinée sans
+  interpolation. Une image de 1920 pixels affichée sur 1905 était rééchantillonnée
+  en entier pour un gain de place invisible ; sur un écran à 125 % ou 150 %, elle
+  tombe maintenant exactement sur les pixels physiques.
+- **« Ajuster »** choisit la résolution distante en pixels *physiques*. Sur un
+  écran à 150 %, il prenait une image un tiers trop petite, puis l'agrandissait.
+
+La meilleure qualité pour la moindre charge est donc : cliquer sur **Ajuster**,
+pour que la résolution distante corresponde à ta fenêtre. Moins de pixels à
+encoder, aucun à interpoler.
+
+Ce qui a été regardé et **pas** fait, parce que cela coûte : la chrominance 4:4:4
+(texte coloré plus net, moitié plus de données environ), et un ratio de qualité
+plus élevé — la page demande déjà 1,5, le « meilleur » de RustDesk.
 
 ## Dépannage : `invalid key` sur le relais
 

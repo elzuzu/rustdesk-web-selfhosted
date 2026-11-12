@@ -78,9 +78,11 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("online",  function(){ tracer("reseau retrouve"); });
 
   // ----------------------------------------------- battement de diagnostic
-  // Le tarissement du flux en onglet cache n'est pas explique : la liaison
-  // meurt apres un long silence, sans trame de fermeture. Trois causes
-  // possibles, qu'un simple releve periodique separe :
+  // Le tarissement du flux en onglet cache EST explique, et corrige : le bundle
+  // lisait ses messages par setTimeout, que le navigateur ralentit dans un
+  // onglet cache — la page ne repondait plus, le poste distant coupait apres
+  // 30 s (voir RDLib.liaison et liaisonReactive). Ce releve reste : il separe
+  // les causes qui subsistent, quand une coupure survient quand meme :
   //   veille systeme ou onglet gele -> un battement tarde de plusieurs minutes
   //   reseau perdu                  -> navigator.onLine passe a faux
   //   emetteur distant tari         -> le silence croit, tout le reste tient

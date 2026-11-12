@@ -474,6 +474,14 @@
     av1:  "av01.0.13M.08",
     vp9:  "vp09.00.50.08"
   };
+  // La matrice de couleur du flux. RustDesk convertit l'ecran en YUV avec
+  // libyuv (ARGBToI420, ARGBToNV12) : BT.601, plage limitee — et n'en ecrit rien
+  // dans le flux. Sans indication, le navigateur suppose BT.709 : le vert pur
+  // revenait a (0, 216, 2), le rouge a (255, 26, 1). Declaree ici, elle ne
+  // s'applique QUE si le flux ne dit rien : une etiquette dans le flux l'emporte.
+  // Mesure dans Chromium sur VP9, H264 et AV1 ; aucun cout, c'est le meme calcul
+  // avec d'autres coefficients.
+  var CODEC_COULEUR = { primaries: "bt709", transfer: "bt709", matrix: "smpte170m", fullRange: false };
   var CODEC_CHAMPS = { h265: "h265s", h264: "h264s", av1: "av1s", vp9: "vp9s" };
 
   // Le meilleur codec que ce navigateur decode, hors ceux qui ont echoue sur
@@ -632,6 +640,61 @@
   function collerAvec(traduit, localMac, distant){
     var cmd = traduit ? famille(distant) === "mac" : !!localMac;
     return { ctrl: !cmd, meta: cmd };
+  }
+
+  // --------------------------------------------------------------- affichage
+  // La taille a l'ecran de l'image distante, en pixels CSS. Elle tient dans la
+  // fenetre en gardant ses proportions. Quand elle tombe a quelques pour cent
+  // d'un rapport ENTIER de pixels physiques — un pixel distant pour un pixel
+  // d'ecran, ou pour deux — on s'y cale : le navigateur n'a plus rien a
+  // interpoler, et le texte est aussi net que sur le poste distant. Sans cela,
+  // une image de 1920 affichee sur 1905 pixels est reechantillonnee en entier
+  // pour un gain de place invisible.
+  //   lw, lh : image distante ; vw, vh : fenetre (CSS) ; dpr : pixels physiques par pixel CSS
+  // Rend { w, h, net } ; net : affichage au pixel pres.
+  function echelleAffichage(lw, lh, vw, vh, dpr){
+    if (!(lw > 0 && lh > 0 && vw > 0 && vh > 0)) return { w: 0, h: 0, net: false };
+    dpr = dpr > 0 ? dpr : 1;
+    var k = Math.min(vw / lw, vh / lh);            // pixels CSS par pixel distant
+    var kp = k * dpr, n = Math.floor(kp + 1e-9);   // pixels physiques par pixel distant
+    if (n >= 1 && kp - n <= n * 0.06)
+      return { w: lw * n / dpr, h: lh * n / dpr, net: true };
+    return { w: Math.floor(lw * k), h: Math.floor(lh * k), net: false };
+  }
+
+  // ---------------------------------------------------------------- liaison
+  // Le bundle attend chaque message en INTERROGEANT son tampon par
+  // setTimeout(…, 1). Dans un onglet cache, le navigateur ralentit les
+  // minuteurs : une fois par seconde, puis une fois par MINUTE apres cinq
+  // minutes. Pendant ce temps la page ne lit plus rien, donc ne repond plus aux
+  // sondes du poste distant et n'acquitte plus les trames — et le poste distant
+  // coupe apres 30 s de silence (« Timeout »). Les messages, eux, arrivent
+  // toujours : l'evenement « message » d'un WebSocket n'est pas ralenti.
+  //
+  // attendre() rend donc la main A L'ARRIVEE du message. Un minuteur ne sert
+  // plus que de filet (fermeture, delai). Et le delai ne compte que le silence
+  // reel : si le minuteur lui-meme a ete retarde, la page dormait — ce n'est pas
+  // la liaison qui s'est tue, on repart de zero au lieu de declarer « Timeout ».
+  //   ws    : { _buf: [], _status: "open" | autre }
+  //   o     : { delai, maintenant(), chaque(f, ms) -> arreter(), poser(reveil) }
+  function attendreMessage(ws, o){
+    if (ws._buf.length) return Promise.resolve(ws._buf.shift());
+    if (ws._status !== "open") return Promise.reject(ws._status);
+    return new Promise(function(res, rej){
+      var debut = o.maintenant(), vu = debut, fini = false, arreter = null;
+      function finir(f, v){ if (fini) return; fini = true; if (arreter) arreter(); o.poser(null); f(v); }
+      function tenter(){
+        if (fini) return;
+        var t = o.maintenant();
+        if (ws._buf.length){ finir(res, ws._buf.shift()); return; }
+        if (ws._status !== "open"){ finir(rej, ws._status); return; }
+        if (t - vu > 2000) debut = t;               // le minuteur a dormi : la page etait gelee
+        vu = t;
+        if (t - debut > o.delai) finir(rej, "Timeout");
+      }
+      o.poser(tenter);
+      arreter = o.chaque(tenter, 250);
+    });
   }
 
   // ---------------------------------------------------------------- molette
@@ -1015,10 +1078,12 @@
   window.RDLib = {
     v: 1,
     i18n: { creer: creerI18n, langue: langueDe, EN: EN, STATUTS: STATUTS },
-    codec: { ORDRE: CODEC_ORDRE, PREFER: CODEC_PREFER, CHAINES: CODEC_CHAINES,
+    codec: { ORDRE: CODEC_ORDRE, PREFER: CODEC_PREFER, CHAINES: CODEC_CHAINES, COULEUR: CODEC_COULEUR,
              meilleur: codecMeilleur, capacites: codecCapacites, flux: codecFlux },
     pair:  { retour: retourPair, demande2fa: demande2fa, code2fa: code2fa },
     molette: { creer: creerMolette },
+    affichage: { echelle: echelleAffichage },
+    liaison: { attendre: attendreMessage },
     clavier: { famille: famille, mode: modeClavier, traduire: traduire, souris: traduireSouris,
                estTexte: estTexte, collerAvec: collerAvec },
     tactile: { creer: creerTactile },
