@@ -2298,13 +2298,14 @@ test("actions : redemarrer demande confirmation ; un refus n'envoie rien", async
 
 test("retour du pair : table des etats, valeurs inconnues sans effet", () => {
   const { pair } = chargerLib();
-  assert.deepEqual(plat(pair.retour({ block_input_state: 4 })), { option: "block-input", actif: false, ok: true, texte: "Saisie locale débloquée sur le poste distant." });
+  assert.deepEqual(plat(pair.retour({ block_input_state: 4 })), { option: "block-input", actif: false, ok: true, texte: "Saisie locale débloquée sur le poste distant.", details: "" });
+  assert.equal(pair.retour({ block_input_state: 3, details: " No permission " }).details, "No permission", "les details accompagnent un echec, a part du texte traduisible");
   assert.equal(pair.retour({ privacy_mode_state: 9 }).actif, false);
   assert.equal(pair.retour({ privacy_mode_state: 10 }).actif, true, "l'arret a echoue : le mode est toujours actif");
   for (const v of [{ block_input_state: 0 }, { privacy_mode_state: 0 }, { privacy_mode_state: 99 }, { block_input_state: "__proto__" }, {}, null, "x"]) {
     assert.equal(pair.retour(v).option, null, JSON.stringify(v));
   }
-  assert.equal(pair.retour({ block_input_state: 2, details: "bruit" }).texte, "Saisie locale bloquée sur le poste distant.", "les details n'accompagnent qu'un echec");
+  assert.equal(pair.retour({ block_input_state: 2, details: "bruit" }).details, "", "les details n'accompagnent qu'un echec");
 });
 
 test("ecrans : le selecteur n'apparait qu'avec plusieurs ecrans, et suit la reponse du pair", async () => {
@@ -2588,4 +2589,61 @@ test("manifeste : la page est installable, et rien n'y pointe hors du deploiemen
   assert.match(html, /<link rel="manifest" href="manifest\.json" crossorigin="use-credentials">/);
   const extraction = lire(path.join(RACINE, "scripts", "extract-assets.sh"));
   for (const f of ["manifest.json", "icon-192.png", "icon-512.png"]) assert.ok(extraction.includes(f), f + " n'est pas copie dans html/");
+});
+
+// ====================================================================
+// Langue : le francais est la cle, l'anglais la traduction.
+// ====================================================================
+test("i18n : francais par defaut, anglais sur demande, substitution des arguments", () => {
+  const { i18n } = chargerLib();
+  const fr = i18n.creer("fr"), en = i18n.creer("en");
+  assert.equal(fr("Quitter"), "Quitter");
+  assert.equal(en("Quitter"), "Quit");
+  assert.equal(en("Écran {0}", 2), "Display 2");
+  assert.equal(fr("reconnexion {0}/6 dans {1} s", 3, 4), "reconnexion 3/6 dans 4 s");
+  assert.equal(en("un texte que personne n'a traduit"), "un texte que personne n'a traduit", "absent du dictionnaire : le francais, jamais du vide");
+  assert.equal(en("toString"), "toString", "une cle heritee d'Object n'est pas une traduction");
+  assert.equal(en("Écran {0}"), "Display ", "un argument manquant ne s'affiche pas « undefined »");
+  // Le choix memorise, sinon le navigateur ; francais si la langue est inconnue.
+  assert.equal(i18n.langue("en", "fr-FR"), "en");
+  assert.equal(i18n.langue(undefined, "fr-CH"), "fr");
+  assert.equal(i18n.langue(undefined, "de-DE"), "en");
+  assert.equal(i18n.langue("xx", undefined), "fr");
+});
+
+test("i18n : chaque texte de l'interface a sa traduction, avec les memes emplacements", () => {
+  const lib = chargerLib(), EN = lib.i18n.EN;
+  // Les cles ecrites en dur dans la page : T("…").
+  const cles = new Set([...html.matchAll(/(?<![\w.])T\("((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse('"' + m[1] + '"')));
+  assert.ok(cles.size > 100, "le releve a trouve " + cles.size + " cles : l'expression ne voit plus les appels");
+  // Celles qui passent par une table avant d'atteindre T().
+  for (const v of Object.values(plat(lib.messages))) cles.add(v);
+  for (const v of Object.values(plat(lib.i18n.STATUTS))) cles.add(v);
+  for (const etat of [2, 3, 4, 5]) cles.add(lib.pair.retour({ block_input_state: etat }).texte);
+  for (const etat of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) cles.add(lib.pair.retour({ privacy_mode_state: etat }).texte);
+  for (const m of html.matchAll(/\["(?:disable-audio|disable-clipboard|lock-after-session-end|privacy-mode|block-input)","([^"]+)"\]/g)) cles.add(m[1]);
+  for (const m of html.matchAll(/(?:echec|finirJob\(j,)\s*\(?"([^"]+)"\)/g)) cles.add(m[1]);
+  const manquantes = [...cles].filter((k) => !Object.prototype.hasOwnProperty.call(EN, k));
+  assert.deepEqual(manquantes, [], "textes sans traduction anglaise");
+  const emplacements = (t) => (t.match(/\{\d\}/g) || []).sort().join("");
+  for (const [k, v] of Object.entries(plat(EN))) {
+    assert.ok(typeof v === "string" && v.trim(), "traduction vide : " + k);
+    assert.equal(emplacements(v), emplacements(k), "emplacements differents : " + k);
+  }
+  // Les libelles alignes de la telemetrie gardent leur largeur.
+  for (const k of ["aller-retour  p50/p95/p99   ", "décodage      p50/p95/p99   "]) assert.equal(EN[k].length, k.length, k);
+});
+
+test("i18n : la barre et les retours suivent la langue memorisee", async () => {
+  const m = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, lang: "en" }) } });
+  assert.equal(m.w.__rdLangue, "en");
+  assert.equal(m.bar.children.find((c) => c.className === "quit").textContent, "Quit");
+  assert.equal(menuActions(m).children[0].textContent, "Actions");
+  assert.equal(menuActions(m).children.find((o) => o.value === "opt:privacy-mode").textContent, "Privacy mode");
+  m.w.__rdPairFiltrer(m.w.curConn, { misc: { back_notification: { privacy_mode_state: 3, details: "x" } } });
+  assert.ok(m.toasts().some((t) => t.texte === "The remote machine does not offer privacy mode. (x)"), JSON.stringify(m.toasts()));
+  // Sans preference ni langue de navigateur connue : francais.
+  const fr = await montageSortant();
+  assert.equal(fr.w.__rdLangue, "fr");
+  assert.equal(fr.bar.children.find((c) => c.className === "quit").textContent, "Quitter");
 });

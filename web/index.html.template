@@ -318,6 +318,11 @@
 <div id="app"></div>
 
 <script>
+// Traduction, pour tous les blocs : window.__rdT est pose par le bloc de
+// session une fois la langue connue. Avant cela — et si ce bloc manquait — le
+// texte francais, qui est la cle, s'affiche tel quel.
+function T(){ return window.__rdT ? window.__rdT.apply(null, arguments) : arguments[0]; }
+
 // Chemin de rendu Flutter : inutilise ici, le client autonome dessine via
 // YUVCanvas. Le stub evite que chaque trame leve une ReferenceError.
 window.onRgba = function(){};
@@ -448,7 +453,7 @@ if ("serviceWorker" in navigator) {
   };
 
   function resumeCle(k){
-    if (!k) return "aucune clé envoyée";
+    if (!k) return T("aucune clé envoyée");
     if (k.length <= 16) return k + " (" + k.length + " car.)";
     return k.slice(0, 8) + "…" + k.slice(-6) + " (" + k.length + " car.)";
   }
@@ -457,21 +462,15 @@ if ("serviceWorker" in navigator) {
     var envoyee = "";
     try { envoyee = localStorage.getItem("key") || ""; } catch(e){}
     var attendue = window.__rdCleConfig || "";
-    var m = "hbbr a refusé la clé. Envoyée par ce navigateur : " + resumeCle(envoyee) + ". ";
+    var m = T("hbbr a refusé la clé. Envoyée par ce navigateur : {0}. ", resumeCle(envoyee));
     if (!envoyee) {
-      m += "Aucune clé n'a été transmise : le bundle lit licence_key dans "
-         + "localStorage et omet le champ s'il est vide — hbbr rejette de la même "
-         + "façon qu'une clé fausse. Recharge la page pour la réécrire. ";
+      m += T("Aucune clé n'a été transmise : le bundle lit licence_key dans localStorage et omet le champ s'il est vide — hbbr rejette de la même façon qu'une clé fausse. Recharge la page pour la réécrire. ");
     } else if (attendue && envoyee !== attendue) {
-      m += "Elle diffère de celle configurée dans cette page (" + resumeCle(attendue)
-         + ") : ton localStorage est périmé. Lance rdRelayReset() puis reconnecte-toi. ";
+      m += T("Elle diffère de celle configurée dans cette page ({0}) : ton localStorage est périmé. Lance rdRelayReset() puis reconnecte-toi. ", resumeCle(attendue));
     } else {
-      m += "Elle est bien celle configurée dans cette page, donc c'est le SERVEUR qui "
-         + "n'applique pas cette clé. Cause n° 1 : hbbs et hbbr ne partagent pas leur "
-         + "répertoire de clés, et chacun a généré la sienne. Compare les deux : "
-         + "docker logs hbbs 2>&1 | grep 'Key:' et docker logs hbbr 2>&1 | grep 'Key:' ";
+      m += T("Elle est bien celle configurée dans cette page, donc c'est le SERVEUR qui n'applique pas cette clé. Cause n° 1 : hbbs et hbbr ne partagent pas leur répertoire de clés, et chacun a généré la sienne. Compare les deux : docker logs hbbs 2>&1 | grep 'Key:' et docker logs hbbr 2>&1 | grep 'Key:' ");
     }
-    m += "— rdRelayTest() en console rejoue le test en 3 s.";
+    m += T("— rdRelayTest() en console rejoue le test en 3 s.");
     return m;
   }
 
@@ -483,7 +482,7 @@ if ("serviceWorker" in navigator) {
       el.style.cssText = "position:fixed;top:1.2rem;left:50%;transform:translateX(-50%);z-index:99999;padding:1rem 1.5rem;border-radius:8px;background:#2a1215;border:1px solid #991b1b;color:#f87171;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;font-size:0.9rem;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.6);display:flex;align-items:center;gap:0.75rem;";
       document.body.appendChild(el);
     }
-    var title = type === "key" ? "Échec d'authentification par clé (invalid key)" : "Échec de connexion au poste distant (Timeout)";
+    var title = type === "key" ? T("Échec d'authentification par clé (invalid key)") : T("Échec de connexion au poste distant (Timeout)");
     el.innerHTML = '<span style="font-size:1.5rem">⚠️</span> <div><strong style="color:#fee2e2">' + title + '</strong><br><span style="font-size:0.85rem;color:#fca5a5">' + msg + '</span></div><button onclick="this.parentElement.remove()" style="background:transparent;border:0;color:#fca5a5;font-size:1.2rem;cursor:pointer;margin-left:auto;padding:0 0.4rem">✕</button>';
   }
 
@@ -546,11 +545,7 @@ if ("serviceWorker" in navigator) {
           // L'autre jambe du relais. Une cle fausse cote POSTE ne tombe pas en
           // moins d'une seconde : elle nous laisse attendre le pair pendant les
           // 30 s de hbbr. Les deux pannes se ressemblent a l'ecran.
-          showBannerError("Le poste distant n'a pas rejoint le relais dans les 30 s. "
-            + "Soit il est hors ligne ou ne pointe pas vers ce serveur, soit sa propre "
-            + "clé est fausse : hbbr l'a rejeté de son côté, et nous avons attendu un "
-            + "pair qui ne viendrait jamais. Vérifie la clé dans ses réglages réseau, "
-            + "et que le port 21117/tcp est ouvert.", "timeout");
+          showBannerError(T("Le poste distant n'a pas rejoint le relais dans les 30 s. Soit il est hors ligne ou ne pointe pas vers ce serveur, soit sa propre clé est fausse : hbbr l'a rejeté de son côté, et nous avons attendu un pair qui ne viendrait jamais. Vérifie la clé dans ses réglages réseau, et que le port 21117/tcp est ouvert."), "timeout");
         }
       }
 
@@ -1489,7 +1484,7 @@ window.onGlobalEvent = function(payload){
       var t = Object.prototype.hasOwnProperty.call(table, v) ? table[v] : null;
       if (!t) return null;
       var d = typeof bn.details === "string" ? bn.details.trim().slice(0, 200) : "";
-      return { option: option, actif: t[0], ok: t[1], texte: t[2] + (d && !t[1] ? " (" + d + ")" : "") };
+      return { option: option, actif: t[0], ok: t[1], texte: t[2], details: t[1] ? "" : d };
     }
     return (bn.block_input_state != null && lire(RETOURS_SAISIE, Number(bn.block_input_state), "block-input"))
         || (bn.privacy_mode_state != null && lire(RETOURS_CONFID, Number(bn.privacy_mode_state), "privacy-mode"))
@@ -1513,7 +1508,186 @@ window.onGlobalEvent = function(payload){
   // francaise, EN en donne la traduction. Un texte absent du dictionnaire
   // s'affiche en francais plutot que de disparaitre. {0}, {1}… sont remplaces
   // par les arguments suivants.
-  var EN = {/*@EN@*/};
+  var EN = {
+    "Codec {0} indisponible ({1}) : retour en automatique.": "{0} codec unavailable ({1}): back to automatic.",
+    "Presse-papier : opération impossible ({0}).": "Clipboard: operation failed ({0}).",
+    "Déposer ce contenu dans le presse-papier de ce navigateur. Un clic est nécessaire : le navigateur n'écrit pas dans le presse-papier sans geste de ta part.": "Put this content on this browser's clipboard. A click is required: the browser does not write to the clipboard without a gesture from you.",
+    "Image reçue ⇩": "Image received ⇩",
+    "Texte reçu ⇩": "Text received ⇩",
+    "reprise abandonnée — recharge la page": "reconnection abandoned — reload the page",
+    "reconnexion {0}/6 dans {1} s": "reconnecting {0}/6 in {1} s",
+    "reconnexion en cours…": "reconnecting…",
+    "Image réduite de {0}×{1} à {2}×{3} pour tenir dans la limite d'envoi.": "Image reduced from {0}×{1} to {2}×{3} to fit the sending limit.",
+    "Plafond de cadence. Le serveur décide la cadence réelle selon la latence ; ce réglage ne fait que la borner. Le baisser a un effet immédiat, le monter n'en a que si la liaison suit.": "Frame-rate cap. The server decides the actual rate from the measured latency; this setting only bounds it. Lowering it takes effect at once, raising it only helps if the link keeps up.",
+    "{0} i/s max": "{0} fps max",
+    "Ctrl brut": "Raw Ctrl",
+    "Écran {0}": "Display {0}",
+    "Couper le son distant": "Mute remote audio",
+    "Suspendre le presse-papier": "Suspend clipboard",
+    "Verrouiller en quittant": "Lock on exit",
+    "Mode confidentialité": "Privacy mode",
+    "Bloquer la saisie locale": "Block local input",
+    "Action impossible : {0}": "Action failed: {0}",
+    "Plein écran refusé par le navigateur ({0}).": "Full screen refused by the browser ({0}).",
+    "Résolution": "Resolution",
+    "(indisponible)": "(unavailable)",
+    "aller-retour  p50/p95/p99   ": "round trip    p50/p95/p99   ",
+    "décodage      p50/p95/p99   ": "decode        p50/p95/p99   ",
+    "trames reçues {0}/s    débit cible {1} kbit/s    codec {2}": "frames received {0}/s    target bitrate {1} kbit/s    codec {2}",
+    "logiciel": "software",
+    "hbbr a refusé la clé. Envoyée par ce navigateur : {0}. ": "hbbr refused the key. Sent by this browser: {0}. ",
+    "Aucune clé n'a été transmise : le bundle lit licence_key dans localStorage et omet le champ s'il est vide — hbbr rejette de la même façon qu'une clé fausse. Recharge la page pour la réécrire. ": "No key was sent: the bundle reads licence_key from localStorage and omits the field when it is empty — hbbr rejects that exactly like a wrong key. Reload the page to rewrite it. ",
+    "Elle diffère de celle configurée dans cette page ({0}) : ton localStorage est périmé. Lance rdRelayReset() puis reconnecte-toi. ": "It differs from the one configured in this page ({0}): your localStorage is stale. Run rdRelayReset() and reconnect. ",
+    "Elle est bien celle configurée dans cette page, donc c'est le SERVEUR qui n'applique pas cette clé. Cause n° 1 : hbbs et hbbr ne partagent pas leur répertoire de clés, et chacun a généré la sienne. Compare les deux : docker logs hbbs 2>&1 | grep 'Key:' et docker logs hbbr 2>&1 | grep 'Key:' ": "It is the one configured in this page, so it is the SERVER that does not apply this key. Cause no. 1: hbbs and hbbr do not share their key directory, and each generated its own. Compare the two: docker logs hbbs 2>&1 | grep 'Key:' and docker logs hbbr 2>&1 | grep 'Key:' ",
+    "— rdRelayTest() en console rejoue le test en 3 s.": "— rdRelayTest() in the console replays the test in 3 s.",
+    "Le poste distant n'a pas rejoint le relais dans les 30 s. Soit il est hors ligne ou ne pointe pas vers ce serveur, soit sa propre clé est fausse : hbbr l'a rejeté de son côté, et nous avons attendu un pair qui ne viendrait jamais. Vérifie la clé dans ses réglages réseau, et que le port 21117/tcp est ouvert.": "The remote machine did not join the relay within 30 s. Either it is offline or not pointed at this server, or its own key is wrong: hbbr rejected it on its side, and we waited for a peer that would never come. Check the key in its network settings, and that port 21117/tcp is open.",
+    "déconnecté": "disconnected",
+    "connexion…": "connecting…",
+    "connecté": "connected",
+    "session vidéo absente": "no video session",
+    "aucune session en cours": "no session in progress",
+    "délai dépassé à l'ouverture": "timed out while opening",
+    "nom non confirmé": "name not confirmed",
+    "terminé": "done",
+    "rien à transférer": "nothing to transfer",
+    "annulé": "cancelled",
+    "o": "B",
+    "Ko": "KB",
+    "Mo": "MB",
+    "Go": "GB",
+    "To": "TB",
+    "Nouveau dossier": "New folder",
+    "Créé dans {0}": "Created in {0}",
+    "nouveau dossier": "new folder",
+    "Taper le nom du dossier pour confirmer : {0}": "Type the folder name to confirm: {0}",
+    "Échec d'authentification par clé (invalid key)": "Key authentication failed (invalid key)",
+    "Échec de connexion au poste distant (Timeout)": "Could not reach the remote machine (Timeout)",
+    "Session": "Session",
+    "Image déposée dans le presse-papier local.": "Image placed on the local clipboard.",
+    "Texte déposé dans le presse-papier local.": "Text placed on the local clipboard.",
+    "Code refusé": "Code refused",
+    "Vérification en deux étapes": "Two-step verification",
+    "Code à 6 chiffres de l'application d'authentification du poste distant.": "6-digit code from the remote machine's authenticator app.",
+    "Valider": "Confirm",
+    "Utiliser cet ID (Suppr ou Retour arrière pour le retirer de la liste)": "Use this ID (Delete or Backspace removes it from the list)",
+    "Retirer de la liste": "Remove from the list",
+    "Effacer": "Clear",
+    "Effacer toute la liste": "Clear the whole list",
+    "Dernières connexions": "Recent connections",
+    "Réglages de la session (résolution, qualité, fichiers…) : clique sur ⚙ en haut à droite.": "Session settings (resolution, quality, files…): click ⚙ at the top right.",
+    "Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller.": "This clipboard content is neither text nor an image: nothing to paste.",
+    "Texte trop volumineux pour le presse-papier distant (limite : 1 Mio).": "Text too large for the remote clipboard (limit: 1 MiB).",
+    "Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu.": "The remote machine is too old for rich text, and no plain text accompanies this content.",
+    "Résolution de l'écran distant": "Remote display resolution",
+    "Ajuster": "Fit",
+    "Choisir la résolution la plus proche de la fenêtre": "Pick the resolution closest to the window",
+    "Qualité d'image": "Image quality",
+    "Équilibre": "Balanced",
+    "Qualité": "Quality",
+    "Fluidité": "Smoothness",
+    "Codec vidéo": "Video codec",
+    "Codec auto": "Auto codec",
+    "Logiciel": "Software",
+    "Ctrl est converti en Cmd (copier/coller macOS). Cliquer pour le mode terminal.": "Ctrl is converted to Cmd (macOS copy/paste). Click for terminal mode.",
+    "Ctrl est transmis tel quel (Ctrl+C = SIGINT). Cliquer pour le mode macOS.": "Ctrl is sent as is (Ctrl+C = SIGINT). Click for macOS mode.",
+    "Écran du poste distant à afficher": "Remote display to show",
+    "Actions sur le poste distant": "Actions on the remote machine",
+    "Actions": "Actions",
+    "Ctrl+Alt+Suppr": "Ctrl+Alt+Del",
+    "Verrouiller la session": "Lock the session",
+    "Redémarrer le poste…": "Restart the machine…",
+    "Redémarrer le poste distant ?": "Restart the remote machine?",
+    "La session sera coupée.": "The session will be dropped.",
+    "Redémarrer": "Restart",
+    "Redémarrage demandé au poste distant.": "Restart requested from the remote machine.",
+    "Saisie pour le poste distant": "Input for the remote machine",
+    "Clavier": "Keyboard",
+    "Afficher le clavier de l'appareil": "Show the device keyboard",
+    "Fenêtre": "Window",
+    "Plein écran": "Full screen",
+    "Quitter le plein écran": "Exit full screen",
+    "Plein écran : les raccourcis clavier partent au poste distant": "Full screen: keyboard shortcuts go to the remote machine",
+    "Plein écran : les raccourcis partent au poste distant. Maintenir Échap pour sortir.": "Full screen: shortcuts go to the remote machine. Hold Esc to exit.",
+    "Quitter": "Quit",
+    "Afficher les réglages de la session": "Show session settings",
+    "Replier les réglages": "Collapse settings",
+    "aucune clé envoyée": "no key sent",
+    "Fichiers distants": "Remote files",
+    "Fermer le panneau": "Close the panel",
+    "Dossier parent": "Parent folder",
+    "Rafraîchir": "Refresh",
+    "Téléverser": "Upload",
+    "Envoyer des fichiers ou un dossier vers ce répertoire": "Send files or a folder to this directory",
+    "+ Dossier": "+ Folder",
+    "Déposer ici pour téléverser dans ce dossier": "Drop here to upload into this folder",
+    "Que téléverser ?": "Upload what?",
+    "Le sélecteur du navigateur ne peut pas proposer les deux à la fois.": "The browser picker cannot offer both at once.",
+    "Des fichiers": "Files",
+    "Un dossier": "A folder",
+    "Dossier vide": "Empty folder",
+    "Ouvrir": "Open",
+    "Télécharger": "Download",
+    "Télécharger le dossier": "Download the folder",
+    "Renommer": "Rename",
+    "Supprimer": "Delete",
+    "Annuler": "Cancel",
+    "Glisser vers le bureau (Chromium), ou cliquer pour retélécharger": "Drag to the desktop (Chromium), or click to download again",
+    "Confirmer": "Confirm",
+    "Supprimer le dossier": "Delete the folder",
+    "Supprimer le fichier": "Delete the file",
+    "Le dossier ET tout son contenu seront effacés sur le poste distant. Il n'y a pas de corbeille : c'est irréversible.": "The folder AND everything in it will be erased on the remote machine. There is no trash: this cannot be undone.",
+    "Le fichier sera effacé sur le poste distant. Il n'y a pas de corbeille : c'est irréversible.": "The file will be erased on the remote machine. There is no trash: this cannot be undone.",
+    "Confirmer la suppression": "Confirm deletion",
+    "Supprimer définitivement": "Delete permanently",
+    "Fichiers": "Files",
+    "Parcourir, téléverser et télécharger sur le poste distant": "Browse, upload and download on the remote machine",
+    "Décompression de l'image impossible (données corrompues ou trop volumineuses).": "Could not decompress the image (corrupt or too large).",
+    "Image trop volumineuse pour être traitée.": "Image too large to process.",
+    "Image reçue incomplète.": "Received image is incomplete.",
+    "Dimensions d'image invalides.": "Invalid image dimensions.",
+    "Conversion de l'image impossible.": "Could not convert the image.",
+    "Image trop grande pour le presse-papier distant, même réduite.": "Image too large for the remote clipboard, even reduced.",
+    "Le poste distant (RustDesk antérieur à 1.3.0) ne sait pas recevoir une image par le presse-papier.": "The remote machine (RustDesk older than 1.3.0) cannot receive an image through the clipboard.",
+    "Envoi impossible : la session n'est pas prête.": "Cannot send: the session is not ready.",
+    "Format d'image non pris en charge par ce navigateur.": "Image format not supported by this browser.",
+    "Le navigateur a refusé d'écrire dans le presse-papier.": "The browser refused to write to the clipboard.",
+    "Saisie locale bloquée sur le poste distant.": "Local input blocked on the remote machine.",
+    "Le poste distant a refusé de bloquer la saisie.": "The remote machine refused to block input.",
+    "Saisie locale débloquée sur le poste distant.": "Local input unblocked on the remote machine.",
+    "Le poste distant n'a pas pu débloquer la saisie.": "The remote machine could not unblock input.",
+    "Mode confidentialité déjà pris par une autre session.": "Privacy mode is already held by another session.",
+    "Le poste distant ne propose pas le mode confidentialité.": "The remote machine does not offer privacy mode.",
+    "Mode confidentialité activé.": "Privacy mode on.",
+    "Mode confidentialité refusé par le poste distant.": "Privacy mode refused by the remote machine.",
+    "Mode confidentialité indisponible (composant absent sur le poste distant).": "Privacy mode unavailable (component missing on the remote machine).",
+    "Le mode confidentialité n'a pas pu être activé.": "Privacy mode could not be turned on.",
+    "Mode confidentialité désactivé.": "Privacy mode off.",
+    "Mode confidentialité désactivé par le poste distant.": "Privacy mode turned off by the remote machine.",
+    "Le mode confidentialité n'a pas pu être désactivé.": "Privacy mode could not be turned off.",
+    "Connexion…": "Connecting…",
+    "Authentification…": "Logging in…",
+    "Connecté, en attente de l'image…": "Connected, waiting for image…",
+    "Cet ID n'existe pas.": "This ID does not exist.",
+    "Le poste distant est hors ligne.": "The remote machine is offline.",
+    "La clé du serveur ne correspond pas.": "Server key mismatch.",
+    "Clé du serveur trop sollicitée.": "Server key overused.",
+    "Le poste distant n'a pas d'écran.": "The remote machine has no display.",
+    "Mot de passe incorrect.": "Wrong password.",
+    "Mot de passe vide.": "Empty password.",
+    "Ce poste n'accepte pas la connexion par mot de passe.": "This machine does not accept password access.",
+    "Code de vérification requis.": "Verification code required.",
+    "Code de vérification refusé.": "Verification code refused.",
+    "Connexion à un poste distant": "Connect to a remote machine",
+    "ID du poste": "Machine ID",
+    "Connexion": "Connect",
+    "Mots de passe mémorisés effacés ({0}).": "Remembered passwords erased ({0}).",
+    "Les mots de passe ne seront plus mémorisés.": "Passwords will no longer be remembered.",
+    "Mémoriser les mots de passe sur cet appareil": "Remember passwords on this device",
+    "Serveur": "Server",
+    "Langue de l'interface": "Interface language",
+    "Mot de passe du poste distant": "Remote machine password",
+    "Mot de passe": "Password"
+  };
   function creerI18n(langue){
     var en = langue === "en";
     return function(cle){
@@ -1847,7 +2021,7 @@ window.onGlobalEvent = function(payload){
       RD.forced = "auto";
       prefs.set({ codec: "auto" });
       if (ui.cod) ui.cod.value = "auto";
-      notifier("Codec " + ancien.toUpperCase() + " indisponible (" + raison + ") : retour en automatique.", "erreur");
+      notifier(T("Codec {0} indisponible ({1}) : retour en automatique.", ancien.toUpperCase(), raison), "erreur");
     }
     // Un codec qui a echoue n'est plus propose de toute la vie de la page, et
     // l'on descend d'un barreau avant de renoncer a WebCodecs : H265 en panne
@@ -1903,9 +2077,9 @@ window.onGlobalEvent = function(payload){
 
   // Le texte d'une erreur de presse-papier, pour l'utilisateur.
   function messageErreur(e){
-    if (e && e.name === "ClipError") return RDLib.messages[e.code] || String(e.message);
-    if (e && e.name === "NotAllowedError") return RDLib.messages.DENIED;
-    return "Presse-papier : opération impossible (" + ((e && e.name) || "erreur") + ").";
+    if (e && e.name === "ClipError") return RDLib.messages[e.code] ? T(RDLib.messages[e.code]) : String(e.message);
+    if (e && e.name === "NotAllowedError") return T(RDLib.messages.DENIED);
+    return T("Presse-papier : opération impossible ({0}).", (e && e.name) || "erreur");
   }
 
   // ============================================ presse-papier ENTRANT
@@ -2064,10 +2238,8 @@ window.onGlobalEvent = function(payload){
         b.onclick = function(){ ppDeposer(kind); };
         bar.insertBefore(b, bar.firstChild);
       }
-      b.textContent = PP_LIBELLES[kind];
-      b.title = "Déposer ce contenu dans le presse-papier de ce navigateur. "
-              + "Un clic est nécessaire : le navigateur n'écrit pas dans le "
-              + "presse-papier sans geste de ta part.";
+      b.textContent = T(PP_LIBELLES[kind]);
+      b.title = T("Déposer ce contenu dans le presse-papier de ce navigateur. Un clic est nécessaire : le navigateur n'écrit pas dans le presse-papier sans geste de ta part.");
     });
     if (ppSlots.kinds().length) bar.classList.add("attention");
   }
@@ -2119,8 +2291,8 @@ window.onGlobalEvent = function(payload){
       else await ppEcrireTexte(await slot.promesse);
       console.log("[presse-papier] " + kind + " déposé dans le presse-papier local");
       if (encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
-      notifier(kind === "image" ? "Image déposée dans le presse-papier local."
-                                : "Texte déposé dans le presse-papier local.");
+      notifier(kind === "image" ? T("Image déposée dans le presse-papier local.")
+                                : T("Texte déposé dans le presse-papier local."));
     }catch(e0){
       // Si la CONVERSION a echoue, c'est elle la vraie cause : write() rejoue son
       // rejet sous un autre nom (NotAllowedError, DataError…) et le message
@@ -2156,7 +2328,7 @@ window.onGlobalEvent = function(payload){
       if (r.option){
         if (r.option === "block-input") saisieBloquee = r.actif;
         else { try{ c.setOption(r.option, r.actif); }catch(_){} }
-        notifier(r.texte, r.ok ? null : "erreur");
+        notifier(T(r.texte) + (r.details ? " (" + r.details + ")" : ""), r.ok ? null : "erreur");
         if (window.__rdActions) window.__rdActions();
       }
       return m;
@@ -2190,9 +2362,9 @@ window.onGlobalEvent = function(payload){
   async function demander2fa(c, m, cas){
     for (;;){
       var saisi = await demander({
-        titre: cas === "faux" ? "Code refusé" : "Vérification en deux étapes",
-        corps: "Code à 6 chiffres de l'application d'authentification du poste distant.",
-        champ: "", okTexte: "Valider" });
+        titre: cas === "faux" ? T("Code refusé") : T("Vérification en deux étapes"),
+        corps: T("Code à 6 chiffres de l'application d'authentification du poste distant."),
+        champ: "", okTexte: T("Valider") });
       if (saisi === null) return m;               // annule : l'erreur du bundle s'affiche
       var code = RDLib.pair.code2fa(saisi);
       if (code){
@@ -2497,18 +2669,18 @@ window.onGlobalEvent = function(payload){
     if (sessionVivante()) return;
     if (reprise.n >= 6){
       console.warn("[reprise] abandon apres 6 tentatives");
-      repriseInfo("reprise abandonnee — recharge la page");
+      repriseInfo(T("reprise abandonnée — recharge la page"));
       return;
     }
     var delai = Math.min(30000, 1000 * Math.pow(2, reprise.n));
     reprise.n++;
     console.log("[reprise] tentative " + reprise.n + "/6 dans " + (delai/1000) + " s");
-    repriseInfo("reconnexion " + reprise.n + "/6 dans " + (delai/1000) + " s");
+    repriseInfo(T("reconnexion {0}/6 dans {1} s", reprise.n, delai/1000));
     reprise.timer = setTimeout(function(){
       reprise.timer = null;
       // Elle a pu revenir entre-temps : ne pas relancer connect() par-dessus.
       if (sessionVivante()){ repriseAnnuler(); repriseInfo(""); return; }
-      repriseInfo("reconnexion en cours…");
+      repriseInfo(T("reconnexion en cours…"));
       try { if (window.connect) window.connect(); }
       catch(e){ console.warn("[reprise]", e); }
     }, delai);
@@ -2610,7 +2782,7 @@ window.onGlobalEvent = function(payload){
       var b = document.createElement("button");
       b.type = "button"; b.className = "rdchip-id";
       b.textContent = (e.n ? e.n + " · " : "") + RDLib.fmtId(e.id);
-      b.title = "Utiliser cet ID (Suppr ou Retour arrière pour le retirer de la liste)";
+      b.title = T("Utiliser cet ID (Suppr ou Retour arrière pour le retirer de la liste)");
       b.onclick = function(){ choisirRecent(e.id); };
       b.addEventListener("keydown", function(ev){
         // Suppr, ou Retour arriere : un portable Mac n'a pas de touche Suppr.
@@ -2621,15 +2793,15 @@ window.onGlobalEvent = function(payload){
       var x = document.createElement("button");
       x.type = "button"; x.className = "rdchip-x"; x.textContent = "×";
       x.setAttribute("tabindex", "-1"); x.setAttribute("aria-hidden", "true");
-      x.title = "Retirer de la liste";
+      x.title = T("Retirer de la liste");
       x.onclick = function(){ retirerRecent(e.id); };
       pastille.appendChild(b); pastille.appendChild(x);
       zone.appendChild(pastille);
     });
     if (liste.length){
       var eff = document.createElement("button");
-      eff.type = "button"; eff.className = "rdchip-clear"; eff.textContent = "Effacer";
-      eff.title = "Effacer toute la liste";
+      eff.type = "button"; eff.className = "rdchip-clear"; eff.textContent = T("Effacer");
+      eff.title = T("Effacer toute la liste");
       eff.onclick = function(){ recents.clear(); rendreRecents(); };
       zone.appendChild(eff);
     }
@@ -2653,7 +2825,7 @@ window.onGlobalEvent = function(payload){
         cel = document.createElement("td"), zone = document.createElement("div");
     zone.id = "rd-recents";
     zone.setAttribute("role", "group");
-    zone.setAttribute("aria-label", "Dernières connexions");
+    zone.setAttribute("aria-label", T("Dernières connexions"));
     cel.appendChild(zone); tr.appendChild(vide); tr.appendChild(cel);
     ligneId.parentNode.insertBefore(tr, ligneId.nextSibling);
     // Amorcage unique : les ID que le bundle connait deja (« peers », classes par
@@ -2705,11 +2877,11 @@ window.onGlobalEvent = function(payload){
       // ne les distinguait pas. Le meme nom accompagne l'ID dans l'historique.
       var nomPoste = RDLib.nomPoste(window.curConn && window.curConn._peerInfo && window.curConn._peerInfo.hostname);
       if (idSession){ recents.add(idSession, nomPoste); rendreRecents(); }
-      document.title = (nomPoste || RDLib.fmtId(String(idSession || "")) || "Session") + " — RustDesk";
+      document.title = (nomPoste || RDLib.fmtId(String(idSession || "")) || T("Session")) + " — RustDesk";
     }catch(e){ console.warn("[historique]", e); }
     // La barre est repliee par defaut : on dit UNE fois ou elle est passee.
     if (!p.hint && ui.barre && ui.barre.classList.contains("replie")){
-      notifier("Réglages de la session (résolution, qualité, fichiers…) : clique sur ⚙ en haut à droite.");
+      notifier(T("Réglages de la session (résolution, qualité, fichiers…) : clique sur ⚙ en haut à droite."));
       prefs.set({ hint: true });
     }
     // Une session reussie efface la banniere d'echec d'une tentative precedente.
@@ -2820,8 +2992,7 @@ window.onGlobalEvent = function(payload){
                   + octets.length + " octets envoyes en PNG — pair en version "
                   + (v || "inconnue") + " (1.3.0 minimum requis)");
         if (cur.w !== bmp.width || cur.h !== bmp.height)
-          notifier("Image réduite de " + bmp.width + "×" + bmp.height + " à "
-                 + cur.w + "×" + cur.h + " pour tenir dans la limite d'envoi.");
+          notifier(T("Image réduite de {0}×{1} à {2}×{3} pour tenir dans la limite d'envoi.", bmp.width, bmp.height, cur.w, cur.h));
         rejouerCollage(octets.length);
       }catch(e){
         console.warn("[presse-papier] image :", e);
@@ -2876,11 +3047,11 @@ window.onGlobalEvent = function(payload){
       try{ h=cd.getData("text/html")||"";  }catch(_){}
       if(!t && !h){
         console.log("[presse-papier] ignore (contenu non textuel)");
-        notifier("Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller.", "erreur");
+        notifier(T("Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller."), "erreur");
         return; }
       if(t.length>1048576 || h.length>1048576){
         console.warn("[presse-papier] trop volumineux, ignore");
-        notifier("Texte trop volumineux pour le presse-papier distant (limite : 1 Mio).", "erreur");
+        notifier(T("Texte trop volumineux pour le presse-papier distant (limite : 1 Mio)."), "erreur");
         return; }
 
       // Texte enrichi : Word et Excel deposent du HTML a cote du texte brut.
@@ -2905,24 +3076,24 @@ window.onGlobalEvent = function(payload){
 
       if(!t){
         console.log("[presse-papier] ignore (HTML seul, pair trop ancien)");
-        notifier("Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu.", "erreur");
+        notifier(T("Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu."), "erreur");
         return; }
       var bytes=new TextEncoder().encode(t);
       if(rdSend({clipboard:{content:bytes,compress:false}})){
         console.log("[presse-papier] "+bytes.length+" octets envoyes");
         rejouerCollage(bytes.length);
       } else {
-        notifier(RDLib.messages.NOSEND, "erreur");
+        notifier(T(RDLib.messages.NOSEND), "erreur");
       }
     });
 
     // --- Barre flottante ---
     var bar=document.createElement("div"); bar.id="rdbar";
-    var sel=document.createElement("select"); sel.title="Resolution de l'ecran distant";
-    var fit=document.createElement("button"); fit.textContent="Ajuster";
-    fit.title="Choisir la resolution la plus proche de la fenetre";
-    var qual=document.createElement("select"); qual.title="Qualite d'image";
-    [["balanced","Equilibre"],["best","Qualite"],["low","Fluidite"]].forEach(function(o){
+    var sel=document.createElement("select"); sel.title=T("Résolution de l'écran distant");
+    var fit=document.createElement("button"); fit.textContent=T("Ajuster");
+    fit.title=T("Choisir la résolution la plus proche de la fenêtre");
+    var qual=document.createElement("select"); qual.title=T("Qualité d'image");
+    [["balanced",T("Équilibre")],["best",T("Qualité")],["low",T("Fluidité")]].forEach(function(o){
       var x=document.createElement("option"); x.value=o[0]; x.textContent=o[1]; qual.appendChild(x); });
     qual.onchange=function(){
       try{ window.setByName("image_quality",qual.value); console.log("[qualite] "+qual.value); }
@@ -2935,20 +3106,18 @@ window.onGlobalEvent = function(payload){
     // Monter le plafond au-dessus de ce que l'ABR accorde ne change donc rien ;
     // le baisser, si.
     var fps=document.createElement("select");
-    fps.title="Plafond de cadence. Le serveur decide la cadence reelle selon "
-            + "la latence ; ce reglage ne fait que la borner. Le baisser a un "
-            + "effet immediat, le monter n'en a que si la liaison suit.";
-    [[30,"30 i/s max"],[60,"60 i/s max"],[15,"15 i/s max"],[10,"10 i/s max"]]
-      .forEach(function(o){ var x=document.createElement("option");
-        x.value=o[0]; x.textContent=o[1]; fps.appendChild(x); });
+    fps.title=T("Plafond de cadence. Le serveur décide la cadence réelle selon la latence ; ce réglage ne fait que la borner. Le baisser a un effet immédiat, le monter n'en a que si la liaison suit.");
+    [30,60,15,10]
+      .forEach(function(n){ var x=document.createElement("option");
+        x.value=n; x.textContent=T("{0} i/s max", n); fps.appendChild(x); });
     fps.onchange=function(){
       if(rdSend({misc:{option:{custom_fps:+fps.value}}}))
         console.log("[cadence] plafond a "+fps.value+" i/s (cadence reelle decidee par l'ABR)");
       prefs.set({ fps: +fps.value });
       var c=active(); if(c) c.focus();
     };
-    var cod=document.createElement("select"); cod.title="Codec video";
-    [["auto","Codec auto"],["h265","H265"],["h264","H264"],["av1","AV1"],["vp9","VP9"],["logiciel","Logiciel"]]
+    var cod=document.createElement("select"); cod.title=T("Codec vidéo");
+    [["auto",T("Codec auto")],["h265","H265"],["h264","H264"],["av1","AV1"],["vp9","VP9"],["logiciel",T("Logiciel")]]
       .forEach(function(o){ var x=document.createElement("option");
         x.value=o[0]; x.textContent=o[1]; cod.appendChild(x); });
     cod.onchange=function(){
@@ -2969,10 +3138,10 @@ window.onGlobalEvent = function(payload){
     // Permutation Ctrl/Cmd : indispensable hors terminal, nuisible dedans.
     var swp=document.createElement("button");
     function majSwap(){
-      swp.textContent = swapCtrlCmd ? "Ctrl→Cmd" : "Ctrl brut";
+      swp.textContent = swapCtrlCmd ? "Ctrl→Cmd" : T("Ctrl brut");
       swp.title = swapCtrlCmd
-        ? "Ctrl est converti en Cmd (copier/coller macOS). Cliquer pour le mode terminal."
-        : "Ctrl est transmis tel quel (Ctrl+C = SIGINT). Cliquer pour le mode macOS.";
+        ? T("Ctrl est converti en Cmd (copier/coller macOS). Cliquer pour le mode terminal.")
+        : T("Ctrl est transmis tel quel (Ctrl+C = SIGINT). Cliquer pour le mode macOS.");
       swp.style.background = swapCtrlCmd ? "#1f4d3a" : "#2a2f38";
     }
     swp.onclick=function(){
@@ -2986,7 +3155,7 @@ window.onGlobalEvent = function(payload){
 
     // Ecran affiche : n'apparait que si le poste distant en a plusieurs.
     var ecr=document.createElement("select"); ecr.className="rdecrans";
-    ecr.title="Écran du poste distant à afficher";
+    ecr.title=T("Écran du poste distant à afficher");
     ecr.setAttribute("aria-label", ecr.title);
     ecr.style.display="none";
     window.__rdEcrans=function(){
@@ -2994,7 +3163,7 @@ window.onGlobalEvent = function(payload){
       while (ecr.firstChild) ecr.removeChild(ecr.firstChild);
       d.forEach(function(e,i){ var x=document.createElement("option");
         x.value=String(i);
-        x.textContent="Écran "+(i+1)+((e.width>0&&e.height>0)?" ("+e.width+"×"+e.height+")":"");
+        x.textContent=T("Écran {0}", i+1)+((e.width>0&&e.height>0)?" ("+e.width+"×"+e.height+")":"");
         ecr.appendChild(x); });
       ecr.value=String(RD.display|0);
       ecr.style.display = d.length>1 ? "" : "none";
@@ -3015,7 +3184,7 @@ window.onGlobalEvent = function(payload){
     // La premiere option sert de libelle ; choisir une action l'execute et
     // ramene le selecteur dessus.
     var act=document.createElement("select"); act.className="rdactions";
-    act.title="Actions sur le poste distant";
+    act.title=T("Actions sur le poste distant");
     act.setAttribute("aria-label", act.title);
     var BASCULES=[["disable-audio","Couper le son distant"],
                   ["disable-clipboard","Suspendre le presse-papier"],
@@ -3030,11 +3199,11 @@ window.onGlobalEvent = function(payload){
     window.__rdActions=function(){
       while (act.firstChild) act.removeChild(act.firstChild);
       function opt(v,t){ var x=document.createElement("option"); x.value=v; x.textContent=t; act.appendChild(x); }
-      opt("","Actions");
-      opt("cad","Ctrl+Alt+Suppr");
-      opt("lock","Verrouiller la session");
-      BASCULES.forEach(function(b){ opt("opt:"+b[0], (optionActive(b[0]) ? "✓ " : "") + b[1]); });
-      opt("restart","Redémarrer le poste…");
+      opt("",T("Actions"));
+      opt("cad",T("Ctrl+Alt+Suppr"));
+      opt("lock",T("Verrouiller la session"));
+      BASCULES.forEach(function(b){ opt("opt:"+b[0], (optionActive(b[0]) ? "✓ " : "") + T(b[1])); });
+      opt("restart",T("Redémarrer le poste…"));
       act.value="";
     };
     act.onchange=function(){
@@ -3043,11 +3212,11 @@ window.onGlobalEvent = function(payload){
         if (v === "cad"){ window.setByName("ctrl_alt_del"); console.log("[action] Ctrl+Alt+Suppr"); }
         else if (v === "lock"){ window.setByName("lock_screen"); console.log("[action] verrouillage"); }
         else if (v === "restart"){
-          demander({ titre: "Redémarrer le poste distant ?", corps: "La session sera coupée.",
-                     okTexte: "Redémarrer", danger: true }).then(function(ok){
+          demander({ titre: T("Redémarrer le poste distant ?"), corps: T("La session sera coupée."),
+                     okTexte: T("Redémarrer"), danger: true }).then(function(ok){
             if (!ok) return;
-            if (rdSend({misc:{restart_remote_device:true}})) notifier("Redémarrage demandé au poste distant.");
-            else notifier(RDLib.messages.NOSEND, "erreur");
+            if (rdSend({misc:{restart_remote_device:true}})) notifier(T("Redémarrage demandé au poste distant."));
+            else notifier(T(RDLib.messages.NOSEND), "erreur");
           });
         }
         else if (v.indexOf("opt:") === 0){
@@ -3058,7 +3227,7 @@ window.onGlobalEvent = function(payload){
           else window.setByName("toggle_option", nom);
           console.log("[action] option "+nom);
         }
-      }catch(e){ console.warn("[action]", e); notifier("Action impossible : "+((e&&e.message)||e), "erreur"); }
+      }catch(e){ console.warn("[action]", e); notifier(T("Action impossible : {0}", (e&&e.message)||e), "erreur"); }
       window.__rdActions();
       var c=active(); if(c) c.focus();
     };
@@ -3069,7 +3238,7 @@ window.onGlobalEvent = function(payload){
     // sortir ; ce qui y est tape part au poste distant. Il garde toujours UN
     // caractere : sans cela, « effacer » sur un champ vide n'emet aucun evenement.
     var saisie=document.createElement("textarea"); saisie.id="rdsaisie";
-    saisie.setAttribute("aria-label","Saisie pour le poste distant");
+    saisie.setAttribute("aria-label",T("Saisie pour le poste distant"));
     ["autocomplete","autocorrect","autocapitalize"].forEach(function(a){ saisie.setAttribute(a,"off"); });
     saisie.setAttribute("spellcheck","false");
     saisie.value=" ";
@@ -3086,8 +3255,8 @@ window.onGlobalEvent = function(payload){
       saisie.value=" ";
     });
     document.body.appendChild(saisie);
-    var clav=document.createElement("button"); clav.className="rdclavier"; clav.textContent="Clavier";
-    clav.title="Afficher le clavier de l'appareil";
+    var clav=document.createElement("button"); clav.className="rdclavier"; clav.textContent=T("Clavier");
+    clav.title=T("Afficher le clavier de l'appareil");
     var tactile=false;
     try{ tactile = !!(window.matchMedia && window.matchMedia("(pointer:coarse)").matches); }catch(_){}
     clav.style.display = tactile ? "" : "none";
@@ -3103,15 +3272,15 @@ window.onGlobalEvent = function(payload){
     var plein=document.createElement("button"); plein.className="rdplein";
     function enPlein(){ return !!document.fullscreenElement; }
     function majPlein(){
-      plein.textContent = enPlein() ? "Fenêtre" : "Plein écran";
-      plein.title = enPlein() ? "Quitter le plein écran" : "Plein écran : les raccourcis clavier partent au poste distant";
+      plein.textContent = enPlein() ? T("Fenêtre") : T("Plein écran");
+      plein.title = enPlein() ? T("Quitter le plein écran") : T("Plein écran : les raccourcis clavier partent au poste distant");
       plein.setAttribute("aria-pressed", enPlein() ? "true" : "false");
     }
     plein.style.display = (document.documentElement && document.documentElement.requestFullscreen) ? "" : "none";
     plein.onclick=function(){
       try{
         var pr = enPlein() ? document.exitFullscreen() : document.documentElement.requestFullscreen({navigationUI:"hide"});
-        if (pr && pr.catch) pr.catch(function(e){ notifier("Plein écran refusé par le navigateur (" + ((e && e.name) || "erreur") + ").", "erreur"); });
+        if (pr && pr.catch) pr.catch(function(e){ notifier(T("Plein écran refusé par le navigateur ({0}).", (e && e.name) || "erreur"), "erreur"); });
       }catch(e){ console.warn("[plein ecran]", e); }
     };
     document.addEventListener("fullscreenchange",function(){
@@ -3121,7 +3290,7 @@ window.onGlobalEvent = function(payload){
         if (enPlein()){
           if (kb && kb.lock) kb.lock().then(function(){
             console.log("[plein ecran] clavier capture");
-            notifier("Plein écran : les raccourcis partent au poste distant. Maintenir Échap pour sortir.");
+            notifier(T("Plein écran : les raccourcis partent au poste distant. Maintenir Échap pour sortir."));
           }).catch(function(e){ console.warn("[plein ecran] clavier non capture :", e && e.name); });
         } else if (kb && kb.unlock) kb.unlock();
       }catch(e){ console.warn("[plein ecran]", e); }
@@ -3129,7 +3298,7 @@ window.onGlobalEvent = function(payload){
     });
     majPlein();
 
-    var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
+    var quit=document.createElement("button"); quit.textContent=T("Quitter"); quit.className="quit";
     [sel,fit,qual,fps,cod,swp,ecr,act,clav,plein,quit].forEach(function(x){ bar.appendChild(x); });
 
     // La poignee replie / deplie la barre. Repliee, elle ne laisse a l'ecran
@@ -3144,7 +3313,7 @@ window.onGlobalEvent = function(payload){
       var replie = bar.classList.contains("replie");
       handle.setAttribute("aria-expanded", replie ? "false" : "true");
       handle.textContent = replie ? "⚙" : "»";
-      handle.title = replie ? "Afficher les réglages de la session" : "Replier les réglages";
+      handle.title = replie ? T("Afficher les réglages de la session") : T("Replier les réglages");
       handle.setAttribute("aria-label", handle.title);
     }
     function fixerBarre(replie, memoriser){
@@ -3202,7 +3371,7 @@ window.onGlobalEvent = function(payload){
     window.__rdMenu=function(){
       var r=RD.res||[]; sel.innerHTML="";
       var o=document.createElement("option");
-      o.textContent=r.length?"Resolution":"(indisponible)"; o.value="";
+      o.textContent=r.length?T("Résolution"):T("(indisponible)"); o.value="";
       sel.appendChild(o);
       r.forEach(function(m){ var x=document.createElement("option");
         x.value=m.width+"x"+m.height; x.textContent=m.width+"x"+m.height; sel.appendChild(x); });
@@ -3245,10 +3414,9 @@ window.onGlobalEvent = function(payload){
         return P(a,.50).toFixed(0)+" / "+P(a,.95).toFixed(0)+" / "+P(a,.99).toFixed(0)+" "+u;
       }
       hudTel.textContent =
-        "aller-retour  p50/p95/p99   " + fmt(S.delay,"ms") + "\n" +
-        "decodage      p50/p95/p99   " + fmt(S.decode,"ms") + "\n" +
-        "trames recues " + ips.toFixed(1) + "/s    debit cible " + S.bitrate + " kbit/s" +
-        "    codec " + (RD.codec || "logiciel");
+        T("aller-retour  p50/p95/p99   ") + fmt(S.delay,"ms") + "\n" +
+        T("décodage      p50/p95/p99   ") + fmt(S.decode,"ms") + "\n" +
+        T("trames reçues {0}/s    débit cible {1} kbit/s    codec {2}", ips.toFixed(1), S.bitrate, RD.codec || T("logiciel"));
       placerHud();
     }, 1000);
 
@@ -3613,14 +3781,14 @@ window.onGlobalEvent = function(payload){
 
   // ---------------------------------------------------------- utilitaires
   function taille(n){
-    if (!(n > 0)) return "0 o";
-    var u = ["o","Ko","Mo","Go","To"], i = Math.floor(Math.log(n)/Math.log(1024));
+    if (!(n > 0)) return "0 " + T("o");
+    var u = [T("o"),T("Ko"),T("Mo"),T("Go"),T("To")], i = Math.floor(Math.log(n)/Math.log(1024));
     if (i > 4) i = 4;
     return (n/Math.pow(1024,i)).toFixed(i ? 1 : 0) + " " + u[i];
   }
   function date(s){
     if (!s) return "";
-    try { return new Date(s*1000).toLocaleDateString("fr-CH",
+    try { return new Date(s*1000).toLocaleDateString(window.__rdLangue === "en" ? "en-GB" : "fr-CH",
             {day:"2-digit",month:"2-digit",year:"2-digit"}); }
     catch(_){ return ""; }
   }
@@ -3691,7 +3859,7 @@ window.onGlobalEvent = function(payload){
       FT.attente.push({res:res, rej:rej});
       if (FT.etat === "ouverture") return;
 
-      if (!poserSonde()){ echec("session video absente"); return; }
+      if (!poserSonde()){ echec("session vidéo absente"); return; }
       var k = window.curConn, id = k && k._id;
       if (!id){ echec("aucune session en cours"); return; }
 
@@ -3737,7 +3905,7 @@ window.onGlobalEvent = function(payload){
 
       c.start(id);   // ne se resout jamais : _start attend msgLoop
       setTimeout(function(){
-        if (FT.etat === "ouverture") echec("delai depasse a l'ouverture");
+        if (FT.etat === "ouverture") echec("délai dépassé à l'ouverture");
       }, 20000);
     });
   }
@@ -3885,7 +4053,7 @@ window.onGlobalEvent = function(payload){
       // l'ORDRE EXACT ou les blocs arriveront (les deux passent par
       // get_recursive_files). C'est l'unique moyen de nommer un file_num.
       j.suiteListe = function(){
-        if (!j.fichiers.length){ finirJob(j, "rien a transferer"); return; }
+        if (!j.fichiers.length){ finirJob(j, "rien à transférer"); return; }
         envoyer({ file_action: { send: {
           id: j.id, path: chemin, file_num: 0, include_hidden: false } } });
       };
@@ -4074,22 +4242,22 @@ window.onGlobalEvent = function(payload){
     pan = document.createElement("div"); pan.id = "rdfiles";
 
     var head = document.createElement("header");
-    var titre = document.createElement("b"); titre.textContent = "Fichiers distants";
+    var titre = document.createElement("b"); titre.textContent = T("Fichiers distants");
     etatEl = document.createElement("span"); etatEl.className = "etat";
     var x = document.createElement("button"); x.textContent = "✕";
-    x.title = "Fermer le panneau"; x.onclick = function(){ basculer(false); };
+    x.title = T("Fermer le panneau"); x.onclick = function(){ basculer(false); };
     head.appendChild(titre); head.appendChild(etatEl); head.appendChild(x);
 
     var nav = document.createElement("nav");
     btnHaut = document.createElement("button"); btnHaut.textContent = "⟵";
-    btnHaut.title = "Dossier parent";
+    btnHaut.title = T("Dossier parent");
     btnHaut.onclick = function(){ lister(parent(FT.cwd)); rendreMain(); };
     btnMaj = document.createElement("button"); btnMaj.textContent = "⟳";
-    btnMaj.title = "Rafraichir";
+    btnMaj.title = T("Rafraîchir");
     btnMaj.onclick = function(){ lister(FT.cwd); rendreMain(); };
-    btnUp = document.createElement("button"); btnUp.textContent = "Televerser";
-    btnUp.title = "Envoyer des fichiers ou un dossier vers ce repertoire";
-    btnDir = document.createElement("button"); btnDir.textContent = "+ Dossier";
+    btnUp = document.createElement("button"); btnUp.textContent = T("Téléverser");
+    btnUp.title = T("Envoyer des fichiers ou un dossier vers ce répertoire");
+    btnDir = document.createElement("button"); btnDir.textContent = T("+ Dossier");
     btnDir.onclick = function(){ demanderDossier(); };
     filAr = document.createElement("span"); filAr.className = "fil";
     [btnHaut, btnMaj, btnUp, btnDir, filAr].forEach(function(e){ nav.appendChild(e); });
@@ -4107,7 +4275,7 @@ window.onGlobalEvent = function(payload){
     ul = document.createElement("ul");
     filesEl = document.createElement("div"); filesEl.className = "files";
     var depot = document.createElement("div"); depot.className = "depot";
-    depot.textContent = "Deposer ici pour televerser dans ce dossier";
+    depot.textContent = T("Déposer ici pour téléverser dans ce dossier");
 
     pan.appendChild(inF); pan.appendChild(inD);
     pan.appendChild(head); pan.appendChild(nav); pan.appendChild(ul);
@@ -4119,9 +4287,9 @@ window.onGlobalEvent = function(payload){
 
   function choisirSource(){
     modale({
-      titre: "Que televerser ?",
-      corps: "Le selecteur du navigateur ne peut pas proposer les deux a la fois.",
-      okTexte: "Des fichiers", autreTexte: "Un dossier",
+      titre: T("Que téléverser ?"),
+      corps: T("Le sélecteur du navigateur ne peut pas proposer les deux à la fois."),
+      okTexte: T("Des fichiers"), autreTexte: T("Un dossier"),
       onOk:    function(){ inF.value = ""; inF.click(); },
       onAutre: function(){ inD.value = ""; inD.click(); }
     });
@@ -4170,7 +4338,7 @@ window.onGlobalEvent = function(payload){
   // ------------------------------------------------------------- rendus
   function majEtat(){
     if (!etatEl) return;
-    var m = { ferme:"deconnecte", ouverture:"connexion…", prete:"connecte", erreur:FT.err };
+    var m = { ferme:T("déconnecté"), ouverture:T("connexion…"), prete:T("connecté"), erreur:T(FT.err) };
     etatEl.textContent = m[FT.etat] || FT.etat;
     etatEl.className = "etat" + (FT.etat === "erreur" ? " err" : "");
     var off = FT.etat !== "prete";
@@ -4205,7 +4373,7 @@ window.onGlobalEvent = function(payload){
     });
     if (!es.length){
       var v = document.createElement("li"); v.className = "vide";
-      v.textContent = FT.etat === "prete" ? "Dossier vide" : "…";
+      v.textContent = FT.etat === "prete" ? T("Dossier vide") : "…";
       ul.appendChild(v); return;
     }
     es.forEach(function(e){ ul.appendChild(ligne(e)); });
@@ -4216,7 +4384,7 @@ window.onGlobalEvent = function(payload){
     var dossier = estDossier(e);
     var nom = document.createElement("span"); nom.className = "nom";
     nom.textContent = (dossier ? "📁 " : "📄 ") + e.name;
-    nom.title = dossier ? "Ouvrir" : "Telecharger";
+    nom.title = dossier ? T("Ouvrir") : T("Télécharger");
     nom.onclick = function(){
       if (dossier) lister(joindre(FT.cwd, e.name)); else lancerTelechargement(e, dossier);
       rendreMain();
@@ -4226,12 +4394,12 @@ window.onGlobalEvent = function(payload){
 
     var actes = document.createElement("span"); actes.className = "actes";
     var dl = document.createElement("button"); dl.textContent = "↓";
-    dl.title = dossier ? "Telecharger le dossier" : "Telecharger";
+    dl.title = dossier ? T("Télécharger le dossier") : T("Télécharger");
     dl.onclick = function(){ lancerTelechargement(e, dossier); rendreMain(); };
     var ren = document.createElement("button"); ren.textContent = "✏️";
-    ren.title = "Renommer"; ren.onclick = function(){ demanderRenommage(e); };
+    ren.title = T("Renommer"); ren.onclick = function(){ demanderRenommage(e); };
     var sup = document.createElement("button"); sup.textContent = "🗑";
-    sup.title = "Supprimer"; sup.onclick = function(){ demanderSuppression(e, dossier); };
+    sup.title = T("Supprimer"); sup.onclick = function(){ demanderSuppression(e, dossier); };
     [dl, ren, sup].forEach(function(b){ actes.appendChild(b); });
 
     li.appendChild(nom); li.appendChild(meta); li.appendChild(actes);
@@ -4267,14 +4435,14 @@ window.onGlobalEvent = function(payload){
       var n = document.createElement("span"); n.textContent = j.libelle;
       var em = document.createElement("em");
       var dt = (Date.now() - j.t0)/1000;
-      em.textContent = j.etat === "echec" ? j.err
-                     : j.etat === "fini"  ? "termine"
+      em.textContent = j.etat === "echec" ? T(j.err)
+                     : j.etat === "fini"  ? T("terminé")
                      : taille(j.fait) + (j.total ? " / " + taille(j.total) : "")
                        + (dt > 0.4 ? "  " + taille(j.fait/dt) + "/s" : "");
       t.appendChild(n); t.appendChild(em);
       if (j.etat === "en cours"){
         var x = document.createElement("button"); x.textContent = "✕";
-        x.title = "Annuler"; x.onclick = function(){ annuler(j); };
+        x.title = T("Annuler"); x.onclick = function(){ annuler(j); };
         t.appendChild(x);
       }
       d.appendChild(t);
@@ -4291,7 +4459,7 @@ window.onGlobalEvent = function(payload){
   function annuler(j){
     j.annule = true;
     envoyer({ file_action: { cancel: { id: j.id } } });
-    finirJob(j, "annule");
+    finirJob(j, "annulé");
   }
 
   // ------------------------------- glisser vers le bureau (Chromium seul)
@@ -4310,7 +4478,7 @@ window.onGlobalEvent = function(payload){
     var em = document.createElement("em"); em.textContent = taille(o.blob.size);
     t.appendChild(n); t.appendChild(em); d.appendChild(t);
     d.draggable = true;
-    d.title = "Glisser vers le bureau (Chromium), ou cliquer pour retelecharger";
+    d.title = T("Glisser vers le bureau (Chromium), ou cliquer pour retélécharger");
     d.addEventListener("dragstart", function(ev){
       var ok = false;
       try {
@@ -4347,7 +4515,7 @@ window.onGlobalEvent = function(payload){
       b.appendChild(inp);
     }
     var btns = document.createElement("div"); btns.className = "btns";
-    var no = document.createElement("button"); no.textContent = "Annuler";
+    var no = document.createElement("button"); no.textContent = T("Annuler");
     no.onclick = function(){ fermerModale(); if (o.onAnnule) o.onAnnule(); };
     btns.appendChild(no);
     if (o.autreTexte){
@@ -4356,7 +4524,7 @@ window.onGlobalEvent = function(payload){
       btns.appendChild(au);
     }
     var ok = document.createElement("button");
-    ok.textContent = o.okTexte || "Confirmer";
+    ok.textContent = o.okTexte || T("Confirmer");
     ok.className = "ok" + (o.danger ? " danger" : "");
     ok.onclick = valider; btns.appendChild(ok);
     b.appendChild(btns); modal.appendChild(b); modal.classList.add("ouvert");
@@ -4374,7 +4542,7 @@ window.onGlobalEvent = function(payload){
 
   function demanderDossier(){
     var dest = FT.cwd;
-    modale({ titre:"Nouveau dossier", corps:"Cree dans " + dest, champ:"nouveau dossier",
+    modale({ titre:T("Nouveau dossier"), corps:T("Créé dans {0}", dest), champ:T("nouveau dossier"),
       onOk: function(nom){
         if (!nom) return;
         var j = nouveauJob("op", "+ " + nom);
@@ -4385,7 +4553,7 @@ window.onGlobalEvent = function(payload){
 
   function demanderRenommage(e){
     var dest = FT.cwd;
-    modale({ titre:"Renommer", corps: joindre(dest, e.name), champ:e.name,
+    modale({ titre:T("Renommer"), corps: joindre(dest, e.name), champ:e.name,
       onOk: function(nom){
         if (!nom || nom === e.name) return;
         // new_name est un nom NU : le pair refuse tout separateur
@@ -4400,12 +4568,12 @@ window.onGlobalEvent = function(payload){
   function demanderSuppression(e, dossier){
     var dest = FT.cwd, chemin = joindre(dest, e.name);
     modale({
-      titre: dossier ? "Supprimer le dossier" : "Supprimer le fichier",
+      titre: dossier ? T("Supprimer le dossier") : T("Supprimer le fichier"),
       corps: chemin,
       avert: dossier
-        ? "Le dossier ET tout son contenu seront effaces sur le Mac. Il n'y a pas de corbeille : c'est irreversible."
-        : "Le fichier sera efface sur le Mac. Il n'y a pas de corbeille : c'est irreversible.",
-      okTexte:"Supprimer", danger:true,
+        ? T("Le dossier ET tout son contenu seront effacés sur le poste distant. Il n'y a pas de corbeille : c'est irréversible.")
+        : T("Le fichier sera effacé sur le poste distant. Il n'y a pas de corbeille : c'est irréversible."),
+      okTexte:T("Supprimer"), danger:true,
       onOk: function(){
         if (!dossier){
           var j = nouveauJob("op", "🗑 " + e.name);
@@ -4414,11 +4582,11 @@ window.onGlobalEvent = function(payload){
           return;
         }
         // Second palier pour un dossier : le contenu ne revient pas.
-        modale({ titre:"Confirmer la suppression",
-          corps:"Taper le nom du dossier pour confirmer : " + e.name,
-          champ:"", okTexte:"Supprimer definitivement", danger:true,
+        modale({ titre:T("Confirmer la suppression"),
+          corps:T("Taper le nom du dossier pour confirmer : {0}", e.name),
+          champ:"", okTexte:T("Supprimer définitivement"), danger:true,
           onOk: function(saisi){
-            if (saisi !== e.name){ FT.err = "nom non confirme"; majEtat(); return; }
+            if (saisi !== e.name){ FT.err = "nom non confirmé"; majEtat(); return; }
             supprimerDossier(chemin, e.name, dest);
           }});
       }});
@@ -4478,8 +4646,8 @@ window.onGlobalEvent = function(payload){
     var bar = window.__rdBar;
     if (!bar || bar.querySelector(".rdfilesbtn")) return;
     var b = document.createElement("button");
-    b.className = "rdfilesbtn"; b.textContent = "Fichiers";
-    b.title = "Parcourir, televerser et telecharger sur le Mac distant";
+    b.className = "rdfilesbtn"; b.textContent = T("Fichiers");
+    b.title = T("Parcourir, téléverser et télécharger sur le poste distant");
     b.onclick = function(){ basculer(); };
     var q = bar.querySelector("button.quit");
     if (q) bar.insertBefore(b, q); else bar.appendChild(b);

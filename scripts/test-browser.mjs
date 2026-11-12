@@ -484,6 +484,61 @@ await test("csp-enforced : sous la politique APPLIQUEE, la page, le WebAssembly 
   assert.equal(r.caps, 4, "WebCodecs a ete sonde");
 });
 
+await test("login-dressing : un titre, un seul champ visible, Entree connecte, la case efface les mots de passe", async (p) => {
+  await p.goto(URL_PAGE);
+  await p.waitForSelector("#rd-entete");
+  assert.equal(await p.textContent("#rd-entete h1"), "RustDesk Web");
+  assert.equal(await p.isVisible("#host"), false, "l'hote vient du deploiement : il n'est plus presente comme un champ a remplir");
+  assert.equal(await p.isVisible("#key"), false);
+  assert.equal(await p.isVisible("#id"), true);
+  assert.equal(await p.textContent("label[for=id]"), "ID du poste");
+  assert.equal(await p.textContent("#rd-serveur b"), "localhost");
+  // Les champs masques gardent leur valeur : le bundle les lit a la connexion.
+  assert.equal(await p.inputValue("#host"), "localhost");
+  await p.evaluate(() => { window.__clics = 0; document.querySelector("#connect button[onclick]").onclick = () => { window.__clics++; }; });
+  await p.fill("#id", "123456789");
+  await p.press("#id", "Enter");
+  assert.equal(await p.evaluate(() => window.__clics), 1, "Entree dans le champ ID lance la connexion");
+  await p.uncheck("#rd-memo input");
+  const r = await p.evaluate(() => ({ peers: JSON.parse(localStorage.getItem("peers")), prefs: JSON.parse(localStorage.getItem("rd-prefs")) }));
+  assert.equal(r.prefs.remember, false);
+  assert.equal(r.peers["111111111"].password, undefined, "le mot de passe memorise est efface");
+  assert.equal(r.peers["111111111"].tm, 100, "le reste de la fiche est garde");
+}, { init: { peers: JSON.stringify({ "111111111": { tm: 100, password: "secret1" } }) } });
+
+await test("wrong-password-reprompts : « Wrong Password » rouvre le champ au lieu d'une impasse", async (p) => {
+  await p.goto(URL_PAGE);
+  await p.waitForSelector("#rd-entete");
+  await p.evaluate(() => {
+    document.querySelector("div#connect").style.display = "none";
+    document.querySelector("div#status").style.display = "block";
+    document.querySelector("div#text").innerHTML = '<div style="font-weight: bold;">Do you want to enter again?</div>';
+  });
+  await p.waitForFunction(() => getComputedStyle(document.querySelector("div#password")).display !== "none");
+  assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector("div#status")).display), "none");
+  assert.match(await p.textContent("#rd-mdp-titre"), /Mot de passe incorrect/);
+  assert.equal(await p.evaluate(() => document.activeElement === document.querySelector("div#password input")), true);
+  // Un statut ordinaire est traduit sur place.
+  await p.evaluate(() => { document.querySelector("div#password").style.display = "none"; document.querySelector("div#status").style.display = "block";
+    document.querySelector("div#text").innerHTML = '<div style="font-weight: bold;">Remote desktop is offline</div>'; });
+  await p.waitForFunction(() => document.querySelector("div#text").textContent === "Le poste distant est hors ligne.");
+});
+
+await test("english-ui : navigateur non francophone, interface en anglais ; le choix de langue est memorise", async (p) => {
+  await sessionSimulee(p);
+  assert.equal(await p.textContent("#rdbar button.quit"), "Quit");
+  assert.equal(await p.textContent("#rdbar .rdplein"), "Full screen");
+  assert.equal(await p.evaluate(() => document.documentElement.lang), "en");
+  assert.equal(await p.textContent("#connect button[onclick]"), "Connect");
+  // La telemetrie est reecrite une fois par seconde.
+  await p.waitForFunction(() => /round trip {4}p50\/p95\/p99/.test(document.getElementById("rdhud").textContent), null, { timeout: 5000 });
+  await p.evaluate(() => { document.getElementById("canvas").style.display = "none"; document.querySelector("div#connect").style.display = "block"; });
+  await Promise.all([p.waitForNavigation(), p.selectOption("#rd-langue", "fr")]);
+  await p.waitForSelector("#rd-entete");
+  assert.equal(await p.textContent("#connect button[onclick]"), "Connexion");
+  assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-prefs")).lang), "fr");
+}, { ...OUVERTE, contexte: { locale: "en-US" } });
+
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
 
 await test("chips-under-id : sous le champ Id du VRAI formulaire, entre Id et Connect", async (p) => {
