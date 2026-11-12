@@ -3525,3 +3525,46 @@ test("ajuster : la resolution distante est choisie en pixels PHYSIQUES de la fen
   ajuster.onclick();
   assert.deepEqual(plat(m.envoyes.at(-1).misc.change_resolution), { width: 1920, height: 1080 });
 });
+
+// ====================================================================
+// Installation : ce qu'un deploiement reel a revele le 2026-11-12.
+// ====================================================================
+const SETUP = lire(path.join(RACINE, "setup.sh"));
+const VERIFY = lire(path.join(RACINE, "scripts", "verify.sh"));
+
+test("setup droits : apres « umask 077 », l'arborescence servie est rendue lisible AVANT la construction", () => {
+  // umask 077 protege .env et nginx.conf ; sans le chmod, html/ sort en 700/600 et nginx repond 403 a chaque fichier.
+  const u = SETUP.indexOf("\numask 077\n"), c = SETUP.indexOf("\nchmod -R u=rwX,go=rX html\n"), b = SETUP.indexOf("docker compose ${PROFIL");
+  assert.ok(u > 0 && c > u, "le chmod de html/ suit umask 077");
+  assert.ok(b > c, "et precede la construction des images");
+  assert.ok(SETUP.indexOf('cp "$TMPD/index.html" html/index.html') < c, "il passe APRES le dernier fichier ecrit dans html/");
+  // verify.sh rejoue la meme sequence : c'est lui qui prouve, image construite, que la page se charge.
+  const vu = VERIFY.indexOf("\numask 077\n"), vc = VERIFY.indexOf("\nchmod -R u=rwX,go=rX html");
+  assert.ok(vu > 0 && vc > vu && vc < VERIFY.indexOf('titre "Construction des images"'), "verify.sh cree html/ sous umask 077 puis le rend lisible");
+  assert.match(VERIFY, /for chemin in \/ \/js\/dist\/index\.js \/manifest\.json; do[\s\S]*?rdsession=jeton_de_test[\s\S]*?"200"/, "verify.sh charge la page AVEC le cookie de session");
+});
+
+test("setup page : une page qui ne repond pas 200 a l'utilisateur connecte fait ECHOUER l'installation", () => {
+  assert.match(SETUP, /ECHEC_PAGE=0[\s\S]*?-u "\$RD_WEB_USER:\$RD_WEB_PASSWORD" http:\/\/127\.0\.0\.1:8081\/[\s\S]*?ECHEC_PAGE=1/);
+  assert.match(SETUP, /if \[ "\$ECHEC_PAGE" = 1 \]; then[\s\S]*?exit 1/);
+});
+
+test("setup noms : plusieurs noms pour le meme site, valides, sans doublon — et partout ou le Caddyfile est rendu", () => {
+  const f = /^sites_de\(\) \{[\s\S]*?^\}/m.exec(SETUP)[0];
+  const sites = (domaine, alias) => {
+    try { return execFileSync("bash", ["-c", f + '\nsites_de "$1" "$2"', "bash", domaine, alias], { stdio: ["ignore", "pipe", "pipe"] }).toString(); }
+    catch (e) { return "REFUSE"; }
+  };
+  assert.equal(sites("a.example.org", ""), "a.example.org");
+  assert.equal(sites("a.example.org", "b.example.org"), "a.example.org, b.example.org");
+  assert.equal(sites("a.example.org", "b.example.org, c.example.org a.example.org"), "a.example.org, b.example.org, c.example.org", "virgules ou espaces ; le domaine n'est pas repete");
+  for (const mauvais of ["bad*name", "-x.org", "x.org;y", "x.org{", "a b\nc{"]) assert.equal(sites("a.example.org", mauvais), "REFUSE", mauvais);
+  // Le gabarit ne connait plus que la LISTE : un rendu qui l'oublie laisserait le repere dans le Caddyfile.
+  const caddy = lire(path.join(RACINE, "Caddyfile.template"));
+  assert.equal((caddy.match(/^__RD_SITES__ \{$/gm) || []).length, 1);
+  assert.ok(!caddy.includes("__RD_DOMAIN__"));
+  assert.ok(SETUP.includes('-e "s|__RD_SITES__|$RD_SITES|g"'), "setup.sh rend la liste");
+  assert.ok(SETUP.includes('echo "RD_DOMAIN_ALIASES=$(sq "$RD_DOMAIN_ALIASES")"'), "et la memorise dans .env : relancer setup.sh ne perd plus un nom");
+  assert.ok(VERIFY.includes("__RD_SITES__"), "verify.sh rend la liste");
+  assert.ok(lire(path.join(RACINE, ".github", "workflows", "ci.yml")).includes("__RD_SITES__"), "la CI aussi");
+});

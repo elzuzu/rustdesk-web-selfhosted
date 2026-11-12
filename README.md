@@ -79,7 +79,9 @@ this repository.
 
 - A reachable **RustDesk OSS** server (hbbs/hbbr), with WebSocket ports 21118 and
   21119 accessible from the web container
-- A domain name with a **direct A record** to this machine, unproxied
+- A domain name with a **direct A record** to this machine, unproxied.
+  Several names for the same site: `setup.sh` asks for the "other names"
+  (`RD_DOMAIN_ALIASES`), and Caddy obtains a certificate for each
 - Port **443** open in your local firewall **and** at your hosting provider
   (OCI security list, AWS security group, and so on). Port 80 may stay closed:
   the certificate is obtained through TLS-ALPN-01, which only uses 443.

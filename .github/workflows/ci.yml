@@ -97,7 +97,7 @@ jobs:
               -e "s|__RD_SESSION_TOKEN__|ci_token|g" \
               nginx.conf.template > nginx.conf
 
-          sed -e "s|__RD_DOMAIN__|localhost|g" \
+          sed -e "s|__RD_SITES__|localhost|g" \
               -e "s|__RD_ACME_EMAIL__|ci@example.com|g" \
               Caddyfile.template > Caddyfile
 

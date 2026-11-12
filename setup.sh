@@ -49,6 +49,21 @@ demander() {                       # demander VAR "question" "défaut" [secret]
   eval "$var=\$rep"
 }
 
+# sites_de DOMAINE "alias1, alias2" -> « domaine, alias1, alias2 » : la liste d'adresses de site de Caddy.
+# Virgules ou espaces ; un nom mal forme est refuse (il irait tel quel dans le Caddyfile), le domaine n'est pas repete.
+sites_de() {
+  local sites=$1 a noms=()
+  # « read » ne lit qu'UNE ligne : une valeur sur plusieurs lignes (un .env retouche a la main) serait tronquee en silence.
+  case "${2:-}" in *$'\n'*) echo "nom invalide : saut de ligne dans la liste" >&2; return 1 ;; esac
+  IFS=', ' read -ra noms <<< "${2:-}" || true
+  for a in ${noms[@]+"${noms[@]}"}; do
+    [ -n "$a" ] || continue
+    printf '%s' "$a" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' || { echo "nom invalide : $a" >&2; return 1; }
+    [ "$a" = "$1" ] || sites="$sites, $a"
+  done
+  printf '%s' "$sites"
+}
+
 titre "Domaine et accès"
 demander RD_DOMAIN "Nom de domaine du client web (ex. rustdesk.exemple.org)"
 [ -n "${RD_DOMAIN:-}" ] || { c_err "Le domaine est obligatoire."; exit 1; }
@@ -157,7 +172,13 @@ RD_ACME_EMAIL=${RD_ACME_EMAIL:-}
 if [ "$RD_TLS_MODE" = "1" ]; then
   demander RD_ACME_EMAIL "Adresse e-mail pour Let's Encrypt"
   [ -n "$RD_ACME_EMAIL" ] || { c_err "L'adresse e-mail est obligatoire pour ACME."; exit 1; }
+  # D'autres noms pour le MEME site (un second sous-domaine, par exemple). Sans cette variable, relancer ce script
+  # reecrivait le Caddyfile avec un seul nom : les autres cessaient de repondre en HTTPS, sans un mot.
+  demander RD_DOMAIN_ALIASES "Autres noms servis par ce site (facultatif, séparés par des virgules ; « - » pour aucun)" ""
 fi
+RD_DOMAIN_ALIASES=${RD_DOMAIN_ALIASES:-}
+[ "$RD_DOMAIN_ALIASES" = "-" ] && RD_DOMAIN_ALIASES=""
+RD_SITES=$(sites_de "$RD_DOMAIN" "$RD_DOMAIN_ALIASES") || { c_err "  ✗ $RD_DOMAIN_ALIASES : chaque nom doit être un nom de domaine (lettres, chiffres, points, tirets)."; exit 1; }
 
 titre "Liste des postes (facultatif)"
 echo "  Un petit service ajoute une page d'accueil avec vos postes, leur nom, leurs étiquettes et leur"
@@ -191,6 +212,7 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   echo "RD_DEFAULT_PEER_ID=$(sq "${RD_DEFAULT_PEER_ID:-}")"
   echo "RD_TLS_MODE=$(sq "$RD_TLS_MODE")"
   echo "RD_ACME_EMAIL=$(sq "$RD_ACME_EMAIL")"
+  echo "RD_DOMAIN_ALIASES=$(sq "$RD_DOMAIN_ALIASES")"
   echo "RD_SESSION_TOKEN=$(sq "$RD_SESSION_TOKEN")"
   echo "RD_FLEET=$(sq "$RD_FLEET")"
 } > "$ENV_FILE"
@@ -210,6 +232,7 @@ rendre() {                         # rendre gabarit destination
       -e "s|__RD_DEFAULT_PEER_ID__|${RD_DEFAULT_PEER_ID:-}|g" \
       -e "s|__RD_ACME_EMAIL__|$RD_ACME_EMAIL|g" \
       -e "s|__RD_SESSION_TOKEN__|$RD_SESSION_TOKEN|g" \
+      -e "s|__RD_SITES__|$RD_SITES|g" \
       "$1" > "$2"
   echo "  ✓ $2"
 }
@@ -232,6 +255,13 @@ fi
 ./scripts/build-web.sh
 cp "$TMPD/index.html" html/index.html
 echo "  ✓ html/index.html"
+
+# « umask 077 » (plus haut) protege .env et nginx.conf, qui portent des secrets — mais il vaut aussi pour tout ce
+# qui est cree ensuite. Sur une installation neuve, html/ sortait en 700 et ses fichiers en 600 ; sur une mise a
+# jour, les nouveaux fichiers seulement (rd-console.js, manifeste, icones). Les workers nginx ne sont pas root :
+# ils repondaient 403 a chaque fichier. Sans identifiants la page rendait toujours 401, donc rien ne le signalait.
+# Constate le 2026-11-12 sur un conteneur candidat, avant qu'il n'atteigne un site en service.
+chmod -R u=rwX,go=rX html
 
 # Un bloc <script> qui ne se parse pas est abandonne en entier par le
 # navigateur : la page se chargerait sans la moindre erreur visible, et le
@@ -261,9 +291,12 @@ code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/ || true)
 if [ "$code" = "401" ]; then c_ok "  ✓ la page exige une authentification (401)"
 else c_warn "  ⚠ sans identifiants, réponse inattendue : $code"; fi
 
+# Une ERREUR, pas un avertissement : 401 sans identifiants ne prouve pas que la page se charge (un 403 sur
+# chaque fichier donne exactement le meme 401 a qui n'est pas connecte).
+ECHEC_PAGE=0
 code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RD_WEB_USER:$RD_WEB_PASSWORD" http://127.0.0.1:8081/ || true)
 if [ "$code" = "200" ]; then c_ok "  ✓ la page répond avec les identifiants (200)"
-else c_warn "  ⚠ avec identifiants, réponse inattendue : $code"; fi
+else c_err "  ✗ avec identifiants, la page répond $code au lieu de 200 — docker logs rustdesk-web"; ECHEC_PAGE=1; fi
 
 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/healthz || true)
 if [ "$code" = "204" ]; then c_ok "  ✓ sonde de santé (204)"
@@ -328,9 +361,10 @@ esac
 titre "Terminé"
 if [ "$RD_TLS_MODE" = "1" ]; then
   echo "  URL : https://$RD_DOMAIN/"
+  [ "$RD_SITES" = "$RD_DOMAIN" ] || echo "  Noms servis : $RD_SITES"
   echo ""
   c_warn "  Avant que le certificat puisse être délivré :"
-  echo "    • $RD_DOMAIN doit pointer en A vers l'IP publique de cette machine,"
+  echo "    • $RD_SITES doit pointer en A vers l'IP publique de cette machine,"
   echo "      sans proxy (nuage gris chez Cloudflare)"
   echo "    • le port 443 doit être ouvert dans le pare-feu local ET chez"
   echo "      l'hébergeur (security list, security group…)"
@@ -342,6 +376,12 @@ else
 fi
 echo ""
 echo "  Identifiant : $RD_WEB_USER"
+
+if [ "$ECHEC_PAGE" = 1 ]; then
+  echo ""
+  c_err "  La page ne se charge pas pour un utilisateur connecté. Lis : docker logs rustdesk-web"
+  exit 1
+fi
 
 if [ "$ECHEC_RELAIS" = 1 ]; then
   echo ""

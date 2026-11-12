@@ -78,7 +78,9 @@ dépôt, mais du web lui-même.
   et Docker Desktop reportent le port 443 sur la machine.
 - Un serveur RustDesk **OSS** (hbbs/hbbr) joignable, ports WebSocket 21118 et
   21119 accessibles depuis le conteneur web
-- Un nom de domaine pointant en **A direct** vers cette machine, sans proxy
+- Un nom de domaine pointant en **A direct** vers cette machine, sans proxy.
+  Plusieurs noms pour le même site : `setup.sh` demande les « autres noms »
+  (`RD_DOMAIN_ALIASES`), et Caddy délivre un certificat à chacun
 - Le port **443** ouvert dans le pare-feu local **et** chez ton hébergeur
   (security list OCI, security group AWS…). Le port 80 peut rester fermé :
   le certificat s'obtient par TLS-ALPN-01, qui n'utilise que le 443.

@@ -75,9 +75,9 @@ Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome .
 - [ ] Contrôle avec un vrai pair et un vrai hbbs (Alex) — voir « Non vérifié » ci-dessus
 - [ ] Push (décision d'Alex ; publierait aussi `59f9661`)
 
-## Réconciliation avec `origin/main` (2026-11-12) — FAIT, branche `reconcilier-main-origin`, non poussée
+## Réconciliation avec `origin/main` (2026-11-12) — FAIT, fusion `6752939` sur `main`, poussée
 `main` local (9 commits, console + flotte, v1.0.0) et `origin/main` (8 commits : codecs, entrées, écran de connexion, CSP, langue,
-`web/src/`) avaient divergé depuis `e1928dd`. Fusion dans une branche à part ; `main` n'est pas touché.
+`web/src/`) avaient divergé depuis `e1928dd`. Fusion faite dans une branche à part, puis `main` avancé dessus et poussé.
 
 - [x] Conflits de texte : `nginx.conf.template`, `scripts/verify.sh`, les deux bancs ; `web/index.html.template` supprimé côté
       distant → les 4 retouches locales du gabarit sont reportées dans `web/src/page.html` et `web/src/30-session.js`
@@ -86,7 +86,7 @@ Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome .
       pilotent les contrôles de la page ; état confirmé par le poste), raccourcis traduits (interrupteur du tiroir),
       calage d'image (zone libre de la console + calage au pixel de la page)
 - [x] nginx : les 5 en-têtes de sécurité répétés dans `location ~ ^/rd-console` et `location /api/` (ils n'héritaient de rien)
-- [x] Bancs : gabarit 202, navigateur 112 (108 + 4 ignorés et annoncés sans WebCodecs) ; option `sansConsole` pour les tests de la barre d'origine ; clavier PC forcé ;
+- [x] Bancs : gabarit 205, navigateur 112 (108 + 4 ignorés et annoncés sans WebCodecs) ; option `sansConsole` pour les tests de la barre d'origine ; clavier PC forcé ;
       `RenderDocument` non coupé (Chrome 157 sans tête refusait tout plein écran sous Playwright 1.56.1)
 - Retiré : le choix de langue du tiroir (et la clé `langue` du magasin `rd-console`) ; l'écoute d'Entrée et les `aria-label`
   de `05-login.js` (la page le fait, avec un vrai `<label>`) ; les titres de carte écrits en CSS (sauf l'écran d'attente)

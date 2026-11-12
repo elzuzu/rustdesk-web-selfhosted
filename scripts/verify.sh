@@ -112,6 +112,11 @@ vert "  ✓ aucune instruction impossible"
 titre "Syntaxe JavaScript du gabarit"
 ./scripts/check-syntax.sh
 
+# Comme setup.sh : tout ce qui suit est cree sous « umask 077 » (il protege .env et nginx.conf, qui portent des
+# secrets), puis l'arborescence servie est rendue lisible. Sans cette seconde etape nginx repond 403 a chaque
+# fichier — ce que les sondes faites plus bas AVEC le cookie de session voient, et qu'un 401 ne voit pas.
+umask 077
+
 titre "Extraction et correctifs du bundle"
 ./scripts/extract-assets.sh >/dev/null
 ./scripts/patch-assets.sh
@@ -119,14 +124,20 @@ titre "Extraction et correctifs du bundle"
 
 titre "Rendu de la configuration"
 printf 'admin:$6$rounds=5000$test$salt\n' > .htpasswd
+chmod 644 .htpasswd                       # comme setup.sh : les workers nginx doivent le lire
 rendre() { sed -e "s|__RD_DOMAIN__|localhost|g" -e "s|__RD_BACKEND_HOST__|127.0.0.1|g" \
                -e "s|__RD_PUBLIC_KEY__|cle_de_test|g" -e "s|__RD_DEFAULT_PEER_ID__||g" \
                -e "s|__RD_ACME_EMAIL__|ci@example.com|g" -e "s|__RD_SESSION_TOKEN__|jeton_de_test|g" \
+               -e "s|__RD_SITES__|localhost, autre.localhost|g" \
                "$1" > "$2"; }
 rendre nginx.conf.template     nginx.conf
 rendre Caddyfile.template      Caddyfile
 rendre web/index.html.template html/index.html
+chmod -R u=rwX,go=rX html                 # comme setup.sh, apres « umask 077 »
 echo "  ✓ nginx.conf, Caddyfile, html/index.html"
+grep -q '^localhost, autre.localhost {$' Caddyfile || { rouge "  ✗ Caddyfile : la liste des noms du site n'est pas rendue"; exit 1; }
+! grep -q '__RD_' nginx.conf Caddyfile html/index.html || { rouge "  ✗ un repere __RD_…__ n'a pas ete remplace"; exit 1; }
+echo "  ✓ aucun repere __RD_…__ restant ; deux noms pour le meme site dans le Caddyfile"
 
 titre "Syntaxe JavaScript de la page rendue"
 ./scripts/check-syntax.sh html/index.html
@@ -140,7 +151,7 @@ done
 # Plancher du nombre de tests : un test supprime ou desactive en silence ne doit
 # pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
 # baisser sans raison ecrite dans le commit.
-PLANCHER_GABARIT=202
+PLANCHER_GABARIT=205
 PLANCHER_NAVIGATEUR=112
 
 titre "Banc du gabarit"
@@ -229,6 +240,14 @@ attendu() {
 attendu /                        401   # la page exige une authentification
 attendu /js/dist/index.js.orig   404   # les sources non corrigees ne sont pas servies
 attendu /rd-console.js           401   # la console est derriere la meme authentification
+
+# 401 sans identifiants ne prouve PAS que la page se charge : avec une arborescence illisible par nginx, chaque
+# fichier repond 403 a l'utilisateur connecte et toujours 401 aux autres. On charge donc la page AVEC le cookie.
+for chemin in / /js/dist/index.js /manifest.json; do
+  c=$(curl -s -o /dev/null -w '%{http_code}' -H 'Cookie: rdsession=jeton_de_test' "http://127.0.0.1:18099$chemin")
+  [ "$c" = "200" ] || { rouge "  ✗ $chemin avec le cookie de session : $c (403 = html/ illisible par nginx : voir le chmod de setup.sh)"; exit 1; }
+  echo "  ✓ $chemin avec le cookie de session = 200"
+done
 
 # La console avec le cookie de session (jeton de test du rendu ci-dessus) : servie, compressee, revalidee.
 cons=$(curl -s -D - -o /dev/null -H 'Accept-Encoding: gzip' -H 'Cookie: rdsession=jeton_de_test' http://127.0.0.1:18099/rd-console.js | tr -d '\r')

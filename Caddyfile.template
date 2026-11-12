@@ -5,7 +5,7 @@
 	email __RD_ACME_EMAIL__
 }
 
-__RD_DOMAIN__ {
+__RD_SITES__ {
 	tls {
 		issuer acme {
 			disable_http_challenge
