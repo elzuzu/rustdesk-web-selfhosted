@@ -2544,3 +2544,48 @@ test("titre : l'onglet porte le nom du poste pendant la session", async () => {
   n.peerInfo();
   assert.equal(n.doc.title, "123 456 789 — RustDesk", "sans nom de poste : l'ID");
 });
+
+// ====================================================================
+// Securite du deploiement : en-tetes, injection HTML du bundle, manifeste.
+// ====================================================================
+test("nginx : chaque bloc qui declare un add_header repete les en-tetes de securite (nginx n'herite pas)", () => {
+  const conf = lire(path.join(RACINE, "nginx.conf.template"));
+  const exiges = ["X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy", "Content-Security-Policy"];
+  const blocsLoc = [...conf.matchAll(/^[ \t]*location[^{\n]*\{([^}]*)\}/gm)].map((m) => m[0]);
+  const avec = blocsLoc.filter((b) => /add_header/.test(b));
+  assert.equal(avec.length, 3, "les trois blocs qui posent le cookie de session");
+  for (const b of avec) for (const h of exiges) assert.ok(b.includes("add_header " + h), h + " manque dans : " + b.split("\n")[0]);
+  const niveauServeur = conf.replace(/^[ \t]*location[^{\n]*\{[^}]*\}/gm, "");
+  for (const h of exiges) assert.ok(niveauServeur.includes("add_header " + h), h + " manque au niveau server");
+  const csp = /add_header Content-Security-Policy "([^"]+)"/.exec(conf)[1];
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /object-src 'none'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.ok(!/https?:|\*/.test(csp.replace(/wss?:\/\/\$host/g, "")), "aucun hote tiers, aucun joker : " + csp);
+});
+
+avecVendor("patch 6 : le texte venu du pair est echappe avant innerHTML", () => {
+  const b = lire(BUNDLE);
+  assert.ok(!/font-weight: bold;">'\+t\+"<\/div>"/.test(b), "une concatenation brute de t subsiste");
+  assert.equal((b.match(/font-weight: bold;">'\+String\(t\)\.replace\(/g) || []).length, 2);
+  // L'expression injectee, evaluee telle quelle.
+  const ech = /String\(t\)\.replace\(\/\[[^\]]+\]\/g,x=>"&#"\+x\.charCodeAt\(0\)\+";"\)/.exec(b)[0];
+  const f = new Function("t", "return " + ech);
+  assert.equal(f('<img src=x onerror="alert(1)">'), "&#60;img src=x onerror=&#34;alert(1)&#34;&#62;");
+  assert.equal(f("Wrong Password"), "Wrong Password");
+});
+
+test("manifeste : la page est installable, et rien n'y pointe hors du deploiement", () => {
+  const m = JSON.parse(lire(path.join(RACINE, "web", "manifest.json")));
+  assert.equal(m.display, "standalone");
+  assert.equal(m.start_url, ".");
+  for (const i of m.icons) {
+    assert.ok(!/^(?:https?:)?\/\//.test(i.src));
+    assert.ok(fs.existsSync(path.join(RACINE, "web", i.src)), i.src + " absent de web/");
+  }
+  assert.ok(m.icons.some((i) => i.sizes === "192x192") && m.icons.some((i) => i.sizes === "512x512"));
+  // Derriere l'authentification Basic, le manifeste n'est servi qu'avec les identifiants.
+  assert.match(html, /<link rel="manifest" href="manifest\.json" crossorigin="use-credentials">/);
+  const extraction = lire(path.join(RACINE, "scripts", "extract-assets.sh"));
+  for (const f of ["manifest.json", "icon-192.png", "icon-512.png"]) assert.ok(extraction.includes(f), f + " n'est pas copie dans html/");
+});

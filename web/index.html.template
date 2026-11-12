@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RustDesk</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+<meta name="theme-color" content="#0d0f12">
 
 <script>(function(){
   var HOST="__RD_DOMAIN__";
@@ -69,14 +72,40 @@
   body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:0;
        background:#0d0f12;color:#e6e8ec;overflow:hidden}
 
-  #app>#connect{padding:3rem 2rem}
+  #app>#connect{padding:12vh 2rem 3rem}
+  #app>#password,#app>#status{text-align:center}
+  /* L'ecran de connexion : une carte centree, un titre, un seul champ. */
+  #rd-entete{margin:0 0 1.4rem}
+  #rd-entete img{display:block;margin:0 auto .6rem;border-radius:10px}
+  #rd-entete h1{margin:0;font-size:1.35rem;font-weight:650;letter-spacing:.01em}
+  #rd-entete p{margin:.3rem 0 0;color:#8b94a3;font-size:.9rem}
+  #app>#connect table{padding:1.1rem 1.2rem .9rem;border-radius:12px;text-align:left;
+         background:#15181d;border:1px solid rgba(255,255,255,.08)}
+  #app>#connect label[for=id]{color:#a8b0bd;font-size:.85rem}
+  #app>#connect input#id{font-size:1.05rem;letter-spacing:.04em}
+  #app input:focus-visible,#rd-langue:focus-visible{outline:2px solid #7aa2ff;outline-offset:1px}
+  #app>#connect button[onclick]:hover,#app>#password button#confirm:hover{background:#2c66ff}
+  #app>#password button#cancel,#app>#status button#cancel{padding:.5rem 1.2rem;border-radius:6px;
+         border:0;background:#2a2f38;color:#e6e8ec;cursor:pointer;margin-top:.6rem}
+  #app>#status #text{margin-top:22vh}
+  #rd-mdp-titre{margin:18vh 0 .8rem;color:#a8b0bd;font-size:.95rem}
+  #rd-pied{margin:1rem auto 0;max-width:26rem;color:#8b94a3;font-size:.8rem}
+  #rd-pied label{display:inline-flex;align-items:center;gap:.4rem;cursor:pointer}
+  #app #rd-pied input[type=checkbox]{min-width:0;width:auto;margin:0;padding:0}
+  #rd-serveur{margin:.7rem 0 0;display:flex;align-items:center;justify-content:center;gap:.4rem}
+  #rd-serveur b{color:#a8b0bd;font-weight:500}
+  #rd-langue{margin-left:.8rem;padding:.15rem .3rem;font-size:.78rem;border-radius:5px;
+         border:1px solid #3a3f47;background:#24272e;color:#e6e8ec}
   #app input{padding:.45rem;border-radius:6px;border:1px solid #3a3f47;
              background:#24272e;color:#e6e8ec;min-width:22rem;box-sizing:border-box}
   /* Telephone : 22 rem de champ plus les libelles debordaient de l'ecran. */
   @media (max-width:34rem){
     #app>#connect,#app>#password,#app>#status{padding:1.5rem .5rem}
-    #app input{min-width:0;width:calc(100vw - 7rem)}
-    #app>#connect #rd-recents{max-width:calc(100vw - 7rem)}
+    #app>#connect{padding-top:6vh}
+    #app>#connect table{padding:.8rem .5rem}
+    #app input{min-width:0;width:calc(100vw - 9rem)}
+    #app>#password input{width:min(22rem,calc(100vw - 2rem))}
+    #app>#connect #rd-recents{max-width:calc(100vw - 9rem)}
   }
   #app>#connect button,#app>#password button{padding:.5rem 1.2rem;border-radius:6px;
              border:0;background:#024eff;color:#fff;font-weight:600;cursor:pointer;margin-top:.6rem}
@@ -95,7 +124,12 @@
          gap:.4rem;padding:.35rem .5rem;font-size:.8rem;
          background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
          border-bottom-left-radius:8px;border:1px solid rgba(255,255,255,.08);
-         border-top:0;border-right:0;opacity:.25;transition:opacity .18s}
+         border-top:0;border-right:0;opacity:.5;transition:opacity .18s}
+  /* Trois groupes : l'image, le poste, la session. Un filet les separe — les
+     controles restent des enfants DIRECTS de #rdbar (voir plus bas). */
+  #rdbar > .rdecrans,#rdbar > .rdactions,#rdbar > .rdplein{margin-left:.5rem}
+  #rdbar > button.quit{margin-left:.5rem}
+  #rdbar select:focus-visible,#rdbar button:focus-visible{outline:2px solid #7aa2ff;outline-offset:1px}
   #rdbar:hover,#rdbar:focus-within{opacity:1}
   /* Un presse-papier venu du poste distant attend un clic pour etre depose :
      la barre au repos est a peine visible, elle se montre donc d'elle-meme. */
@@ -1203,7 +1237,9 @@ window.onGlobalEvent = function(payload){
         var id = e && normId(e.id);
         if (!id || vus[id]) return;
         vus[id] = true;
-        r.push({ id: id, t: horodatage(e.t) });
+        var o = { id: id, t: horodatage(e.t) }, n = nomPoste(e.n);
+        if (n) o.n = n;                                 // le nom du poste, s'il est connu
+        r.push(o);
       });
       r.sort(function(a, b){ return b.t - a.t; });      // tri stable : le plus recent d'abord
       return r.slice(0, max);
@@ -1223,11 +1259,14 @@ window.onGlobalEvent = function(payload){
     }
     return {
       list: function(){ return charger() || []; },
-      add: function(id){
+      // nom : le nom du poste annonce par le pair, facultatif. Sans lui, celui
+      // deja connu pour cet ID est garde.
+      add: function(id, nom){
         var n = normId(id);
         if (!n) return false;
-        var l = (charger() || []).filter(function(e){ return e.id !== n; });
-        l.unshift({ id: n, t: maintenant() });
+        var tous = charger() || [], ancien = tous.filter(function(e){ return e.id === n; })[0];
+        var l = tous.filter(function(e){ return e.id !== n; });
+        l.unshift({ id: n, t: maintenant(), n: nomPoste(nom) || (ancien && ancien.n) || "" });
         return sauver(l);
       },
       remove: function(id){
@@ -1469,8 +1508,50 @@ window.onGlobalEvent = function(payload){
     return /^[0-9]{6}$/.test(d) ? d : null;
   }
 
+  // ------------------------------------------------------------------ langue
+  // Le francais est la langue d'ecriture : la CLE d'un texte est sa version
+  // francaise, EN en donne la traduction. Un texte absent du dictionnaire
+  // s'affiche en francais plutot que de disparaitre. {0}, {1}… sont remplaces
+  // par les arguments suivants.
+  var EN = {/*@EN@*/};
+  function creerI18n(langue){
+    var en = langue === "en";
+    return function(cle){
+      var a = arguments;
+      var t = (en && Object.prototype.hasOwnProperty.call(EN, cle)) ? EN[cle] : cle;
+      return String(t).replace(/\{(\d)\}/g, function(_, i){ var v = a[+i + 1]; return v == null ? "" : String(v); });
+    };
+  }
+  // Le choix memorise l'emporte ; sinon la langue du navigateur — francais si
+  // elle commence par « fr », anglais pour toute autre, francais si inconnue.
+  function langueDe(pref, nav){
+    if (pref === "fr" || pref === "en") return pref;
+    if (typeof nav !== "string" || !nav) return "fr";
+    return nav.toLowerCase().indexOf("fr") === 0 ? "fr" : "en";
+  }
+  // Ce que le bundle affiche en anglais dans l'ecran d'attente, vers la cle
+  // francaise correspondante.
+  var STATUTS = {
+    "Connecting ...": "Connexion…",
+    "Logging in...": "Authentification…",
+    "Connected, waiting for image...": "Connecté, en attente de l'image…",
+    "ID does not exist": "Cet ID n'existe pas.",
+    "Remote desktop is offline": "Le poste distant est hors ligne.",
+    "Key mismatch": "La clé du serveur ne correspond pas.",
+    "Key overuse": "Clé du serveur trop sollicitée.",
+    "No Display": "Le poste distant n'a pas d'écran.",
+    "Wrong Password": "Mot de passe incorrect.",
+    "Do you want to enter again?": "Mot de passe incorrect.",
+    "Offline": "Le poste distant est hors ligne.",
+    "Empty Password": "Mot de passe vide.",
+    "No Password Access": "Ce poste n'accepte pas la connexion par mot de passe.",
+    "2FA Required": "Code de vérification requis.",
+    "Wrong 2FA Code": "Code de vérification refusé."
+  };
+
   window.RDLib = {
     v: 1,
+    i18n: { creer: creerI18n, langue: langueDe, EN: EN, STATUTS: STATUTS },
     codec: { ORDRE: CODEC_ORDRE, PREFER: CODEC_PREFER, CHAINES: CODEC_CHAINES,
              meilleur: codecMeilleur, capacites: codecCapacites, flux: codecFlux },
     pair:  { retour: retourPair, demande2fa: demande2fa, code2fa: code2fa },
@@ -1502,6 +1583,17 @@ window.onGlobalEvent = function(payload){
 // par substitution de methodes sur window.curConn. Aucun patch du bundle.
 (function(){
   var RD = window.RD;
+
+  // La langue de l'interface, fixee au chargement : la preference memorisee,
+  // sinon celle du navigateur. window.__rdT sert aux autres blocs.
+  var LANGUE = (function(){
+    var pref = null;
+    try { pref = RDLib.prefs.create(window.localStorage).get().lang; } catch(_){}
+    return RDLib.i18n.langue(pref, window.navigator && window.navigator.language);
+  })();
+  var T = RDLib.i18n.creer(LANGUE);
+  window.__rdT = T; window.__rdLangue = LANGUE;
+  try { document.documentElement.setAttribute("lang", LANGUE); } catch(_){}
 
   // ---------------------------------------------------------------- entrees
   var CTRL={Enter:"Return",Backspace:"Backspace",Escape:"Escape",Tab:"Tab",
@@ -2517,7 +2609,7 @@ window.onGlobalEvent = function(payload){
       pastille.className = "rdchip";
       var b = document.createElement("button");
       b.type = "button"; b.className = "rdchip-id";
-      b.textContent = RDLib.fmtId(e.id);
+      b.textContent = (e.n ? e.n + " · " : "") + RDLib.fmtId(e.id);
       b.title = "Utiliser cet ID (Suppr ou Retour arrière pour le retirer de la liste)";
       b.onclick = function(){ choisirRecent(e.id); };
       b.addEventListener("keydown", function(ev){
@@ -2610,10 +2702,10 @@ window.onGlobalEvent = function(payload){
     try{
       var idSession = window.curConn && window.curConn._id;
       // L'onglet porte le nom du poste : avec plusieurs sessions ouvertes, on
-      // ne les distinguait pas.
+      // ne les distinguait pas. Le meme nom accompagne l'ID dans l'historique.
       var nomPoste = RDLib.nomPoste(window.curConn && window.curConn._peerInfo && window.curConn._peerInfo.hostname);
+      if (idSession){ recents.add(idSession, nomPoste); rendreRecents(); }
       document.title = (nomPoste || RDLib.fmtId(String(idSession || "")) || "Session") + " — RustDesk";
-      if (idSession){ recents.add(idSession); rendreRecents(); }
     }catch(e){ console.warn("[historique]", e); }
     // La barre est repliee par defaut : on dit UNE fois ou elle est passee.
     if (!p.hint && ui.barre && ui.barre.classList.contains("replie")){
@@ -3235,9 +3327,151 @@ window.onGlobalEvent = function(payload){
     }, 400);
 
     poserRecents(id);
+    try { habillerFormulaire(host, id, key); }
+    catch(e){ console.warn("[formulaire] habillage :", e); }
     console.log("[formulaire] prerempli — ID "+id.value+" (modifiable)");
     return true;
   }
+
+  // ------------------------------------------------- habillage du formulaire
+  // Le formulaire est celui du bundle : trois champs nus, des libelles en
+  // anglais, aucun titre. On l'habille SANS le reconstruire — le bundle lit
+  // #host, #key et #id par leur identifiant, et ses boutons appellent ses
+  // propres fonctions. L'hote et la cle viennent du deploiement et sont
+  // reaffirmes a chaque connexion : les montrer comme des champs a remplir
+  // etait trompeur, leurs lignes sont masquees et le serveur est rappele en clair.
+  function ligneDe(el){ return el && el.closest ? el.closest("tr") : null; }
+  function habillerFormulaire(host, id, key){
+    var boite = document.querySelector("div#connect");
+    if (!boite || !boite.insertBefore || boite.dataset.habille) return;
+    boite.dataset.habille = "1";
+    var table = boite.querySelector("table");
+
+    var entete = document.createElement("div"); entete.id = "rd-entete";
+    var logo = document.createElement("img");
+    logo.src = "favicon.svg"; logo.alt = ""; logo.width = 44; logo.height = 44;
+    var h1 = document.createElement("h1"); h1.textContent = "RustDesk Web";
+    var sous = document.createElement("p"); sous.textContent = T("Connexion à un poste distant");
+    entete.appendChild(logo); entete.appendChild(h1); entete.appendChild(sous);
+    boite.insertBefore(entete, boite.firstChild);
+
+    [host, key].forEach(function(el){ var tr = ligneDe(el); if (tr) tr.hidden = true; });
+    var trId = ligneDe(id);
+    if (trId){
+      var lib = trId.querySelector("span");
+      if (lib){
+        var lab = document.createElement("label");
+        lab.setAttribute("for", "id"); lab.textContent = T("ID du poste");
+        lib.parentNode.replaceChild(lab, lib);
+      }
+    }
+    id.setAttribute("placeholder", "123 456 789");
+    var go = boite.querySelector("button[onclick]");
+    if (go) go.textContent = T("Connexion");
+    // Entree dans le champ ID lance la connexion : le bundle ne le fait pas.
+    id.addEventListener("keydown", function(ev){
+      if (ev.key === "Enter" && go){ ev.preventDefault(); go.click(); }
+    });
+
+    var pied = document.createElement("div"); pied.id = "rd-pied";
+    // Le bundle garde le mot de passe d'un poste EN CLAIR dans le stockage du
+    // navigateur. C'est commode sur son propre ordinateur, a eviter ailleurs.
+    var memo = document.createElement("label"); memo.id = "rd-memo";
+    var coche = document.createElement("input"); coche.type = "checkbox";
+    coche.checked = prefs.get().remember !== false;
+    coche.onchange = function(){
+      prefs.set({ remember: !!coche.checked });
+      if (!coche.checked){
+        var n = oublierMotsDePasse();
+        notifier(n ? T("Mots de passe mémorisés effacés ({0}).", n) : T("Les mots de passe ne seront plus mémorisés."));
+      }
+    };
+    memo.appendChild(coche);
+    memo.appendChild(document.createTextNode(" " + T("Mémoriser les mots de passe sur cet appareil")));
+    pied.appendChild(memo);
+
+    var bas = document.createElement("p"); bas.id = "rd-serveur";
+    bas.appendChild(document.createTextNode(T("Serveur") + " : "));
+    var hb = document.createElement("b"); hb.textContent = RD_HOST; bas.appendChild(hb);
+    var lg = document.createElement("select"); lg.id = "rd-langue";
+    lg.setAttribute("aria-label", T("Langue de l'interface"));
+    [["fr","Français"],["en","English"]].forEach(function(o){
+      var x = document.createElement("option"); x.value = o[0]; x.textContent = o[1]; lg.appendChild(x); });
+    lg.value = LANGUE;
+    lg.onchange = function(){
+      prefs.set({ lang: lg.value });
+      try { window.location.reload(); } catch(_){}
+    };
+    bas.appendChild(lg);
+    pied.appendChild(bas);
+    if (table && table.parentNode) table.parentNode.insertBefore(pied, table.nextSibling);
+    else boite.appendChild(pied);
+
+    // --- Ecran du mot de passe.
+    var mdp = document.querySelector("div#password");
+    if (mdp){
+      var champ = mdp.querySelector("input");
+      var titre = document.createElement("p"); titre.id = "rd-mdp-titre";
+      titre.textContent = T("Mot de passe du poste distant");
+      mdp.insertBefore(titre, mdp.firstChild);
+      if (champ){
+        champ.setAttribute("placeholder", T("Mot de passe"));
+        champ.setAttribute("aria-label", T("Mot de passe du poste distant"));
+        champ.setAttribute("autocomplete", "off");
+        // Entree valide : le bouton « Confirm » du bundle appelle sa fonction
+        // confirm(), qui a remplace window.confirm.
+        champ.addEventListener("keydown", function(ev){
+          if (ev.key !== "Enter") return;
+          ev.preventDefault();
+          var ok = mdp.querySelector("button#confirm"); if (ok) ok.click();
+        });
+      }
+      var bOk = mdp.querySelector("button#confirm"); if (bOk) bOk.textContent = T("Valider");
+    }
+    Array.prototype.forEach.call(document.querySelectorAll("#app button#cancel"), function(b){ b.textContent = T("Annuler"); });
+
+    // --- Ecran d'attente : le bundle y ecrit en anglais.
+    var texte = document.querySelector("div#text");
+    if (texte && window.MutationObserver){
+      new MutationObserver(function(){
+        var brut = (texte.textContent || "").trim();
+        var cle = Object.prototype.hasOwnProperty.call(RDLib.i18n.STATUTS, brut) ? RDLib.i18n.STATUTS[brut] : null;
+        if (!cle) return;
+        var cible = texte.firstElementChild || texte;
+        cible.textContent = T(cle);
+        // « Wrong Password » : le bundle propose de ressaisir… sans montrer le
+        // champ. On le montre, vide, avec le focus.
+        if (brut === "Do you want to enter again?" && mdp){
+          var c2 = mdp.querySelector("input");
+          var st = document.querySelector("div#status");
+          if (st) st.style.display = "none";
+          mdp.style.display = "block";
+          if (titre) titre.textContent = T("Mot de passe incorrect.") + " " + T("Mot de passe du poste distant");
+          if (c2){ c2.value = ""; c2.focus(); }
+        } else if (titre) titre.textContent = T("Mot de passe du poste distant");
+      }).observe(texte, { childList: true, subtree: true, characterData: true });
+    }
+    // Le champ du mot de passe prend le focus des qu'il apparait.
+    if (mdp && window.MutationObserver){
+      new MutationObserver(function(){
+        if (mdp.style.display === "none") return;
+        var c3 = mdp.querySelector("input");
+        if (c3 && document.activeElement !== c3) c3.focus();
+      }).observe(mdp, { attributes: true, attributeFilter: ["style"] });
+    }
+  }
+  // Retire les mots de passe que le bundle a memorises, pour tous les postes.
+  // Rend le nombre de fiches touchees.
+  function oublierMotsDePasse(){
+    var n = 0;
+    try{
+      var P = JSON.parse(window.localStorage.getItem("peers") || "{}");
+      for (var k in P){ if (P[k] && P[k].password !== undefined){ delete P[k].password; n++; } }
+      window.localStorage.setItem("peers", JSON.stringify(P));
+    }catch(e){ console.warn("[memorisation]", e); }
+    return n;
+  }
+  window.__rdOublier = oublierMotsDePasse;
 
   // Le bundle recopie le formulaire dans localStorage a CHAQUE connexion :
   //   window.connect = () => { … localStorage.setItem("key", $("#key").value) … }

@@ -31,8 +31,23 @@ server {
     set_real_ip_from ::1;
     real_ip_header X-Real-IP;
 
+    # En-tetes de securite. ATTENTION : nginx n'herite PAS des add_header du
+    # niveau « server » dans un bloc « location » qui en declare un seul. Les
+    # trois blocs ci-dessous posent un cookie : sans la repetition de ces
+    # lignes, la page et le bundle partaient sans aucun de ces en-tetes.
+    #
+    # La politique de contenu garde 'unsafe-inline' : la page est faite de blocs
+    # en ligne, et le formulaire du bundle de gestionnaires onclick. Elle borne
+    # le reste — aucun script, image ou connexion vers un autre hote.
+    # 'wasm-unsafe-eval' : les decodeurs (zstd, opus, ogv) sont en WebAssembly.
+    # connect-src data: : le bundle charge son WebAssembly embarque par fetch()
+    # d'une URL data:. Sans cela le decodeur zstd ne demarre pas (presse-papier
+    # et transferts de fichiers compresses). Constate par le banc navigateur.
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' data: ws://$host wss://$host; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
 
     # Defense en profondeur : jamais de sauvegarde ni de source servie.
     # DOIT preceder les autres regex, sinon /js/dist/index.js.orig est servi.
@@ -51,6 +66,11 @@ server {
         auth_basic $rd_realm;
         auth_basic_user_file /etc/nginx/.htpasswd;
         add_header Set-Cookie "rdsession=__RD_SESSION_TOKEN__; Max-Age=7776000; Path=/; HttpOnly; Secure; SameSite=Lax";
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' data: ws://$host wss://$host; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate" always;
     }
 
@@ -58,6 +78,11 @@ server {
         auth_basic $rd_realm;
         auth_basic_user_file /etc/nginx/.htpasswd;
         add_header Set-Cookie "rdsession=__RD_SESSION_TOKEN__; Max-Age=7776000; Path=/; HttpOnly; Secure; SameSite=Lax";
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' data: ws://$host wss://$host; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
         add_header Cache-Control "no-store, no-cache, must-revalidate" always;
     }
 
@@ -66,6 +91,11 @@ server {
         auth_basic $rd_realm;
         auth_basic_user_file /etc/nginx/.htpasswd;
         add_header Set-Cookie "rdsession=__RD_SESSION_TOKEN__; Max-Age=7776000; Path=/; HttpOnly; Secure; SameSite=Lax";
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' data: ws://$host wss://$host; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
         try_files $uri $uri/ /index.html;
     }
 

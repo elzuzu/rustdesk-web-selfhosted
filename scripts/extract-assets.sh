@@ -69,8 +69,11 @@ else
   tar -xzf "$ARCHIVE" -C html
 fi
 
-# Notre propre icône : absente de l'image source.
-[ -f web/favicon.svg ] && cp -f web/favicon.svg html/
+# Nos propres fichiers, absents de l'image source : l'icône, et le manifeste
+# qui rend la page installable comme une application (fenêtre sans onglets).
+for f in favicon.svg manifest.json icon-192.png icon-512.png; do
+  [ -f "web/$f" ] && cp -f "web/$f" html/
+done
 
 # Bundle intact : c'est la base dont part patch-assets.sh.
 cp -f html/js/dist/index.js html/js/dist/index.js.orig

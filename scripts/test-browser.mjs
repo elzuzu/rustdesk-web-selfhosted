@@ -51,10 +51,21 @@ const page = fs.readFileSync(GABARIT, "utf8")
   .split("__RD_DOMAIN__").join("localhost")
   .split("__RD_PUBLIC_KEY__").join(CLE)
   .split("__RD_DEFAULT_PEER_ID__").join("");
-const TYPES = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".svg": "image/svg+xml", ".html": "text/html" };
+// La politique de contenu REELLE du deploiement, lue dans nginx.conf.template :
+// chaque test tourne donc sous elle, et une violation fait echouer le banc.
+const CSP = /add_header Content-Security-Policy "([^"]+)"/.exec(fs.readFileSync(path.join(RACINE, "nginx.conf.template"), "utf8"))[1]
+  .split("$host").join("127.0.0.1:*");
+const TYPES = { ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".svg": "image/svg+xml", ".html": "text/html", ".json": "application/json", ".png": "image/png" };
 const serveur = http.createServer((req, res) => {
   const u = decodeURIComponent(new URL(req.url, "http://x").pathname);
-  if (u === "/" || u === "/index.html") { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(page); return; }
+  // Tout le banc tourne sous la politique en mode RAPPORT : Playwright evalue ses
+  // attentes (waitForFunction) par eval, qu'une politique appliquee bloquerait.
+  // « /?stricte » sert la meme page sous la politique APPLIQUEE, pour un test dedie.
+  if (u === "/" || u === "/index.html") {
+    const stricte = new URL(req.url, "http://x").searchParams.has("stricte");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", [stricte ? "content-security-policy" : "content-security-policy-report-only"]: CSP });
+    res.end(page); return;
+  }
   const f = path.join(HTML, path.normalize(u));
   if (!f.startsWith(HTML) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, { "content-type": TYPES[path.extname(f)] || "application/octet-stream" });
@@ -74,7 +85,8 @@ try {
 // ------------------------------------------------------------------- petit banc
 const resultats = [];
 async function test(nom, fn, { init = {}, contexte = {} } = {}) {
-  const ctx = await navigateur.newContext({ viewport: { width: 1200, height: 800 }, ...contexte });
+  // fr-FR : la langue d'ecriture de l'interface ; les tests de traduction passent la leur.
+  const ctx = await navigateur.newContext({ viewport: { width: 1200, height: 800 }, locale: "fr-FR", ...contexte });
   await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: URL_PAGE.replace(/\/$/, "") });
   if (Object.keys(init).length) {
     await ctx.addInitScript((kv) => { for (const [k, v] of Object.entries(kv)) if (localStorage.getItem("__init_" + k) === null) { localStorage.setItem(k, v); localStorage.setItem("__init_" + k, "1"); } }, init);
@@ -82,8 +94,15 @@ async function test(nom, fn, { init = {}, contexte = {} } = {}) {
   const p = await ctx.newPage();
   const avertissements = [];
   p.on("pageerror", (e) => avertissements.push("pageerror: " + e.message));
+  const violations = [];
+  await p.exposeFunction("__rdViolation", (v) => violations.push(v));
+  await p.addInitScript(() => { document.addEventListener("securitypolicyviolation", (e) => window.__rdViolation(e.violatedDirective + " <- " + (e.blockedURI || "?") + " @ " + (e.sourceFile || "(sans source)") + ":" + e.lineNumber)); });
   try {
     await fn(p, ctx, avertissements);
+    // Seule violation connue, et sans effet : protobufjs tente eval("require")
+    // dans un try/catch pour detecter Node. Bloque, il conclut « navigateur ».
+    const reelles = violations.filter((v) => !/^script-src <- eval @ .*\/js\/dist\/vendor\.js/.test(v));
+    assert.deepEqual(reelles, [], "violation de la politique de contenu du deploiement");
     resultats.push([nom, true]); console.log("  ✓ " + nom);
   } catch (e) {
     resultats.push([nom, false]); console.log("  ✗ " + nom + "\n      " + String(e.message).split("\n").slice(0, 6).join("\n      "));
@@ -441,6 +460,30 @@ await test("fullscreen-button : le bouton bascule le plein ecran et son libelle"
   await p.waitForFunction(() => !document.fullscreenElement && document.querySelector("#rdbar .rdplein").textContent === "Plein écran", null, { timeout: 5000 });
 }, OUVERTE);
 
+await test("csp-and-manifest : la page complete se charge sous la politique de contenu, manifeste compris", async (p) => {
+  await p.goto(URL_PAGE);
+  await p.waitForSelector("#rd-entete", { timeout: 15000 });
+  await p.waitForFunction(() => window.RD.caps && Object.keys(window.RD.caps).length === 4);
+  const r = await p.evaluate(async () => { const x = await fetch(document.querySelector("link[rel=manifest]").href); return { ok: x.ok, nom: (await x.json()).short_name, csp: !!document.querySelector("#rd-entete img").naturalWidth }; });
+  assert.deepEqual(r, { ok: true, nom: "RustDesk", csp: true });
+});
+
+await test("csp-enforced : sous la politique APPLIQUEE, la page, le WebAssembly et le decodage fonctionnent", async (p) => {
+  await p.goto(URL_PAGE + "?stricte");
+  // Pas de waitForFunction ici : il passe par eval, que la politique bloque.
+  const attendre = async (f, quoi) => { for (let i = 0; i < 100; i++) { if (await p.evaluate(f)) return; await p.waitForTimeout(100); } assert.fail("jamais vrai : " + quoi); };
+  await attendre(() => !!(window.RD && window.RDLib && document.getElementById("rdbar") && document.getElementById("rd-entete")), "page et barre construites");
+  await attendre(() => typeof window.__rdZstdDecoder === "function" && typeof window.connect === "function", "bundle charge");
+  const r = await p.evaluate(async () => {
+    // Une trame zstd minimale : en-tete, bloc brut « abc ».
+    const trame = Uint8Array.from([0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x03, 0x19, 0x00, 0x00, 0x61, 0x62, 0x63]);
+    const d = await window.__rdZstdDecoder();
+    return { texte: new TextDecoder().decode(d.decode(trame, 3)), caps: Object.keys(window.RD.caps || {}).length };
+  });
+  assert.equal(r.texte, "abc", "le decodeur WebAssembly du bundle tourne sous 'wasm-unsafe-eval'");
+  assert.equal(r.caps, 4, "WebCodecs a ete sonde");
+});
+
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
 
 await test("chips-under-id : sous le champ Id du VRAI formulaire, entre Id et Connect", async (p) => {
@@ -469,7 +512,7 @@ await test("click-fills-and-focuses-connect / x-and-Delete-remove : au vrai clav
   await p.waitForSelector("#rd-recents .rdchip-id", { timeout: 15000 });
   await p.click("#rd-recents .rdchip-id >> nth=1");           // « 333 333 333 »
   assert.equal(await p.inputValue("#id"), "333333333", "chiffres seuls : le bundle n'enleve pas les espaces");
-  assert.equal(await p.evaluate(() => document.activeElement.textContent), "Connect");
+  assert.equal(await p.evaluate(() => document.activeElement.textContent), "Connexion");
   await p.focus("#rd-recents .rdchip-id >> nth=0");
   await p.keyboard.press("Delete");
   assert.deepEqual(await p.locator("#rd-recents .rdchip-id").allTextContents(), ["333 333 333", "111 111 111"]);
