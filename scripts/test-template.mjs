@@ -226,7 +226,7 @@ test("bar-children-direct : le greffon fichiers et le presse-papier visent les e
   // controles a plat.
   assert.match(html, /var q = bar\.querySelector\("button\.quit"\);\s*\n\s*if \(q\) bar\.insertBefore\(b, q\)/);
   assert.match(html, /bar\.insertBefore\(b, bar\.firstChild\)/);
-  assert.match(html, /\[sel,fit,qual,fps,cod,swp,quit\]\.forEach\(function\(x\)\{ bar\.appendChild\(x\); \}\)/);
+  assert.match(html, /\[sel,fit,qual,fps,cod,swp,ecr,act,quit\]\.forEach\(function\(x\)\{ bar\.appendChild\(x\); \}\)/);
 });
 
 test("hud-sibling-rule : la regle #rdbar:hover ~ #rdhud reste valable", () => {
@@ -2059,4 +2059,290 @@ test("audit F8 : aucune reference externe dans la page (ni CDN, ni URL absolue, 
     assert.ok(!/^(?:https?:)?\/\//i.test(m[1]), "reference externe : " + m[1]);
   }
   assert.ok(!/@import\s+url\(\s*["']?(?:https?:)?\/\//i.test(html));
+});
+
+// ====================================================================
+// Codecs : la logique pure (RDLib.codec), puis le vrai cablage.
+// ====================================================================
+test("codec meilleur : h265 > h264 > av1 > vp9, hors codecs qui ont echoue", () => {
+  const { codec } = chargerLib();
+  assert.deepEqual(plat(codec.ORDRE), ["h265", "h264", "av1", "vp9"]);
+  assert.equal(codec.meilleur({ h265: true, h264: true, av1: true, vp9: true }, {}), "h265");
+  assert.equal(codec.meilleur({ h265: true, h264: true, vp9: true }, { h265: true }), "h264");
+  assert.equal(codec.meilleur({ h265: false, av1: true, vp9: true }, {}), "av1");
+  assert.equal(codec.meilleur({ vp9: true }, { vp9: true }), null);
+  assert.equal(codec.meilleur({}, {}), null);
+  assert.equal(codec.meilleur(undefined, undefined), null);
+});
+
+test("codec capacites : auto annonce tout ce qui est decodable, force n'annonce que lui, VP9 toujours", () => {
+  const { codec } = chargerLib();
+  const caps = { h265: true, h264: true, av1: false, vp9: true };
+  assert.deepEqual(plat(codec.capacites("h265", false, caps, {})),
+    { ability_h265: 1, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 3 });
+  assert.deepEqual(plat(codec.capacites("h264", false, caps, { h265: true })),
+    { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 }, "un codec qui a echoue n'est plus annonce");
+  assert.deepEqual(plat(codec.capacites("h264", true, caps, {})),
+    { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 }, "force : lui seul, sinon le pair en choisirait un autre");
+  assert.deepEqual(plat(codec.capacites("av1", true, {}, {})),
+    { ability_h265: 0, ability_h264: 0, ability_av1: 1, ability_vp9: 1, prefer: 5 });
+  // Logiciel, ou un nom inconnu : la declaration d'avant, VP9 seul.
+  assert.deepEqual(plat(codec.capacites(null, false, caps, {})), { ability_h265: 0, ability_vp9: 1, prefer: 1 });
+  assert.deepEqual(plat(codec.capacites("divx", true, caps, {})), { ability_h265: 0, ability_vp9: 1, prefer: 1 });
+  // Les valeurs de « prefer » sont celles de SupportedDecoding.PreferCodec (message.proto).
+  assert.deepEqual(plat(codec.PREFER), { vp9: 1, h264: 2, h265: 3, av1: 5 });
+});
+
+test("codec flux : le champ reellement present dans le VideoFrame", () => {
+  const { codec } = chargerLib();
+  const lot = { frames: [] };
+  assert.equal(codec.flux({ h264s: lot }).nom, "h264");
+  assert.equal(codec.flux({ av1s: lot }).lot, lot);
+  assert.equal(codec.flux({ vp9s: lot }).nom, "vp9");
+  assert.equal(codec.flux({ vp8s: lot }), null, "VP8 n'est jamais annonce : pas de chemin pour lui");
+  assert.equal(codec.flux({}), null);
+  assert.equal(codec.flux(null), null);
+});
+
+test("prefs : h264 et av1 sont des codecs memorisables", () => {
+  const { prefs } = chargerLib();
+  const p = prefs.create(stock());
+  p.set({ codec: "h264" }); assert.equal(p.get().codec, "h264");
+  p.set({ codec: "av1" });  assert.equal(p.get().codec, "av1");
+  p.set({ codec: "vp8" });  assert.equal(p.get().codec, "av1", "une valeur hors liste est ignoree");
+});
+
+// Une session dont la connexion est instrumentee par patchConn (veilleur 800 ms).
+async function montageVideo({ caps = {}, codec = null, ...reste } = {}) {
+  const m = await montageSortant(reste);
+  const c = m.w.curConn;
+  m.logiciel = []; m.acks = { n: 0 }; m.cles = { n: 0 }; m.decodes = [];
+  c.handleVideoFrame = function (vf) { m.logiciel.push(vf); };
+  c.draw = () => {}; c.msgbox = () => {};
+  c.sendVideoReceived = () => { m.acks.n++; };
+  c.refresh = () => { m.cles.n++; };
+  m.w.EncodedVideoChunk = class { constructor(o) { this.o = o; } };
+  m.w.VideoDecoder = class { constructor(o) { this.o = o; this.state = "configured"; }
+    configure(cfg) { m.config = cfg; } decode(ch) { m.decodes.push(ch.o.type); } reset() {} close() { this.state = "closed"; }
+    get decodeQueueSize() { return 0; } };
+  m.w.RD.caps = caps; m.w.RD.codec = codec; m.w.RD.rates = {};
+  m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());      // patchConn
+  m.trame = (champ, cle = true) => c.handleVideoFrame({ [champ]: { frames: [{ key: cle, pts: 0, data: new Uint8Array(8) }] } });
+  m.decl = () => m.options().filter((o) => o.supported_decoding).map((o) => plat(o.supported_decoding));
+  return m;
+}
+
+test("codec : le decodeur SUIT le flux recu — un pair sans H265 qui emet du VP9 n'est plus un ecran noir", async () => {
+  const m = await montageVideo({ caps: { h265: true, vp9: true }, codec: "h265" });
+  m.trame("vp9s");
+  assert.equal(m.w.RD.codec, "vp9", "le decodeur WebCodecs est passe en VP9");
+  assert.equal(m.config.codec, "vp09.00.50.08");
+  assert.deepEqual(m.decodes, ["key"], "la trame qui annonce le changement est decodee, pas jetee");
+  assert.equal(m.logiciel.length, 0, "rien n'est parti au decodeur logiciel, dont le canvas est masque");
+  assert.equal(m.acks.n, 1, "et la trame est acquittee");
+  // Le pair passe ensuite en H264 (il a lu notre declaration) : on suit encore.
+  m.w.RD.caps.h264 = true;
+  m.trame("h264s");
+  assert.equal(m.w.RD.codec, "h264");
+  assert.equal(m.config.codec, "avc1.640033");
+  assert.equal(m.acks.n, 2);
+});
+
+test("codec : un flux que WebCodecs ne decode pas ici est tolere au demarrage, puis la session passe en logiciel ET le dit au pair", async () => {
+  const m = await montageVideo({ caps: { h264: true }, codec: "h264" });
+  for (let i = 0; i < 30; i++) m.trame("vp9s");
+  assert.equal(m.w.RD.codec, "h264", "les premieres trames sont toujours du VP9 : on ne conclut pas");
+  assert.equal(m.logiciel.length, 30, "elles vont au decodeur d'origine, qui les acquitte");
+  assert.equal(m.decl().length, 0);
+  m.trame("vp9s");
+  assert.equal(m.w.RD.codec, null, "au-dela, WebCodecs est abandonne pour la session");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_vp9: 1, prefer: 1 }, "le pair n'emettra plus que du VP9");
+  // Une trame du bon codec remet le compteur a zero.
+  const n = await montageVideo({ caps: { h264: true }, codec: "h264" });
+  for (let i = 0; i < 20; i++) n.trame("vp9s");
+  n.trame("h264s");
+  for (let i = 0; i < 20; i++) n.trame("vp9s");
+  assert.equal(n.w.RD.codec, "h264");
+});
+
+test("codec : le repli descend l'echelle (h265 -> h264 -> logiciel) au lieu de tomber droit en logiciel", async () => {
+  const m = await montageVideo({ caps: { h265: true, h264: true }, codec: "h265" });
+  m.w.__rdFallback("erreurs de decodage repetees");
+  assert.equal(m.w.RD.codec, "h264");
+  assert.equal(m.w.RD.rates.h265, true, "H265 n'est plus propose sur cette page");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 });
+  assert.equal(m.w.curConn.handleVideoFrame === m.w.curConn.__rdOrigHandle, false, "le chemin WebCodecs reste en place");
+  m.w.__rdFallback("erreurs de decodage repetees");
+  assert.equal(m.w.RD.codec, null, "plus rien a essayer : logiciel");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_vp9: 1, prefer: 1 });
+  // La session suivante ne retente pas ce qui a echoue.
+  m.peerInfo();
+  assert.equal(m.w.RD.codec, null);
+});
+
+test("codec : en automatique, chaque session repart du meilleur codec encore valable", async () => {
+  const m = await montageVideo({ caps: { h264: true, vp9: true }, codec: null, prete: false });
+  m.peerInfo();
+  assert.equal(m.w.RD.codec, "h264");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 });
+});
+
+test("codec : une erreur du decodeur redemande une image-cle (le decodeur suivant ne peut repartir que d'elle)", async () => {
+  const m = await montageVideo({ caps: { h265: true }, codec: "h265" });
+  m.trame("h265s");
+  const avant = m.cles.n;
+  m.w.RD.dec.o.error(new Error("boom"));
+  assert.equal(m.w.RD.wantKey, true);
+  assert.equal(m.cles.n, avant + 1);
+});
+
+// ====================================================================
+// Actions sur le poste distant, ecrans, retours du pair, 2FA.
+// ====================================================================
+const menuActions = (m) => m.bar.children.find((c) => c.className === "rdactions");
+const menuEcrans = (m) => m.bar.children.find((c) => c.className === "rdecrans");
+const choisir = (sel, v) => { sel.value = v; sel.onchange(); };
+
+test("actions : Ctrl+Alt+Suppr et verrouillage passent par le bundle, et le selecteur revient a son libelle", async () => {
+  const m = await montageSortant();
+  const act = menuActions(m);
+  assert.ok(act, "le menu est un enfant direct de la barre");
+  assert.equal(act.children[0].textContent, "Actions");
+  const avant = m.player.focuses;
+  choisir(act, "cad");
+  choisir(act, "lock");
+  assert.deepEqual(m.touches.filter(([n]) => n === "ctrl_alt_del" || n === "lock_screen").map(([n]) => n), ["ctrl_alt_del", "lock_screen"]);
+  assert.equal(act.value, "");
+  assert.ok(m.player.focuses >= avant + 2, "le canvas reprend le clavier apres chaque action");
+});
+
+test("actions : une option basculee est cochee d'apres l'etat du bundle, pas d'apres le clic", async () => {
+  const m = await montageSortant();
+  const etat = {};
+  m.w.curConn.getOption = (k) => etat[k];
+  const act = menuActions(m);
+  const libelle = (v) => act.children.find((o) => o.value === v).textContent;
+  choisir(act, "opt:disable-audio");
+  assert.deepEqual(m.touches.at(-1), ["toggle_option", "disable-audio"]);
+  assert.equal(libelle("opt:disable-audio"), "Couper le son distant", "le bundle n'a rien retenu : pas de coche");
+  etat["disable-audio"] = true;
+  m.w.__rdActions();
+  assert.equal(libelle("opt:disable-audio"), "✓ Couper le son distant");
+  assert.equal(act.children.length, 9, "la liste est reconstruite, pas empilee");
+});
+
+test("actions : bloquer la saisie — deux ordres distincts, et l'etat vient de la reponse du pair", async () => {
+  const m = await montageSortant();
+  const act = menuActions(m), c = m.w.curConn;
+  const libelle = () => act.children.find((o) => o.value === "opt:block-input").textContent;
+  choisir(act, "opt:block-input");
+  assert.deepEqual(m.touches.at(-1), ["toggle_option", "block-input"]);
+  assert.equal(libelle(), "Bloquer la saisie locale", "pas de coche tant que le pair n'a pas confirme");
+  m.w.__rdPairFiltrer(c, { misc: { back_notification: { block_input_state: 2 } } });
+  assert.equal(libelle(), "✓ Bloquer la saisie locale");
+  choisir(act, "opt:block-input");
+  assert.deepEqual(m.touches.at(-1), ["toggle_option", "unblock-input"]);
+  // Un refus se voit, et ne coche rien.
+  const n = await montageSortant();
+  n.w.__rdPairFiltrer(n.w.curConn, { misc: { back_notification: { block_input_state: 3, details: "No permission" } } });
+  assert.ok(n.toasts().some((t) => t.erreur && /refusé de bloquer/.test(t.texte) && /No permission/.test(t.texte)), JSON.stringify(n.toasts()));
+  // Une nouvelle session repart debloquee.
+  m.peerInfo();
+  assert.equal(libelle(), "Bloquer la saisie locale");
+});
+
+test("actions : un mode confidentialite refuse est DECOCHE dans le bundle, sinon il serait redemande a chaque session", async () => {
+  const m = await montageSortant();
+  const poses = [];
+  m.w.curConn.setOption = (k, v) => poses.push([k, v]);
+  const msg = { misc: { back_notification: { privacy_mode_state: 3 } } };
+  assert.equal(m.w.__rdPairFiltrer(m.w.curConn, msg), msg, "le message continue vers le bundle");
+  assert.deepEqual(poses, [["privacy-mode", false]]);
+  assert.ok(m.toasts().some((t) => t.erreur && /ne propose pas le mode confidentialité/.test(t.texte)));
+  m.w.__rdPairFiltrer(m.w.curConn, { misc: { back_notification: { privacy_mode_state: 4 } } });
+  assert.deepEqual(poses.at(-1), ["privacy-mode", true]);
+});
+
+test("actions : redemarrer demande confirmation ; un refus n'envoie rien", async () => {
+  const m = await montageSortant();
+  const act = menuActions(m);
+  m.w.confirm = () => false;
+  choisir(act, "restart");
+  assert.ok(!m.envoyes.some((x) => x.misc && x.misc.restart_remote_device));
+  m.w.confirm = () => true;
+  choisir(act, "restart");
+  assert.ok(m.envoyes.some((x) => x.misc && x.misc.restart_remote_device === true));
+});
+
+test("retour du pair : table des etats, valeurs inconnues sans effet", () => {
+  const { pair } = chargerLib();
+  assert.deepEqual(plat(pair.retour({ block_input_state: 4 })), { option: "block-input", actif: false, ok: true, texte: "Saisie locale débloquée sur le poste distant." });
+  assert.equal(pair.retour({ privacy_mode_state: 9 }).actif, false);
+  assert.equal(pair.retour({ privacy_mode_state: 10 }).actif, true, "l'arret a echoue : le mode est toujours actif");
+  for (const v of [{ block_input_state: 0 }, { privacy_mode_state: 0 }, { privacy_mode_state: 99 }, { block_input_state: "__proto__" }, {}, null, "x"]) {
+    assert.equal(pair.retour(v).option, null, JSON.stringify(v));
+  }
+  assert.equal(pair.retour({ block_input_state: 2, details: "bruit" }).texte, "Saisie locale bloquée sur le poste distant.", "les details n'accompagnent qu'un echec");
+});
+
+test("ecrans : le selecteur n'apparait qu'avec plusieurs ecrans, et suit la reponse du pair", async () => {
+  const m = await montageSortant({ prete: false });
+  const ecr = menuEcrans(m);
+  const info = (displays, current_display = 0) => m.w.onGlobalEvent(JSON.stringify({ name: "peer_info",
+    displays: JSON.stringify(displays), current_display: JSON.stringify(current_display) }));
+  info([{ width: 2560, height: 1440 }]);
+  assert.equal(ecr.style.display, "none", "un seul ecran : rien a choisir");
+  info([{ width: 2560, height: 1440 }, { width: 1920, height: 1080 }], 1);
+  assert.equal(ecr.style.display, "");
+  assert.deepEqual(ecr.children.map((o) => o.textContent), ["Écran 1 (2560×1440)", "Écran 2 (1920×1080)"]);
+  assert.equal(ecr.value, "1", "l'ecran affiche est celui que le pair annonce");
+  assert.equal(m.w.RD.W, 1920);
+  choisir(ecr, "0");
+  assert.deepEqual(m.touches.at(-1), ["switch_display", 0], "un NOMBRE : le bundle l'encode en int32");
+  assert.equal(m.w.RD.display, 1, "rien ne change avant la reponse du pair");
+  m.w.onGlobalEvent(JSON.stringify({ name: "switch_display", display: "0", width: "2560", height: "1440" }));
+  assert.equal(m.w.RD.display, 0);
+  assert.equal(ecr.value, "0");
+  // Rechoisir l'ecran deja affiche n'envoie rien.
+  const n = m.touches.length;
+  choisir(ecr, "0");
+  assert.equal(m.touches.length, n);
+});
+
+test("2fa : le code est demande, envoye en auth_2fa, et l'erreur n'atteint pas le bundle", async () => {
+  const m = await montageSortant({ prete: false });
+  const c = m.w.curConn, demandes = [];
+  let reponses = ["123 456"];
+  m.w.prompt = (q) => { demandes.push(q); return reponses.shift() ?? null; };
+  const r = m.w.__rdPairFiltrer(c, { login_response: { error: "2FA Required" } });
+  assert.deepEqual(plat(r), {}, "un message vide : le bundle n'affiche pas « Login Error »");
+  assert.deepEqual(plat(m.envoyes.at(-1)), { auth_2fa: { code: "123456" } }, "envoye avant peer_info, donc sans passer par rdSend");
+  // Code refuse par le pair : on redemande, avec un autre libelle.
+  reponses = ["654321"];
+  m.w.__rdPairFiltrer(c, { login_response: { error: "Wrong 2FA Code" } });
+  assert.match(demandes.at(-1), /Code refusé/);
+  assert.equal(m.envoyes.at(-1).auth_2fa.code, "654321");
+  // Saisie invalide : redemandee sans rien envoyer ; annulation : l'erreur passe au bundle.
+  const avant = m.envoyes.length;
+  reponses = ["abc"];
+  const msg = { login_response: { error: "2FA Required" } };
+  assert.equal(m.w.__rdPairFiltrer(c, msg), msg);
+  assert.equal(m.envoyes.length, avant);
+  // Les autres erreurs, et une connexion reussie, ne sont pas touchees.
+  for (const autre of [{ login_response: { error: "Wrong Password" } }, { login_response: { peer_info: {} } }, { video_frame: {} }, null]) {
+    assert.equal(m.w.__rdPairFiltrer(c, autre), autre);
+  }
+});
+
+test("2fa : code2fa n'accepte que six chiffres", () => {
+  const { pair } = chargerLib();
+  assert.equal(pair.code2fa(" 123 456 "), "123456");
+  for (const v of ["12345", "1234567", "12a456", "", null, 123456]) assert.equal(pair.code2fa(v), null, String(v));
+  assert.equal(pair.demande2fa("2FA Required"), "demande");
+  assert.equal(pair.demande2fa("Wrong 2FA Code"), "faux");
+  assert.equal(pair.demande2fa("Wrong Password"), null);
+});
+
+test("barre : elle passe a la ligne au lieu de deborder d'une fenetre etroite", () => {
+  assert.match(html, /#rdbar\{[^}]*flex-wrap:wrap;[^}]*max-width:100vw/);
 });

@@ -27,13 +27,16 @@ that was missing**: the original client wires up display and nothing else.
 
 | | |
 |---|---|
-| Video | **hardware** H265 on both ends via WebCodecs, falling back to VP9 then software |
+| Video | **hardware** H265 or H264 on both ends via WebCodecs, then AV1, VP9, and software as a last resort |
 | Mouse | movement, left/right click, wheel, correctly scaled coordinates |
 | Keyboard | text, accents, non-US layouts, dead keys, control keys |
 | `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
 | Clipboard | text both ways; **images and rich text** too, on Chromium |
 | Files | remote panel: browse, upload, download, create, rename, delete |
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
+| Displays | a selector to switch between the remote machine's monitors, shown when it has more than one |
+| Remote actions | Ctrl+Alt+Del, lock, restart, mute remote audio, suspend clipboard, privacy mode, block local input |
+| 2FA | a peer that requires a verification code prompts for it instead of failing with "Login Error" |
 | Cursor | the real remote cursor, with its hotspot |
 | Audio | Opus, with the audio context resumed on first gesture |
 | Zero-downtime deploys | the TLS layer waits for the web container instead of erroring out during a restart |
@@ -294,8 +297,19 @@ The list is seeded once from the IDs the bundle already knew.
 
 The original client declares **no** decoding capability, so the server falls back
 to software VP9 — even when the controlled machine has a hardware encoder. This
-repository declares `supported_decoding{prefer:H265}` after `peer_info` and
-switches the browser decoder to WebCodecs.
+repository probes what the browser can decode through WebCodecs — H265, H264,
+AV1, VP9 — declares all of it in `supported_decoding` after `peer_info`, and
+prefers the best one, in the peer's own "auto" order: H265, H264, AV1, VP9.
+
+The peer has the final say. H265 and H264 only exist on its side with a hardware
+encoder, and the first frames of a session are always VP9, sent before it has read
+the declaration. The decoder therefore **follows the stream that actually
+arrives** rather than the one that was asked for. A codec that fails three times
+is dropped for the lifetime of the page and the next one down is tried; software
+decoding is the last rung, not the first fallback.
+
+H264 and AV1 are covered by the test benches (negotiation, switching, fallback)
+but have **not been measured against a real peer** the way H265 has.
 
 To verify, on the controlled machine during a web session:
 
@@ -306,7 +320,29 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 > Negotiation is the **intersection of all active connections**: a native session
 > open in parallel can drop both back to VP9. Open only one session when measuring.
 
-A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
+A selector in the toolbar lets you force `h265`, `h264`, `av1`, `vp9`, or software
+decoding. A forced codec is the only one declared; if the peer cannot encode it,
+it answers in VP9 and the status overlay shows the codec really in use.
+
+## Remote actions, displays, 2FA
+
+The bundle already knows how to send Ctrl+Alt+Del, lock the remote session,
+switch display and toggle session options; nothing in its interface called them.
+The **Actions** menu of the toolbar does.
+
+- **Privacy mode** and **block local input** depend on the peer (platform,
+  permissions, installed service). The peer answers with a `BackNotification`,
+  which the bundle decodes and ignores: the page reads it, says whether the
+  request was accepted, and ticks the option only when it was. A refused privacy
+  mode is also cleared from the bundle's per-peer options, which would otherwise
+  request it again at every login.
+- **Restart** asks for confirmation. The session drops; auto-reconnect gives up
+  after about a minute, so reload the page once the machine is back.
+- **Displays**: the selector appears when `peer_info` lists more than one
+  display. The page only changes its state when the peer confirms the switch.
+- **2FA**: on `2FA Required` the page prompts for the six-digit code and sends
+  it as `auth_2fa`. Untested against a real 2FA peer; "trust this device" is not
+  implemented, so the code is asked at every connection.
 
 ## Verifying a change
 

@@ -71,7 +71,13 @@
 
   #app>#connect{padding:3rem 2rem}
   #app input{padding:.45rem;border-radius:6px;border:1px solid #3a3f47;
-             background:#24272e;color:#e6e8ec;min-width:22rem}
+             background:#24272e;color:#e6e8ec;min-width:22rem;box-sizing:border-box}
+  /* Telephone : 22 rem de champ plus les libelles debordaient de l'ecran. */
+  @media (max-width:34rem){
+    #app>#connect,#app>#password,#app>#status{padding:1.5rem .5rem}
+    #app input{min-width:0;width:calc(100vw - 7rem)}
+    #app>#connect #rd-recents{max-width:calc(100vw - 7rem)}
+  }
   #app>#connect button,#app>#password button{padding:.5rem 1.2rem;border-radius:6px;
              border:0;background:#024eff;color:#fff;font-weight:600;cursor:pointer;margin-top:.6rem}
   #app td{padding:.25rem .5rem}
@@ -85,6 +91,7 @@
   #test-yuv-decoder-canvas{display:none}
 
   #rdbar{position:fixed;top:0;right:0;z-index:10;display:none;align-items:center;
+         flex-wrap:wrap;justify-content:flex-end;max-width:100vw;box-sizing:border-box;
          gap:.4rem;padding:.35rem .5rem;font-size:.8rem;
          background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
          border-bottom-left-radius:8px;border:1px solid rgba(255,255,255,.08);
@@ -97,6 +104,9 @@
   #rdbar button.rdppbtn:hover{background:#2c6b51}
   #rdbar select{padding:.2rem .35rem;font-size:.8rem;border-radius:5px;
          border:1px solid #3a3f47;background:#24272e;color:#e6e8ec}
+  /* Un <select> prend la largeur de sa plus longue option : le menu Actions
+     n'a pas a faire la taille de « Suspendre le presse-papier ». */
+  #rdbar select.rdactions{max-width:6.5rem}
   #rdbar button{padding:.2rem .6rem;font-size:.8rem;border-radius:5px;border:0;
          background:#2a2f38;color:#e6e8ec;cursor:pointer;margin:0}
   #rdbar button:hover{background:#3a4150}
@@ -141,7 +151,7 @@
          pointer-events:none;user-select:none;-webkit-user-select:none;
          contain:layout style;   /* pas « paint » : il clipperait le halo */
          padding:.3rem .55rem;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
-         white-space:pre;color:#a8b0bd;
+         white-space:pre-wrap;max-width:100vw;box-sizing:border-box;color:#a8b0bd;
          border-top-right-radius:8px;
          opacity:.55;transition:opacity .18s}
   #rdhud.horsimage{background:rgba(18,20,24,.55);backdrop-filter:blur(8px);
@@ -648,7 +658,11 @@ window.RD = {
   epoque:0,           // +1 a chaque connect() : une liaison n'est « de la session » que si elle est nee dans l'epoque courante
   res:[],             // modes supportes par l'ecran distant
   orig:null,          // resolution d'origine
-  codec:null,         // "h265" | "vp9" | null (= logiciel ogv)
+  codec:null,         // "h265" | "h264" | "av1" | "vp9" | null (= logiciel ogv)
+  caps:{},            // ce que WebCodecs decode dans CE navigateur, par codec
+  rates:{},           // codecs qui ont echoue sur cette page : plus proposes
+  displays:[],        // ecrans du poste distant (peer_info)
+  display:0,          // celui qui est affiche
   forced:"auto",      // choix utilisateur dans la barre
   dec:null,           // VideoDecoder unique, reutilise entre connexions
   wantKey:true,       // garde image-cle : jeter les deltas avant la 1ere cle
@@ -748,7 +762,8 @@ window.onGlobalEvent = function(payload){
           if (d[cur].original_resolution) window.RD.orig = d[cur].original_resolution;
           window.RD.W = d[cur].width|0; window.RD.H = d[cur].height|0;
         }
-      }
+        window.RD.displays = d; window.RD.display = cur;
+      } else { window.RD.displays = []; window.RD.display = 0; }
       window.RD.ready = true;
       console.log("[session] prete — " + window.RD.res.length + " resolutions disponibles");
       // Les reglages memorises et le ratio de qualite s'appliquent a CHAQUE
@@ -757,10 +772,16 @@ window.onGlobalEvent = function(payload){
       // de la negociation du codec, qui suivent dans le meme bloc.
       try { if (window.__rdSessionReady) window.__rdSessionReady(); }
       catch (err) { console.warn("[session] reglages non appliques :", err); }
+      // Apres le crochet de session : il remet a zero le blocage de saisie,
+      // que le menu Actions affiche.
+      if (window.__rdEcrans) window.__rdEcrans();
+      if (window.__rdActions) window.__rdActions();
       if (window.__rdMenu) window.__rdMenu();
       if (window.__rdNegotiate) window.__rdNegotiate();
     }
     if (e.name === "switch_display") {
+      var nd = parseInt(val(e.display), 10);
+      if (nd >= 0) { window.RD.display = nd; if (window.__rdEcrans) window.__rdEcrans(); }
       var r2 = val(e.resolutions);
       if (r2 && r2.resolutions) { window.RD.res = r2.resolutions;
         if (window.__rdMenu) window.__rdMenu(); }
@@ -1104,7 +1125,7 @@ window.onGlobalEvent = function(payload){
   var PREFS_OK = {
     quality: ["balanced", "best", "low"],
     fps:     [10, 15, 30, 60],
-    codec:   ["auto", "h265", "vp9", "logiciel"],
+    codec:   ["auto", "h265", "h264", "av1", "vp9", "logiciel"],
     bar:     ["ouverte", "repliee"]
   };
   function prefsFiltrees(src){
@@ -1234,8 +1255,113 @@ window.onGlobalEvent = function(payload){
     };
   }
 
+  // ------------------------------------------------------------------ codecs
+  // L'ordre est celui du mode « auto » du pair (scrap/common/codec.rs) :
+  // h265 > h264 > av1 > vp9. H265 et H264 n'existent cote pair qu'avec un
+  // encodeur materiel ; AV1 et VP9 y sont logiciels, donc toujours disponibles.
+  // « prefer » est l'enumeration SupportedDecoding.PreferCodec du protocole.
+  var CODEC_ORDRE = ["h265", "h264", "av1", "vp9"];
+  var CODEC_PREFER = { vp9: 1, h264: 2, h265: 3, av1: 5 };
+  // Niveaux volontairement hauts : un ecran Retina depasse les niveaux courants,
+  // et certains navigateurs refusent une configuration au-dessous du flux reel.
+  // H264 et H265 arrivent en Annex B : aucune « description » n'est fournie.
+  var CODEC_CHAINES = {
+    h265: "hev1.1.6.L153.b0",
+    h264: "avc1.640033",
+    av1:  "av01.0.13M.08",
+    vp9:  "vp09.00.50.08"
+  };
+  var CODEC_CHAMPS = { h265: "h265s", h264: "h264s", av1: "av1s", vp9: "vp9s" };
+
+  // Le meilleur codec que ce navigateur decode, hors ceux qui ont echoue sur
+  // cette page. null : aucun, donc decodage logiciel.
+  function codecMeilleur(caps, rates){
+    for (var i = 0; i < CODEC_ORDRE.length; i++){
+      var n = CODEC_ORDRE[i];
+      if (caps && caps[n] && !(rates && rates[n])) return n;
+    }
+    return null;
+  }
+  // Ce que la page declare au pair. VP9 est TOUJOURS annonce : le pair le tient
+  // pour acquis, et c'est le seul flux que le decodeur logiciel sait lire.
+  //   codec  : celui que la page veut (null = logiciel)
+  //   force  : vrai si l'utilisateur l'a choisi — on n'annonce alors que lui,
+  //            sinon le pair pourrait en preferer un autre parmi ceux annonces.
+  function codecCapacites(codec, force, caps, rates){
+    if (!codec || !CODEC_PREFER[codec]) return { ability_h265: 0, ability_vp9: 1, prefer: 1 };
+    function a(n){
+      if (force) return n === codec ? 1 : 0;
+      return (n === codec || (caps && caps[n] && !(rates && rates[n]))) ? 1 : 0;
+    }
+    return { ability_h265: a("h265"), ability_h264: a("h264"), ability_av1: a("av1"),
+             ability_vp9: 1, prefer: CODEC_PREFER[codec] };
+  }
+  // Le flux que le pair emet REELLEMENT dans ce VideoFrame : il decide seul, et
+  // ce n'est pas toujours le codec prefere (pas d'encodeur materiel chez lui,
+  // autre session ouverte en parallele). { nom, lot } ou null.
+  function codecFlux(vf){
+    if (!vf) return null;
+    for (var i = 0; i < CODEC_ORDRE.length; i++){
+      var n = CODEC_ORDRE[i], lot = vf[CODEC_CHAMPS[n]];
+      if (lot) return { nom: n, lot: lot };
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------ retours du pair
+  // BackNotification : la reponse du pair a « bloquer la saisie » et au mode
+  // confidentialite. Le bundle la decode et n'en fait rien : l'option semblait
+  // prise alors que le pair l'avait refusee. Valeurs de message.proto.
+  //   { option, actif, ok, texte } ; option null si rien a en dire.
+  var RETOURS_SAISIE = {
+    2: [true,  true,  "Saisie locale bloquée sur le poste distant."],
+    3: [false, false, "Le poste distant a refusé de bloquer la saisie."],
+    4: [false, true,  "Saisie locale débloquée sur le poste distant."],
+    5: [true,  false, "Le poste distant n'a pas pu débloquer la saisie."]
+  };
+  var RETOURS_CONFID = {
+    2:  [false, false, "Mode confidentialité déjà pris par une autre session."],
+    3:  [false, false, "Le poste distant ne propose pas le mode confidentialité."],
+    4:  [true,  true,  "Mode confidentialité activé."],
+    5:  [false, false, "Mode confidentialité refusé par le poste distant."],
+    6:  [false, false, "Mode confidentialité indisponible (composant absent sur le poste distant)."],
+    7:  [false, false, "Le mode confidentialité n'a pas pu être activé."],
+    8:  [false, true,  "Mode confidentialité désactivé."],
+    9:  [false, true,  "Mode confidentialité désactivé par le poste distant."],
+    10: [true,  false, "Le mode confidentialité n'a pas pu être désactivé."],
+    11: [false, true,  "Mode confidentialité désactivé."]
+  };
+  function retourPair(bn){
+    var rien = { option: null };
+    if (!bn || typeof bn !== "object") return rien;
+    function lire(table, v, option){
+      var t = Object.prototype.hasOwnProperty.call(table, v) ? table[v] : null;
+      if (!t) return null;
+      var d = typeof bn.details === "string" ? bn.details.trim().slice(0, 200) : "";
+      return { option: option, actif: t[0], ok: t[1], texte: t[2] + (d && !t[1] ? " (" + d + ")" : "") };
+    }
+    return (bn.block_input_state != null && lire(RETOURS_SAISIE, Number(bn.block_input_state), "block-input"))
+        || (bn.privacy_mode_state != null && lire(RETOURS_CONFID, Number(bn.privacy_mode_state), "privacy-mode"))
+        || rien;
+  }
+  // Le pair demande-t-il un code a usage unique ? (client.rs : REQUIRE_2FA,
+  // LOGIN_MSG_2FA_WRONG.) "demande" | "faux" | null.
+  function demande2fa(erreur){
+    if (erreur === "2FA Required") return "demande";
+    if (erreur === "Wrong 2FA Code") return "faux";
+    return null;
+  }
+  // Un code TOTP : six chiffres, espaces de presentation toleres.
+  function code2fa(s){
+    var d = typeof s === "string" ? s.replace(/\s+/g, "") : "";
+    return /^[0-9]{6}$/.test(d) ? d : null;
+  }
+
   window.RDLib = {
     v: 1,
+    codec: { ORDRE: CODEC_ORDRE, PREFER: CODEC_PREFER, CHAINES: CODEC_CHAINES,
+             meilleur: codecMeilleur, capacites: codecCapacites, flux: codecFlux },
+    pair:  { retour: retourPair, demande2fa: demande2fa, code2fa: code2fa },
     isPeerId: isPeerId, normId: normId, fmtId: fmtId,
     messages: messages,
     clip: {
@@ -1365,28 +1491,34 @@ window.onGlobalEvent = function(payload){
   window.__rdPlacerHud = placerHud;
 
   // --------------------------------------------------------- sonde codec
-  var CODECS = {
-    // Niveaux volontairement hauts : L123 (4.1) et vp09 level 1.0 sont
-    // insuffisants pour un ecran Retina, et certains navigateurs refusent.
-    h265: "hev1.1.6.L153.b0",
-    vp9:  "vp09.00.50.08"
-  };
+  // Les chaines, l'ordre de preference et la declaration au pair sont dans
+  // RDLib.codec (logique pure, testee sous Node). Ici : ce que CE navigateur
+  // sait decoder (RD.caps), et ce qui a echoue sur cette page (RD.rates).
+  var CODECS = RDLib.codec.CHAINES;
+  function configDecodeur(){
+    return { codec: CODECS[RD.codec], codedWidth: RD.W||1920, codedHeight: RD.H||1080,
+             hardwareAcceleration: "prefer-hardware", optimizeForLatency: true };
+  }
+  // TOUS les codecs sont sondes, pas seulement le premier accepte : le pair
+  // choisit parmi ceux qu'on lui annonce, et le repli descend l'echelle.
   async function probeCodecs(){
+    RD.caps = {};
     if (typeof VideoDecoder === "undefined"){
       console.log("[codec] WebCodecs indisponible — decodage logiciel");
       return null;
     }
-    var w = RD.W || 1920, h = RD.H || 1080;
-    for (var name of ["h265","vp9"]){
+    var w = RD.W || 1920, h = RD.H || 1080, caps = {};
+    for (var name of RDLib.codec.ORDRE){
       try{
         var s = await VideoDecoder.isConfigSupported({
           codec: CODECS[name], codedWidth: w, codedHeight: h,
           hardwareAcceleration: "prefer-hardware", optimizeForLatency: true });
-        if (s && s.supported){ console.log("[codec] "+name+" accepte ("+CODECS[name]+")"); return name; }
-        console.log("[codec] "+name+" refuse");
-      }catch(e){ console.log("[codec] "+name+" refuse ("+e.name+")"); }
+        caps[name] = !!(s && s.supported);
+        console.log("[codec] "+name+(caps[name] ? " accepte ("+CODECS[name]+")" : " refuse"));
+      }catch(e){ caps[name] = false; console.log("[codec] "+name+" refuse ("+e.name+")"); }
     }
-    return null;
+    RD.caps = caps;
+    return RDLib.codec.meilleur(RD.caps, RD.rates);
   }
 
   // ------------------------------------------------------ decodeur unique
@@ -1435,34 +1567,44 @@ window.onGlobalEvent = function(payload){
       },
       error: function(e){
         console.warn("[webcodecs] erreur", e.message||e);
+        // Une erreur FERME le decodeur : le suivant, recree a la prochaine trame,
+        // ne peut repartir que d'une image-cle. Sans la demander, il jetait
+        // tous les deltas en attendant une cle que personne n'enverrait.
+        RD.wantKey = true;
         if (++RD.errors >= 3) fallbackToSoftware("erreurs de decodage repetees");
+        else { try{ window.curConn && window.curConn.refresh(); }catch(_){} }
       }
     });
-    RD.dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920,
-                       codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware",
-                       optimizeForLatency: true });
+    RD.dec.configure(configDecodeur());
     RD.wantKey = true;
     console.log("[webcodecs] configure en "+RD.codec);
     return RD.dec;
   }
   function resetDecoder(){
     if (!RD.dec || RD.dec.state === "closed") return;
-    try{ RD.dec.reset();
-         RD.dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920,
-                            codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware",
-                            optimizeForLatency: true });
-    }catch(e){ console.warn("[webcodecs] reset", e); }
+    try{ RD.dec.reset(); RD.dec.configure(configDecodeur()); }
+    catch(e){ console.warn("[webcodecs] reset", e); }
     RD.wantKey = true;
     try{ window.curConn && window.curConn.refresh(); }catch(_){}
+  }
+  // Le pair emet un autre codec que celui pour lequel le decodeur est
+  // configure : on le suit. Pas d'image-cle demandee — un changement de codec
+  // commence par une cle, et la trame qui nous l'apprend la porte.
+  function changerCodec(nom){
+    console.log("[codec] le pair emet en "+nom+" (decodeur en "+RD.codec+") : bascule");
+    RD.codec = nom; RD.errors = 0; RD.wantKey = true;
+    RD.stats.pend.length = 0;
+    if (RD.dec && RD.dec.state !== "closed"){
+      try{ RD.dec.reset(); RD.dec.configure(configDecodeur()); }
+      catch(e){ console.warn("[webcodecs] bascule", e); try{ RD.dec.close(); }catch(_){} RD.dec = null; }
+    }
   }
   window.__rdResetDecoder = function(){ if (RD.codec) resetDecoder(); };
 
   // ---------------------------------------------------- negociation codec
   function negotiate(){
     if (!RD.ready) return false;
-    var ab = RD.codec === "h265" ? {ability_h265:1, ability_vp9:1, prefer:3}
-           : RD.codec === "vp9"  ? {ability_h265:0, ability_vp9:1, prefer:1}
-           :                       {ability_h265:0, ability_vp9:1, prefer:1};
+    var ab = RDLib.codec.capacites(RD.codec, codecForce(), RD.caps, RD.rates);
     var ok = rdSend({misc:{option:{supported_decoding:ab}}});
     if (ok){
       console.log("[codec] declare : "+(RD.codec||"logiciel")+" (prefer="+ab.prefer+")");
@@ -1470,9 +1612,16 @@ window.onGlobalEvent = function(payload){
     }
     return ok;
   }
+  // Un codec nomme par l'utilisateur, par opposition a « auto » et « logiciel ».
+  function codecForce(){ return !!RDLib.codec.PREFER[RD.forced]; }
   window.__rdNegotiate = function(){
     if (RD.forced === "logiciel"){ RD.codec = null; showActive(); negotiate(); return; }
-    if (RD.forced === "h265" || RD.forced === "vp9"){ RD.codec = RD.forced; }
+    if (codecForce()){ RD.codec = RD.forced; }
+    // En automatique, chaque session repart du meilleur codec encore valable :
+    // un renoncement propre a UNE session (pair sans encodeur adequat) ne doit
+    // pas condamner les suivantes au logiciel jusqu'au rechargement.
+    else if (RDLib.codec.meilleur(RD.caps, RD.rates)){ RD.codec = RDLib.codec.meilleur(RD.caps, RD.rates); }
+    RD.horsPortee = 0;
     if (RD.codec) { ensureDecoder(); }
     showActive(); fitCanvas(); negotiate();
   };
@@ -1484,12 +1633,27 @@ window.onGlobalEvent = function(payload){
     console.warn("[codec] repli logiciel : "+raison);
     // Un codec FORCE (et memorise) qui ne tient pas reviendrait a chaque session,
     // et echouerait de la meme facon : on le rend a « auto ».
-    if (RD.forced === "h265" || RD.forced === "vp9"){
+    if (codecForce()){
       var ancien = RD.forced;
       RD.forced = "auto";
       prefs.set({ codec: "auto" });
       if (ui.cod) ui.cod.value = "auto";
       notifier("Codec " + ancien.toUpperCase() + " indisponible (" + raison + ") : retour en automatique.", "erreur");
+    }
+    // Un codec qui a echoue n'est plus propose de toute la vie de la page, et
+    // l'on descend d'un barreau avant de renoncer a WebCodecs : H265 en panne
+    // ne condamne plus a du VP9 logiciel quand H264 ou AV1 sont la.
+    RD.rates[RD.codec] = true;
+    var suivant = RDLib.codec.meilleur(RD.caps, RD.rates);
+    if (suivant){
+      console.warn("[codec] " + RD.codec + " abandonne, essai en " + suivant);
+      RD.codec = suivant; RD.errors = 0; RD.wantKey = true;
+      RD.stats.pend.length = 0;
+      try{ if (RD.dec && RD.dec.state !== "closed") RD.dec.close(); }catch(_){}
+      RD.dec = null;
+      negotiate();
+      showActive(); fitCanvas();
+      return;
     }
     RD.codec = null; RD.errors = 0;
     negotiate();
@@ -1764,6 +1928,49 @@ window.onGlobalEvent = function(payload){
   }
   window.__rdPpFiltrer = ppFiltrer;
 
+  // ------------------------------------------------ ce que le pair repond
+  // Deux reponses que le bundle recoit sans les traiter :
+  //  - BackNotification : le pair accepte ou refuse « bloquer la saisie » et le
+  //    mode confidentialite. Sans elle, le menu affichait une option prise que
+  //    le pair avait refusee.
+  //  - « 2FA Required » : le bundle l'affichait comme une erreur de connexion
+  //    sans issue. On demande le code et on l'envoie (Auth2FA, champ 27 du
+  //    Message) ; le pair repond alors par un login_response ordinaire.
+  // Appelee sur le chemin de msgLoop : rend le message, ou un message VIDE pour
+  // que le bundle n'affiche pas l'erreur a laquelle on vient de repondre.
+  var saisieBloquee = false;
+  function pairFiltrer(c, m){
+    if (!m) return m;
+    var bn = m.misc && m.misc.back_notification;
+    if (bn){
+      var r = RDLib.pair.retour(bn);
+      if (r.option){
+        if (r.option === "block-input") saisieBloquee = r.actif;
+        else { try{ c.setOption(r.option, r.actif); }catch(_){} }
+        notifier(r.texte, r.ok ? null : "erreur");
+        if (window.__rdActions) window.__rdActions();
+      }
+      return m;
+    }
+    var lr = m.login_response, cas = lr && RDLib.pair.demande2fa(lr.error);
+    if (!cas) return m;
+    var saisi = null;
+    try{
+      saisi = window.prompt(cas === "faux"
+        ? "Code refusé. Code de vérification à 6 chiffres du poste distant :"
+        : "Le poste distant demande un code de vérification (2FA) à 6 chiffres :", "");
+    }catch(_){}
+    if (saisi === null) return m;                 // annule : l'erreur du bundle s'affiche
+    var code = RDLib.pair.code2fa(saisi);
+    if (!code){ lr.error = "Wrong 2FA Code"; return pairFiltrer(c, m); }
+    // PAS rdSend : RD.ready est faux tant que peer_info n'est pas arrive. Le
+    // canal est pourtant etabli — ce login_response vient d'y passer.
+    c._ws.sendMessage({ auth_2fa: { code: code } });
+    console.log("[2fa] code envoye");
+    return {};
+  }
+  window.__rdPairFiltrer = pairFiltrer;
+
   // ------------------------------------------- substitution sur curConn
   function patchConn(c){
     if (!c || !c._ws) return;
@@ -1778,9 +1985,31 @@ window.onGlobalEvent = function(payload){
       // L'omettre laisse la page bloquee sur "Connecting" — ecran noir.
       if (!this._firstFrame){ this.msgbox("", "", ""); this._firstFrame = true; }
 
-      var evfs = RD.codec === "h265" ? vf.h265s
-               : RD.codec === "vp9"  ? vf.vp9s
-               : null;
+      // Le pair decide seul du codec : celui qu'on prefere n'est qu'un voeu.
+      // Sans encodeur materiel chez lui, « prefer H265 » revient en VP9 — et
+      // ce VP9 partait au decodeur logiciel, qui dessine sur un canvas alors
+      // masque : ecran noir. On suit donc le flux reellement recu.
+      var flux = RD.codec ? RDLib.codec.flux(vf) : null;
+      if (flux && flux.nom !== RD.codec){
+        if (RD.caps[flux.nom] && !RD.rates[flux.nom]){ RD.horsPortee = 0; changerCodec(flux.nom); }
+        else {
+          // WebCodecs ne le decode pas ici : seul VP9 peut arriver dans ce cas
+          // (c'est le seul codec annonce sans etre sonde), et ogv sait le lire.
+          // Les premieres trames d'une session sont TOUJOURS du VP9 — le pair
+          // n'a pas encore lu notre declaration — donc on patiente avant de
+          // conclure : une trentaine de trames, puis on renonce a WebCodecs
+          // pour cette session ET on le dit au pair, qui n'emettra plus que
+          // du VP9. Sans cela le decodeur logiciel dessinait sur un canvas masque.
+          RD.horsPortee = (RD.horsPortee | 0) + 1;
+          if (RD.horsPortee > 30){
+            console.warn("[codec] le pair reste en " + flux.nom + ", que WebCodecs ne decode pas ici : decodage logiciel pour cette session");
+            RD.horsPortee = 0; RD.codec = null; RD.errors = 0;
+            negotiate(); showActive(); fitCanvas();
+          }
+          flux = null;
+        }
+      } else if (flux) RD.horsPortee = 0;
+      var evfs = flux ? flux.lot : null;
 
       if (!RD.codec || !evfs){
         return this.__rdOrigHandle.call(this, vf);   // chemin ogv d'origine
@@ -1807,7 +2036,7 @@ window.onGlobalEvent = function(payload){
                    + dec.decodeQueueSize + " trames), purge et image-cle");
         try {
           dec.reset();
-          dec.configure({ codec: CODECS[RD.codec], codedWidth: RD.W||1920, codedHeight: RD.H||1080, hardwareAcceleration:"prefer-hardware", optimizeForLatency: true });
+          dec.configure(configDecodeur());
           RD.wantKey = true;
           // reset() abandonne les trames en vol : leurs horodatages resteraient
           // dans la file de mesure et fausseraient durablement les percentiles.
@@ -1863,6 +2092,8 @@ window.onGlobalEvent = function(payload){
       var suivant = c._ws.next.bind(c._ws);
       c._ws.next = async function(){
         var m = await suivant();
+        try { m = pairFiltrer(c, m); }
+        catch(e){ console.warn("[pair] entrant :", e); }
         try { return ppFiltrer(m); }
         catch(e){ console.warn("[presse-papier] entrant :", e); return m; }
       };
@@ -2142,6 +2373,7 @@ window.onGlobalEvent = function(payload){
   // RD.ready est faux, et les compteurs secretbox seraient desynchronises.
   function sessionPrete(){
     var p = prefs.get();
+    saisieBloquee = false;             // le blocage de saisie ne survit pas a la session
     // Le codec d'abord : __rdNegotiate lit RD.forced juste apres.
     if (p.codec) RD.forced = p.codec;
     // La contrainte n'est pas la bande passante (le relais plafonne 30x au-dessus
@@ -2410,7 +2642,7 @@ window.onGlobalEvent = function(payload){
       var c=active(); if(c) c.focus();
     };
     var cod=document.createElement("select"); cod.title="Codec video";
-    [["auto","Codec auto"],["h265","H265"],["vp9","VP9"],["logiciel","Logiciel"]]
+    [["auto","Codec auto"],["h265","H265"],["h264","H264"],["av1","AV1"],["vp9","VP9"],["logiciel","Logiciel"]]
       .forEach(function(o){ var x=document.createElement("option");
         x.value=o[0]; x.textContent=o[1]; cod.appendChild(x); });
     cod.onchange=function(){
@@ -2446,8 +2678,86 @@ window.onGlobalEvent = function(payload){
     };
     majSwap();
 
+    // Ecran affiche : n'apparait que si le poste distant en a plusieurs.
+    var ecr=document.createElement("select"); ecr.className="rdecrans";
+    ecr.title="Écran du poste distant à afficher";
+    ecr.setAttribute("aria-label", ecr.title);
+    ecr.style.display="none";
+    window.__rdEcrans=function(){
+      var d=RD.displays||[];
+      while (ecr.firstChild) ecr.removeChild(ecr.firstChild);
+      d.forEach(function(e,i){ var x=document.createElement("option");
+        x.value=String(i);
+        x.textContent="Écran "+(i+1)+((e.width>0&&e.height>0)?" ("+e.width+"×"+e.height+")":"");
+        ecr.appendChild(x); });
+      ecr.value=String(RD.display|0);
+      ecr.style.display = d.length>1 ? "" : "none";
+    };
+    ecr.onchange=function(){
+      var i=parseInt(ecr.value,10);
+      if(!(i>=0) || i===RD.display) return;
+      // Le pair repond par un message switch_display : c'est lui qui met a
+      // jour RD.display, la taille du canvas et le decodeur (onGlobalEvent).
+      try{ window.setByName("switch_display", i); console.log("[ecran] bascule vers l'ecran "+(i+1)); }
+      catch(e){ console.warn("[ecran]", e); }
+      var c=active(); if(c) c.focus();
+    };
+
+    // Actions sur le poste distant. Le bundle les sait toutes (ctrlAltDel,
+    // lockScreen, toggleOption) sans qu'aucune interface ne les appelle. Un
+    // <select> : un seul controle dans une barre deja pleine, natif au clavier.
+    // La premiere option sert de libelle ; choisir une action l'execute et
+    // ramene le selecteur dessus.
+    var act=document.createElement("select"); act.className="rdactions";
+    act.title="Actions sur le poste distant";
+    act.setAttribute("aria-label", act.title);
+    var BASCULES=[["disable-audio","Couper le son distant"],
+                  ["disable-clipboard","Suspendre le presse-papier"],
+                  ["lock-after-session-end","Verrouiller en quittant"],
+                  ["privacy-mode","Mode confidentialité"],
+                  ["block-input","Bloquer la saisie locale"]];
+    function optionActive(nom){
+      if (nom === "block-input") return saisieBloquee;
+      try{ return !!(window.curConn && window.curConn.getOption && window.curConn.getOption(nom)); }
+      catch(_){ return false; }
+    }
+    window.__rdActions=function(){
+      while (act.firstChild) act.removeChild(act.firstChild);
+      function opt(v,t){ var x=document.createElement("option"); x.value=v; x.textContent=t; act.appendChild(x); }
+      opt("","Actions");
+      opt("cad","Ctrl+Alt+Suppr");
+      opt("lock","Verrouiller la session");
+      BASCULES.forEach(function(b){ opt("opt:"+b[0], (optionActive(b[0]) ? "✓ " : "") + b[1]); });
+      opt("restart","Redémarrer le poste…");
+      act.value="";
+    };
+    act.onchange=function(){
+      var v=act.value; act.value="";
+      try{
+        if (v === "cad"){ window.setByName("ctrl_alt_del"); console.log("[action] Ctrl+Alt+Suppr"); }
+        else if (v === "lock"){ window.setByName("lock_screen"); console.log("[action] verrouillage"); }
+        else if (v === "restart"){
+          if (window.confirm("Redémarrer le poste distant ? La session sera coupée.")){
+            if (rdSend({misc:{restart_remote_device:true}})) notifier("Redémarrage demandé au poste distant.");
+            else notifier(RDLib.messages.NOSEND, "erreur");
+          }
+        }
+        else if (v.indexOf("opt:") === 0){
+          var nom=v.slice(4);
+          // Le bundle n'a pas de bascule pour la saisie : deux ordres distincts,
+          // et l'etat reel ne vient que de la reponse du pair (pairFiltrer).
+          if (nom === "block-input") window.setByName("toggle_option", saisieBloquee ? "unblock-input" : "block-input");
+          else window.setByName("toggle_option", nom);
+          console.log("[action] option "+nom);
+        }
+      }catch(e){ console.warn("[action]", e); notifier("Action impossible : "+((e&&e.message)||e), "erreur"); }
+      window.__rdActions();
+      var c=active(); if(c) c.focus();
+    };
+    window.__rdActions();
+
     var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
-    [sel,fit,qual,fps,cod,swp,quit].forEach(function(x){ bar.appendChild(x); });
+    [sel,fit,qual,fps,cod,swp,ecr,act,quit].forEach(function(x){ bar.appendChild(x); });
 
     // La poignee replie / deplie la barre. Repliee, elle ne laisse a l'ecran
     // qu'un bouton de 28 px : le reste du coin haut-droit redevient cliquable

@@ -328,8 +328,48 @@ await test("selects-init-from-prefs : les selecteurs demarrent sur les choix mem
   await p.goto(URL_PAGE);
   await p.waitForSelector("#rdbar", { state: "attached" });
   const v = await p.evaluate(() => { const s = [...document.querySelectorAll("#rdbar select")]; return s.map((x) => x.value); });
-  assert.deepEqual(v.slice(1), ["best", "60", "vp9"], JSON.stringify(v));
+  // [resolution, qualite, cadence, codec, ecrans, actions]
+  assert.deepEqual(v.slice(1, 4), ["best", "60", "vp9"], JSON.stringify(v));
 }, { init: { "rd-prefs": JSON.stringify({ v: 1, quality: "best", fps: 60, codec: "vp9" }) } });
+
+const OUVERTE = { init: { "rd-prefs": JSON.stringify({ v: 1, bar: "ouverte", hint: true }) } };
+
+await test("actions-menu-real-select : choisir une action l'execute et rend le selecteur a son libelle", async (p) => {
+  await sessionSimulee(p);
+  await p.selectOption("#rdbar select.rdactions", "cad");
+  await p.selectOption("#rdbar select.rdactions", "opt:disable-audio");
+  const r = await p.evaluate(() => ({ t: window.__touches.map((x) => x[0] + (x[1] === undefined ? "" : ":" + x[1])),
+    v: document.querySelector("#rdbar select.rdactions").value,
+    n: document.querySelector("#rdbar select.rdactions").options.length,
+    ecrans: getComputedStyle(document.querySelector("#rdbar select.rdecrans")).display }));
+  assert.ok(r.t.includes("ctrl_alt_del") && r.t.includes("toggle_option:disable-audio"), JSON.stringify(r.t));
+  assert.equal(r.v, "");
+  assert.equal(r.n, 9, "la liste est reconstruite, pas empilee");
+  assert.equal(r.ecrans, "none", "sans second ecran, pas de selecteur d'ecran");
+}, OUVERTE);
+
+await test("bar-wraps-in-narrow-window : depliee dans une fenetre etroite, la barre reste dans l'ecran", async (p) => {
+  await sessionSimulee(p);
+  const r = await p.evaluate(() => { const b = document.getElementById("rdbar").getBoundingClientRect();
+    return { gauche: b.left, droite: b.right, large: innerWidth,
+             dehors: [...document.querySelectorAll("#rdbar > *")].filter((e) => { const x = e.getBoundingClientRect(); return x.width && (x.left < 0 || x.right > innerWidth); }).length }; });
+  assert.ok(r.gauche >= 0 && r.droite <= r.large, JSON.stringify(r));
+  assert.equal(r.dehors, 0, "aucun controle hors de l'ecran");
+}, { ...OUVERTE, contexte: { viewport: { width: 420, height: 800 } } });
+
+await test("codec-probe-all : les quatre codecs sont sondes, et la declaration n'annonce que ce qui est decodable", async (p) => {
+  await sessionSimulee(p);
+  await p.waitForFunction(() => window.RD.caps && Object.keys(window.RD.caps).length === 4, null, { timeout: 5000 });
+  const r = await p.evaluate(() => { window.__envoyes.length = 0; window.__rdNegotiate();
+    const d = window.__envoyes.map((m) => m.misc && m.misc.option && m.misc.option.supported_decoding).filter(Boolean).pop();
+    return { caps: window.RD.caps, codec: window.RD.codec, d }; });
+  assert.deepEqual(Object.keys(r.caps).sort(), ["av1", "h264", "h265", "vp9"]);
+  if (r.codec) {
+    for (const n of ["h265", "h264", "av1"]) assert.equal(r.d["ability_" + n], r.caps[n] ? 1 : 0, n + " : " + JSON.stringify(r));
+    assert.equal(r.d.ability_vp9, 1);
+    assert.equal(r.d.prefer, { vp9: 1, h264: 2, h265: 3, av1: 5 }[r.codec]);
+  }
+});
 
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
 

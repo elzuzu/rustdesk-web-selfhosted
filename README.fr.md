@@ -27,13 +27,16 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 
 | | |
 |---|---|
-| Vidéo | H265 **matériel** des deux côtés via WebCodecs, repli VP9 puis logiciel |
+| Vidéo | H265 ou H264 **matériel** des deux côtés via WebCodecs, puis AV1, VP9, et le logiciel en dernier recours |
 | Souris | déplacement, clics gauche/droit, molette, coordonnées mises à l'échelle |
 | Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
 | `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
 | Presse-papier | texte dans les deux sens ; **images et texte enrichi** aussi, sur Chromium |
 | Fichiers | panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
+| Écrans | un sélecteur pour passer d'un moniteur du poste distant à l'autre, affiché s'il en a plusieurs |
+| Actions distantes | Ctrl+Alt+Suppr, verrouillage, redémarrage, son distant coupé, presse-papier suspendu, mode confidentialité, blocage de la saisie locale |
+| 2FA | un pair qui exige un code de vérification le demande, au lieu d'échouer sur « Login Error » |
 | Curseur | le vrai curseur distant, avec son point chaud |
 | Audio | Opus, avec réveil du contexte au premier geste |
 | Déploiements sans coupure | la couche TLS patiente pendant un redémarrage du conteneur au lieu d'échouer |
@@ -301,8 +304,20 @@ seule fois à partir des ID que le bundle connaissait déjà.
 
 Le client d'origine ne déclare **aucune** capacité de décodage : le serveur
 retombe alors sur VP9 logiciel, y compris quand la machine contrôlée dispose d'un
-encodeur matériel. Ce dépôt déclare `supported_decoding{prefer:H265}` après
-`peer_info` et bascule le décodeur du navigateur sur WebCodecs.
+encodeur matériel. Ce dépôt sonde ce que le navigateur sait décoder via WebCodecs
+— H265, H264, AV1, VP9 —, déclare le tout dans `supported_decoding` après
+`peer_info`, et préfère le meilleur, dans l'ordre du mode « auto » du pair : H265,
+H264, AV1, VP9.
+
+Le pair a le dernier mot. H265 et H264 n'existent chez lui qu'avec un encodeur
+matériel, et les premières trames d'une session sont toujours du VP9, émises
+avant qu'il ait lu la déclaration. Le décodeur **suit donc le flux réellement
+reçu**, pas celui qui a été demandé. Un codec qui échoue trois fois est écarté
+pour toute la vie de la page et le suivant est essayé ; le décodage logiciel est
+le dernier barreau, plus le premier repli.
+
+H264 et AV1 sont couverts par les bancs de test (négociation, bascule, repli)
+mais n'ont **pas été mesurés face à un vrai pair**, contrairement à H265.
 
 Vérification côté machine contrôlée, pendant une session web :
 
@@ -314,7 +329,30 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 > une session native ouverte en parallèle peut faire retomber les deux en VP9.
 > Pour toute mesure, n'ouvrir qu'une session.
 
-Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logiciel.
+Un sélecteur dans la barre permet de forcer `h265`, `h264`, `av1`, `vp9` ou le
+décodage logiciel. Un codec forcé est le seul déclaré ; si le pair ne sait pas
+l'encoder, il répond en VP9 et la surimpression affiche le codec réellement utilisé.
+
+## Actions distantes, écrans, 2FA
+
+Le bundle sait déjà envoyer Ctrl+Alt+Suppr, verrouiller la session distante,
+changer d'écran et basculer les options de session ; rien dans son interface ne
+les appelait. Le menu **Actions** de la barre le fait.
+
+- Le **mode confidentialité** et le **blocage de la saisie locale** dépendent du
+  pair (plateforme, permissions, service installé). Le pair répond par un
+  `BackNotification`, que le bundle décode sans rien en faire : la page le lit,
+  dit si la demande a été acceptée, et ne coche l'option que dans ce cas. Un mode
+  confidentialité refusé est aussi retiré des options du bundle pour ce pair, qui
+  le redemanderait sinon à chaque connexion.
+- **Redémarrer** demande confirmation. La session tombe ; la reprise automatique
+  abandonne après une minute environ, il faut donc recharger la page une fois la
+  machine revenue.
+- **Écrans** : le sélecteur apparaît quand `peer_info` annonce plus d'un écran.
+  La page ne change d'état qu'à la confirmation du pair.
+- **2FA** : sur `2FA Required`, la page demande le code à six chiffres et
+  l'envoie en `auth_2fa`. Non testé face à un vrai pair en 2FA ; « faire confiance
+  à cet appareil » n'est pas implémenté, le code est donc demandé à chaque connexion.
 
 ## Vérifier une modification
 
