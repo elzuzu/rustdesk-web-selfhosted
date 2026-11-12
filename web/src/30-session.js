@@ -592,7 +592,7 @@
       b.textContent = T(PP_LIBELLES[kind]);
       b.title = T("Déposer ce contenu dans le presse-papier de ce navigateur. Un clic est nécessaire : le navigateur n'écrit pas dans le presse-papier sans geste de ta part.");
     });
-    if (ppSlots.kinds().length) bar.classList.add("attention");
+    if (bar.querySelector(".rdppbtn")) bar.classList.add("attention");
   }
 
   function ppRetirerBouton(kind){
@@ -600,7 +600,7 @@
     if (!bar) return;
     var b = bar.querySelector('.rdppbtn[data-kind="' + kind + '"]');
     if (b) b.remove();
-    if (!ppSlots.kinds().length) bar.classList.remove("attention");
+    if (!bar.querySelector(".rdppbtn")) bar.classList.remove("attention");
   }
 
   // Une image : la PROMESSE du blob va directement dans le ClipboardItem. Le
@@ -948,6 +948,8 @@
         var m = await suivant();
         try { m = await pairFiltrer(c, m); }
         catch(e){ console.warn("[pair] entrant :", e); }
+        try { fppRecevoir(m); }
+        catch(e){ console.warn("[fichiers] entrant :", e); }
         try { return ppFiltrer(m); }
         catch(e){ console.warn("[presse-papier] entrant :", e); return m; }
       };
@@ -1336,6 +1338,7 @@
   function sessionPrete(){
     var p = prefs.get();
     saisieBloquee = false;             // le blocage de saisie ne survit pas a la session
+    try { pontOptions(); fppDebut(); } catch(e){ console.warn("[fichiers] debut de session :", e); }
     if (window.__rdClavier) window.__rdClavier();
     if (window.__rdClipSync) window.__rdClipSync("debut de session");
     // Le codec d'abord : __rdNegotiate lit RD.forced juste apres.
@@ -1378,6 +1381,277 @@
     try{ var b = document.getElementById("rderror"); if (b) b.remove(); }catch(_){}
   }
   window.__rdSessionReady = sessionPrete;
+
+  // ------------------------------------------------ presse-papier de fichiers
+  // Le client natif colle un FICHIER comme du texte : copie d'un cote, collage
+  // de l'autre. Cela passe par les messages Cliprdr, que le pair n'ecoute que
+  // d'un client qui annonce une version >= 1.3.8 (connection.rs,
+  // is_support_file_copy_paste) et l'option enable_file_transfer. Le bundle
+  // n'annoncait AUCUNE version : le pair le prenait pour un client d'avant
+  // 1.2.0 — pas de presse-papier de fichiers, et un presse-papier reduit au
+  // texte (ni image ni HTML dans le sens distant -> local).
+  //
+  // Annoncer une version engage. A partir de 1.2.4 le pair attend
+  // CaptureDisplays apres un changement d'ecran (sinon il capture les deux),
+  // et ne bascule plus le mode confidentialite que par TogglePrivacyMode : les
+  // deux sont faits ici. La version reste sous 1.4.0 : on n'annonce que ce que
+  // cette page sait faire.
+  //
+  // Ce que le navigateur interdit, definitivement : ecrire un fichier dans le
+  // presse-papier du SYSTEME. Dans le sens distant -> local, les fichiers
+  // copies sur le poste sont donc recuperes d'un clic, en telechargement.
+  var VERSION_ANNONCEE = "1.3.9";
+  var FPP = RDLib.fpp.C;
+  var fpp = { dispo: false, sortants: null, annonce: null, entrants: null, attente: null, enCours: false };
+
+  function annoncerClient(c){
+    if (!c || typeof c !== "object" || c.__rdAnnonce || typeof c._sendLoginMessage !== "function") return;
+    try { Object.defineProperty(c, "__rdAnnonce", { value: true }); } catch(_){ return; }
+    c._sendLoginMessage = function(pwd){
+      if (!this._ws) return;
+      var option = null;
+      try { option = this.getOptionMessage(); } catch(_){}
+      option = option || {};
+      option.enable_file_transfer = 2;                 // BoolOption.Yes
+      this._ws.sendMessage({ login_request: {
+        username: this._id, my_id: "web", my_name: "web", password: pwd,
+        option: option, video_ack_required: true,
+        version: VERSION_ANNONCEE, my_platform: RDLib.fpp.plateforme(PLATEFORME_LOCALE) } });
+    };
+  }
+  window.__rdAnnoncer = annoncerClient;
+
+  // Le pair capture l'ecran DEMANDE en plus de l'ancien tant qu'on ne lui dit
+  // pas lesquels garder (connection.rs, switch_display_to).
+  window.__rdCaptureEcran = function(i){
+    i = i | 0;
+    if (i >= 0 && rdSend({ misc: { capture_displays: { add: [], sub: [], set: [i] } } }))
+      console.log("[ecran] capture limitee a l'ecran " + (i + 1));
+  };
+
+  // Le mode confidentialite ne passe plus par les options de session : le pair
+  // les ignore pour un client >= 1.2.4 et attend TogglePrivacyMode. On l'envoie
+  // quand le pont du bundle bascule l'option ; le reste part comme avant.
+  function pontOptions(){
+    var o = window.setByName;
+    if (typeof o !== "function" || o.__rdOptions) return;
+    var w = function(n, x){
+      if (n === "toggle_option" && x === "privacy-mode"){
+        try {
+          var c = window.curConn, actif = !!(c && c.getOption && c.getOption("privacy-mode")), impl = "";
+          try {
+            var a = JSON.parse((c && c._peerInfo && c._peerInfo.platform_additions) || "{}");
+            var liste = a && a.supported_privacy_mode_impl;
+            if (Array.isArray(liste) && liste.length && Array.isArray(liste[0])) impl = String(liste[0][0] || "");
+          } catch(_){}
+          rdSend({ misc: { toggle_privacy_mode: { impl_key: impl, on: !actif } } });
+        } catch(e){ console.warn("[action] confidentialite :", e); }
+      }
+      return o.apply(this, arguments);
+    };
+    w.__rdOptions = true;
+    window.setByName = w;
+  }
+
+  function fppEnvoyer(obj){ return rdSend({ cliprdr: obj }); }
+
+  function fppDebut(){
+    var pi = (window.curConn && window.curConn._peerInfo) || {};
+    // Un pair Windows partage en RDP propose ses sessions a un client >= 1.2.4,
+    // et ATTEND son choix avant d'envoyer la moindre image (connection.rs,
+    // handle_windows_specific_session). On garde la session courante : c'est
+    // celle qu'il donnait d'office a un client qui n'annoncait pas de version.
+    var ws = pi.windows_sessions;
+    if (ws && ws.sessions && ws.sessions.length > 1 && rdSend({ misc: { selected_sid: ws.current_sid >>> 0 } }))
+      console.log("[session] " + ws.sessions.length + " sessions Windows proposees : la session courante est gardee");
+    fpp.dispo = RDLib.fpp.disponible(pi.platform_additions);
+    fpp.sortants = null; fpp.attente = null; fpp.enCours = false;
+    fppOublierEntrants();
+    console.log("[fichiers] presse-papier de fichiers " + (fpp.dispo ? "disponible"
+      : "indisponible sur ce poste (le panneau Fichiers reste le seul chemin)"));
+  }
+
+  // ---- sens local -> distant : des fichiers colles ICI.
+  // On les ANNONCE (deux formats, comme le pair les annonce lui-meme), puis on
+  // rejoue la frappe de collage. Le pair pose alors un marqueur dans son
+  // presse-papier ; quand l'application distante colle, il nous demande la
+  // liste, puis le contenu, plage par plage. Rien n'est lu avant.
+  function fppColler(fichiers, rejouer){
+    if (!fpp.dispo || !RD.ready || !fichiers || !fichiers.length) return false;
+    var liste = [], total = 0;
+    for (var i = 0; i < fichiers.length; i++){
+      var f = fichiers[i], nom = RDLib.fpp.nomAnnonce(f && f.name);
+      if (!f || nom === null) continue;
+      liste.push({ fichier: f, nom: nom, taille: f.size, mtime: f.lastModified, dossier: false, envoyes: 0 });
+      total += f.size;
+    }
+    if (!liste.length){
+      notifier(T("Ces fichiers ne peuvent pas être collés (nom vide ou trop long)."), "erreur");
+      return true;
+    }
+    if (!fppEnvoyer({ format_list: { formats: RDLib.fpp.formats() } })){
+      notifier(T(RDLib.messages.NOSEND), "erreur");
+      return true;
+    }
+    fpp.sortants = liste; fpp.sortants.fini = false;
+    console.log("[fichiers] " + liste.length + " fichier(s) annonce(s) au poste distant (" + total + " octets)");
+    if (rejouer) rejouer();
+    return true;
+  }
+  window.__rdFppColler = fppColler;
+
+  function fppSuivre(e, debut, n){
+    e.envoyes = Math.max(e.envoyes, debut + n);
+    var l = fpp.sortants;
+    if (!l || l.fini) return;
+    for (var i = 0; i < l.length; i++) if (l[i].envoyes < l[i].taille) return;
+    l.fini = true;
+    console.log("[fichiers] " + l.length + " fichier(s) transmis au poste distant");
+    notifier(l.length === 1 ? T("Fichier collé sur le poste distant.") : T("{0} fichiers collés sur le poste distant.", l.length));
+  }
+
+  async function fppServir(req){
+    var d = RDLib.fpp.demande(req), flux = req ? (req.stream_id | 0) : 0;
+    var e = d && fpp.sortants && fpp.sortants[d.index];
+    function echec(){ fppEnvoyer({ file_contents_response: { msg_flags: FPP.ECHEC, stream_id: flux, requested_data: new Uint8Array(0) } }); }
+    if (!e){ echec(); return; }
+    if (d.genre === "taille"){
+      fppEnvoyer({ file_contents_response: { msg_flags: FPP.OK, stream_id: d.flux, requested_data: RDLib.fpp.taille(e.taille) } });
+      return;
+    }
+    try {
+      var fin = Math.min(e.taille, d.debut + d.longueur);
+      var octets = d.debut >= fin ? new Uint8Array(0) : new Uint8Array(await e.fichier.slice(d.debut, fin).arrayBuffer());
+      if (fpp.sortants && fpp.sortants[d.index] !== e){ echec(); return; }   // le presse-papier a change entre-temps
+      fppEnvoyer({ file_contents_response: { msg_flags: FPP.OK, stream_id: d.flux, requested_data: octets } });
+      fppSuivre(e, d.debut, octets.length);
+    } catch(err){
+      console.warn("[fichiers] lecture de « " + e.nom + " » :", err);
+      echec();
+      notifier(T("Lecture impossible : {0}", e.nom), "erreur");
+    }
+  }
+
+  // ---- sens distant -> local : des fichiers copies SUR LE POSTE.
+  function fppOublierEntrants(){
+    fpp.entrants = null; fpp.annonce = null;
+    var bar = window.__rdBar, b = bar && bar.querySelector('.rdppbtn[data-kind="fichiers"]');
+    if (b) b.remove();
+    if (bar && !bar.querySelector(".rdppbtn")) bar.classList.remove("attention");
+  }
+  function fppLibelle(){
+    var n = fpp.entrants ? fpp.entrants.fichiers.length : 0;
+    return n === 1 ? T("Fichier copié ⇩") : T("{0} fichiers copiés ⇩", n);
+  }
+  function fppBouton(){
+    var bar = window.__rdBar;
+    if (!bar || !fpp.entrants) return;
+    var b = bar.querySelector('.rdppbtn[data-kind="fichiers"]');
+    if (!b){
+      b = document.createElement("button");
+      b.className = "rdppbtn";
+      b.setAttribute("data-kind", "fichiers");
+      b.onclick = function(){ fppRecuperer(); };
+      bar.insertBefore(b, bar.firstChild);
+    }
+    b.disabled = false;
+    b.textContent = fppLibelle();
+    b.title = T("Télécharger ici les fichiers copiés sur le poste distant. Un clic est nécessaire : un navigateur ne peut pas déposer un fichier dans le presse-papier du système.");
+    bar.classList.add("attention");
+  }
+  function fppPlage(index, debut, longueur){
+    return new Promise(function(ok, ko){
+      var minuteur = setTimeout(function(){ fpp.attente = null; ko(new Error(T("le poste distant ne répond pas"))); }, 20000);
+      fpp.attente = function(r){
+        if ((r.stream_id | 0) !== index) return;         // la reponse d'un autre flux : on attend la notre
+        clearTimeout(minuteur); fpp.attente = null;
+        if ((r.msg_flags | 0) !== FPP.OK) ko(new Error(T("le poste distant a refusé la lecture")));
+        else ok(r.requested_data ? new Uint8Array(r.requested_data) : new Uint8Array(0));
+      };
+      if (!fppEnvoyer({ file_contents_request: RDLib.fpp.demanderPlage(index, debut, longueur) })){
+        clearTimeout(minuteur); fpp.attente = null; ko(new Error(T(RDLib.messages.NOSEND)));
+      }
+    });
+  }
+  function fppTelecharger(blob, nom){
+    var url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url; a.download = nom; a.style.display = "none";
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ try{ a.remove(); URL.revokeObjectURL(url); }catch(_){} }, 60000);
+  }
+  async function fppRecuperer(){
+    var e = fpp.entrants;
+    if (!e || fpp.enCours) return;
+    fpp.enCours = true;
+    var bar = window.__rdBar, b = bar && bar.querySelector('.rdppbtn[data-kind="fichiers"]');
+    if (b) b.disabled = true;
+    var recus = 0, ecartes = 0, total = 0, fait = 0;
+    e.fichiers.forEach(function(f){ if (!f.dossier && f.taille <= FPP.TAILLE_MAX) total += f.taille; });
+    try {
+      for (var i = 0; i < e.fichiers.length; i++){
+        var f = e.fichiers[i];
+        if (f.dossier) continue;
+        if (f.taille > FPP.TAILLE_MAX){ ecartes++; continue; }
+        var morceaux = [], pos = 0;
+        while (pos < f.taille){
+          var octets = await fppPlage(f.index, pos, Math.min(FPP.BLOC, f.taille - pos));
+          if (fpp.entrants !== e) throw new Error(T("le presse-papier du poste distant a changé"));
+          if (!octets.length) throw new Error(T("le poste distant a refusé la lecture"));
+          morceaux.push(octets); pos += octets.length; fait += octets.length;
+          if (b && total) b.textContent = "⇩ " + Math.floor(100 * fait / total) + " %";
+        }
+        fppTelecharger(new Blob(morceaux), RDLib.fpp.nomLocal(f.nom));
+        recus++;
+      }
+      console.log("[fichiers] " + recus + " fichier(s) recupere(s) du poste distant (" + fait + " octets)");
+      if (ecartes) notifier(T("{0} fichier(s) de plus de 2 Gio : à récupérer par le panneau Fichiers.", ecartes), "erreur");
+      if (recus) notifier(recus === 1 ? T("Fichier téléchargé depuis le poste distant.") : T("{0} fichiers téléchargés depuis le poste distant.", recus));
+    } catch(err){
+      console.warn("[fichiers] recuperation :", err);
+      notifier(T("Récupération interrompue : {0}", (err && err.message) || err), "erreur");
+    } finally {
+      fpp.enCours = false;
+      if (fpp.entrants === e) fppBouton();
+    }
+  }
+  window.__rdFppRecuperer = fppRecuperer;
+
+  // Tous les messages Cliprdr du pair passent ici (msgLoop n'a aucune branche pour eux).
+  function fppRecevoir(m){
+    var cl = m && m.cliprdr;
+    if (!cl || !fpp.dispo) return;
+    if (cl.format_list){
+      var id = RDLib.fpp.idListe(cl.format_list.formats);
+      if (id === null) return;
+      // Le poste vient de copier des fichiers : les notres ne sont plus « le presse-papier ».
+      fpp.sortants = null;
+      fppOublierEntrants();
+      fpp.annonce = { id: id };
+      fppEnvoyer({ format_list_response: { msg_flags: FPP.OK } });
+      fppEnvoyer({ format_data_request: { requested_format_id: id } });
+    } else if (cl.format_data_request){
+      // Le poste colle : il demande la liste de ce que nous avons annonce.
+      if (fpp.sortants && fpp.sortants.length)
+        fppEnvoyer({ format_data_response: { msg_flags: FPP.OK, format_data: RDLib.fpp.liste(fpp.sortants) } });
+      else fppEnvoyer({ format_data_response: { msg_flags: FPP.ECHEC, format_data: new Uint8Array(0) } });
+    } else if (cl.format_data_response){
+      if (!fpp.annonce) return;                          // une liste que nous n'avons pas demandee
+      fpp.annonce = null;
+      if ((cl.format_data_response.msg_flags | 0) !== FPP.OK) return;
+      var fichiers;
+      try { fichiers = RDLib.fpp.lire(cl.format_data_response.format_data).filter(function(f){ return !f.dossier; }); }
+      catch(e){ console.warn("[fichiers] liste recue illisible :", e.message || e); return; }
+      if (!fichiers.length) return;
+      fpp.entrants = { fichiers: fichiers };
+      console.log("[fichiers] " + fichiers.length + " fichier(s) copie(s) sur le poste distant");
+      fppBouton();
+    } else if (cl.file_contents_request){
+      fppServir(cl.file_contents_request);
+    } else if (cl.file_contents_response){
+      if (fpp.attente) fpp.attente(cl.file_contents_response);
+    }
+  }
+  window.__rdFppRecevoir = fppRecevoir;
 
   // ------------------------------------------------- cablage global, 1 fois
   var globalWired = false;
@@ -1521,15 +1795,31 @@
       }
       if (img){ envoyerImagePressePapier(img); return; }
 
-      // Un fichier copie dans le Finder arrive ici sous forme de File : le
-      // presse-papier n'en porte qu'une POIGNEE, les octets n'etant lus qu'a
-      // l'appel de arrayBuffer(). C'est le sens navigateur -> Mac, le seul que
-      // le web autorise ; l'inverse est impossible, aucune API ne permet
-      // d'ecrire un fichier dans le presse-papier du systeme.
-      if (cd.files && cd.files.length && window.RDFT){
-        console.log("[presse-papier] "+cd.files.length+" fichier(s) — televersement");
-        window.RDFT.accepterDepot(cd);
-        return;
+      // Un fichier copie dans le Finder ou l'Explorateur arrive ici sous forme
+      // de File : le presse-papier n'en porte qu'une POIGNEE, les octets n'etant
+      // lus qu'a la demande. Quand le poste distant sait le faire, il est COLLE
+      // la-bas, la ou se trouve son curseur, comme avec le client natif. Sinon
+      // (pair ancien, option refusee), il part par le panneau Fichiers.
+      if (cd.files && cd.files.length){
+        var fichiers = [], dossiers = 0;
+        for (var k = 0; k < items.length; k++){
+          if (items[k].kind !== "file") continue;
+          var ent = null;
+          try { ent = items[k].webkitGetAsEntry ? items[k].webkitGetAsEntry() : null; } catch(_){}
+          if (ent && ent.isDirectory){ dossiers++; continue; }
+          var fk = items[k].getAsFile();
+          if (fk) fichiers.push(fk);
+        }
+        if (!fichiers.length && !dossiers) fichiers = Array.prototype.slice.call(cd.files);
+        if (fichiers.length && fppColler(fichiers, function(){ rejouerCollage(0, 250); })){
+          if (dossiers) notifier(T("Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image."), "erreur");
+          return;
+        }
+        if (window.RDFT){
+          console.log("[presse-papier] "+cd.files.length+" fichier(s) — televersement");
+          window.RDFT.accepterDepot(cd);
+          return;
+        }
       }
       var t="", h="";
       try{ t=cd.getData("text/plain")||""; }catch(_){}
@@ -2334,10 +2624,11 @@
       }catch(_){}
     }
     var conn = window.curConn;
+    try{ annoncerClient(conn); }catch(_){}
     try{
       Object.defineProperty(window, "curConn", { configurable: true, enumerable: true,
         get: function(){ return conn; },
-        set: function(v){ conn = v; suivreWs(v); try{ patchConn(v); }catch(_){} } });
+        set: function(v){ conn = v; suivreWs(v); try{ annoncerClient(v); }catch(_){} try{ patchConn(v); }catch(_){} } });
     }catch(_){}
   })();
 

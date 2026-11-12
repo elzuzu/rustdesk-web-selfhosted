@@ -491,7 +491,11 @@ window.onGlobalEvent = function(payload){
     }
     if (e.name === "switch_display") {
       var nd = parseInt(val(e.display), 10);
-      if (nd >= 0) { window.RD.display = nd; if (window.__rdEcrans) window.__rdEcrans(); }
+      if (nd >= 0) {
+        window.RD.display = nd; if (window.__rdEcrans) window.__rdEcrans();
+        // Le pair garde l'ancien ecran en capture tant qu'on ne lui dit pas lesquels conserver.
+        try { if (window.__rdCaptureEcran) window.__rdCaptureEcran(nd); } catch (_) {}
+      }
       var r2 = val(e.resolutions);
       if (r2 && r2.resolutions) { window.RD.res = r2.resolutions;
         if (window.__rdMenu) window.__rdMenu(); }

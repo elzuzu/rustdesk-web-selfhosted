@@ -3588,3 +3588,272 @@ test("setup mot de passe : non memorise dans .env, le .htpasswd existant est gar
   assert.match(SETUP, /if \[ "\$GARDER_HTPASSWD" = 1 \]; then AUTH=\(-H "Cookie: rdsession=\$RD_SESSION_TOKEN"\)\nelse AUTH=\(-u "\$RD_WEB_USER:\$RD_WEB_PASSWORD"\); fi/);
   assert.ok(!/curl[^\n]*-u "\$RD_WEB_USER:\$RD_WEB_PASSWORD"/.test(SETUP), "plus aucun curl ne suppose le mot de passe en clair");
 });
+
+// ====================================================================
+// Presse-papier de fichiers (messages Cliprdr) : le format, puis le cablage.
+// Les decalages et les dates viennent des tests du pair lui-meme (RustDesk
+// 1.5.3, libs/clipboard/src/platform/unix : local_file.rs et filetype.rs).
+// ====================================================================
+const octetsDe = (x) => Uint8Array.from(x);                 // un tableau ne dans un autre contexte vm
+
+test("fpp descripteur : les 592 octets que le pair ecrit et relit — decalages et dates de sa propre source", () => {
+  const { fpp } = chargerLib();
+  const d = octetsDe(fpp.descripteur({ nom: "rapport é.pdf", taille: 5000000000, mtime: 1700000000 * 1000, dossier: false }));
+  assert.equal(d.length, 592);
+  const v = new DataView(d.buffer);
+  assert.equal(v.getUint32(0, true), 0x40 | 0x20 | 0x04 | 0x4000 | 0x08, "taille, date, attributs, progression, mode unix");
+  assert.equal(v.getUint32(36, true), 0x80, "attributs au decalage 36 : fichier normal");
+  assert.equal(v.getUint32(52, true), 0o644, "mode unix dans les 4 derniers octets de la zone reservee");
+  assert.equal(v.getBigUint64(56, true), 133444736000000000n, "FILETIME au decalage 56 — vecteur du pair : 2023-11-14 22:13:20 UTC");
+  assert.equal(v.getUint32(64, true) * 2 ** 32 + v.getUint32(68, true), 5000000000, "taille sur 64 bits : haute puis basse");
+  const nom = "rapport é.pdf";
+  for (let i = 0; i < nom.length; i++) assert.equal(v.getUint16(72 + 2 * i, true), nom.charCodeAt(i), "nom en UTF-16 petit-boutiste au decalage 72");
+  assert.equal(v.getUint16(72 + 2 * nom.length, true), 0, "termine par une unite nulle");
+  // Les deux autres vecteurs du pair : l'an 3000, et une date d'avant 1970 ramenee a 1970.
+  const date = (mtime) => new DataView(octetsDe(fpp.descripteur({ nom: "a", taille: 1, mtime })).buffer).getBigUint64(56, true);
+  assert.equal(date(32503680000 * 1000), 441481536000000000n);
+  assert.equal(date(-1000), 116444736000000000n);
+  assert.equal(date(undefined), 116444736000000000n);
+  assert.equal(new DataView(octetsDe(fpp.descripteur({ nom: "d", taille: 0, dossier: true })).buffer).getUint32(36, true), 0x10, "dossier");
+  // 259 unites tiennent (260 avec la fin de chaine) ; 260 non.
+  assert.equal(fpp.descripteur({ nom: "x".repeat(259), taille: 0 }).length, 592);
+  assert.throws(() => fpp.descripteur({ nom: "x".repeat(260), taille: 0 }), /nom de fichier/);
+  assert.throws(() => fpp.descripteur({ nom: "", taille: 0 }), /nom de fichier/);
+});
+
+test("fpp liste : aller-retour, chemins relatifs du pair, et refus de tout ce qui est mal forme ou dangereux", () => {
+  const { fpp } = chargerLib();
+  const liste = octetsDe(fpp.liste([{ nom: "a.txt", taille: 3, mtime: 1700000000000 }, { nom: "gros.iso", taille: 2 ** 33 + 5, mtime: 0 }, { nom: "dossier", taille: 0, dossier: true }]));
+  assert.equal(liste.length, 4 + 592 * 3);
+  assert.deepEqual(plat(fpp.lire(liste)), [
+    { nom: "a.txt", taille: 3, dossier: false, mtime: 1700000000000, index: 0 },
+    { nom: "gros.iso", taille: 2 ** 33 + 5, dossier: false, mtime: 0, index: 1 },
+    { nom: "dossier", taille: 0, dossier: true, mtime: 0, index: 2 }]);
+  assert.deepEqual(plat(fpp.lire(new Uint8Array(4))), [], "liste vide");
+  // Le pair separe par « \ » : rendu avec « / » (son propre test : folder/nested/file.txt).
+  const avecNom = (nom) => { const l = octetsDe(fpp.liste([{ nom: "x", taille: 1 }])); const v = new DataView(l.buffer);
+    for (let i = 0; i < 260; i++) v.setUint16(4 + 72 + 2 * i, i < nom.length ? nom.charCodeAt(i) : 0, true); return l; };
+  assert.equal(fpp.lire(avecNom("folder\\nested\\file.txt"))[0].nom, "folder/nested/file.txt");
+  for (const mauvais of ["..\\x", "a\\..\\b", "\\absolu", "/absolu", "C:\\Windows\\x", "c:/x", "a\\\\b", "a\\.\\b", "."])
+    assert.throws(() => fpp.lire(avecNom(mauvais)), /nom de fichier refuse/, mauvais);
+  assert.throws(() => fpp.lire(avecNom("")), /nom de fichier refuse/, "nom vide");
+  assert.throws(() => fpp.lire(liste.subarray(0, liste.length - 1)), /longueur incoherente/);
+  assert.throws(() => fpp.lire(new Uint8Array(3)), /tronquee/);
+  const sansFin = octetsDe(fpp.liste([{ nom: "x", taille: 1 }])); new Uint8Array(sansFin.buffer, 4 + 72, 520).fill(65);
+  assert.throws(() => fpp.lire(sansFin), /non termine/, "un nom sans unite nulle n'est pas lu au-dela du champ");
+  const trop = new Uint8Array(4); new DataView(trop.buffer).setUint32(0, 5000, true);
+  assert.throws(() => fpp.lire(trop), /longueur incoherente/);
+  const enorme = new Uint8Array(4 + 592 * (fpp.C.FICHIERS_MAX + 1)); new DataView(enorme.buffer).setUint32(0, fpp.C.FICHIERS_MAX + 1, true);
+  assert.throws(() => fpp.lire(enorme), /trop de fichiers|nom de fichier/);
+});
+
+test("fpp noms : annonce sans chemin, enregistrement local sans piege, plateforme annoncee", () => {
+  const { fpp } = chargerLib();
+  assert.equal(fpp.nomAnnonce("rapport final.pdf"), "rapport final.pdf");
+  assert.equal(fpp.nomAnnonce("a/b\\c.txt"), "a_b_c.txt", "jamais de separateur dans un nom annonce");
+  for (const n of ["", ".", "..", null, "x".repeat(260)]) assert.equal(fpp.nomAnnonce(n), null, String(n));
+  assert.equal(fpp.nomLocal("dossier/sous/notes.txt"), "notes.txt");
+  assert.equal(fpp.nomLocal("a\\b\\c:d?.txt"), "c_d_.txt");
+  assert.equal(fpp.nomLocal(".bashrc"), "_bashrc", "pas de fichier cache depose a l'insu de l'utilisateur");
+  assert.equal(fpp.nomLocal(""), "fichier");
+  assert.deepEqual(["MacIntel", "macOS", "Win32", "Windows", "Linux x86_64", "iPhone", "Android", "", undefined].map(fpp.plateforme),
+    ["Mac OS", "Mac OS", "Windows", "Windows", "Linux", "iOS", "Android", "Linux", "Linux"]);
+});
+
+test("fpp demandes : taille, plage en entiers NON signes, plafond ; annonce : il faut les deux formats", () => {
+  const { fpp } = chargerLib();
+  assert.deepEqual(plat(fpp.demande({ stream_id: 7, list_index: 2, dw_flags: 1 })), { genre: "taille", index: 2, flux: 7, debut: 0, longueur: 8 });
+  // n_position_low et cb_requested voyagent dans des champs signes : -2147483648 vaut 2^31.
+  assert.deepEqual(plat(fpp.demande({ stream_id: 3, list_index: 3, dw_flags: 2, n_position_low: -2147483648, n_position_high: 1, cb_requested: 4194304 })),
+    { genre: "plage", index: 3, flux: 3, debut: 2 ** 32 + 2 ** 31, longueur: 4194304 });
+  assert.equal(fpp.demande({ list_index: 0, dw_flags: 2, cb_requested: -1 }).longueur, fpp.C.PLAGE_MAX, "une longueur « negative » est un tres grand entier : plafonnee");
+  for (const r of [null, { list_index: 0, dw_flags: 0 }, { list_index: 0, dw_flags: 3 }, { list_index: -1, dw_flags: 1 }]) assert.equal(fpp.demande(r), null);
+  assert.deepEqual([...octetsDe(fpp.taille(5000000000))], [0x00, 0xf2, 0x05, 0x2a, 0x01, 0, 0, 0]);
+  assert.deepEqual(plat(fpp.demanderPlage(2, 5000000000, 1048576)),
+    { stream_id: 2, list_index: 2, dw_flags: 2, n_position_low: 705032704, n_position_high: 1, cb_requested: 1048576, have_clip_data_id: false, clip_data_id: 0 });
+  assert.deepEqual(plat(fpp.formats()), [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }]);
+  assert.equal(fpp.idListe([{ id: 5, format: "FileContents" }, { id: 9, format: "FileGroupDescriptorW" }]), 9);
+  for (const f of [[{ id: 9, format: "FileGroupDescriptorW" }], [{ id: 5, format: "FileContents" }], [], null, [{ id: 1, format: "CF_TEXT" }]]) assert.equal(fpp.idListe(f), null);
+  assert.equal(fpp.disponible('{"has_file_clipboard":true}'), true);
+  for (const a of ['{"has_file_clipboard":false}', "{}", "", undefined, "pas du json", '{"has_file_clipboard":"true"}']) assert.equal(fpp.disponible(a), false, String(a));
+});
+
+// Une session dont le pair annonce (ou non) le presse-papier de fichiers.
+async function montageFichiers({ dispo = true, plateforme = "Mac OS" } = {}) {
+  const m = await montageSortant({ plateforme });
+  m.w.curConn._peerInfo.platform_additions = JSON.stringify(dispo ? { has_file_clipboard: true } : {});
+  m.peerInfo(); await m.vider();
+  m.envoyes.length = 0; m.touches.length = 0;
+  const dejaDits = m.toasts().length;                       // le debut de session a ses propres messages (ou sont les reglages…)
+  m.messages = () => m.toasts().slice(dejaDits).map((t) => t.texte);
+  m.cliprdr = () => m.envoyes.filter((x) => x.cliprdr).map((x) => x.cliprdr);
+  m.recevoir = async (c) => { m.w.__rdFppRecevoir({ cliprdr: c }); await m.vider(); };
+  m.coller = async (fichiers, dossiers = 0) => {
+    const items = fichiers.map((f) => ({ kind: "file", type: f.type, getAsFile: () => f, webkitGetAsEntry: () => ({ isDirectory: false }) }));
+    for (let i = 0; i < dossiers; i++) items.push({ kind: "file", type: "", getAsFile: () => new File([], "dossier"), webkitGetAsEntry: () => ({ isDirectory: true }) });
+    (m.ecouteurs.paste || []).forEach((f) => f({ preventDefault() {}, clipboardData: { items, files: fichiers, getData: () => "" } }));
+    await m.vider();
+  };
+  m.telechargements = [];
+  const creer = m.doc.createElement;
+  m.doc.createElement = (t) => { const e = creer(t); if (t === "a") e.click = () => m.telechargements.push(e.download); return e; };
+  m.bouton = () => m.bar.querySelector('.rdppbtn[data-kind="fichiers"]');
+  return m;
+}
+const fichierTest = (nom, octets) => new File([Uint8Array.from(octets)], nom, { type: "application/octet-stream", lastModified: 1700000000000 });
+
+test("fpp connexion : la requete annonce une version, la plateforme et l'option de fichiers — sans lesquelles le pair ignore tout", async () => {
+  const m = await montageSortant();
+  const envois = [];
+  const conn = { _id: "123456789", _ws: { sendMessage: (x) => envois.push(x) }, _sendLoginMessage() { throw new Error("la methode du bundle ne doit plus servir"); },
+                 getOptionMessage: () => ({ image_quality: 3, disable_audio: 2 }) };
+  m.w.__rdAnnoncer(conn);
+  const pose = conn._sendLoginMessage;
+  m.w.__rdAnnoncer(conn);
+  assert.equal(conn._sendLoginMessage, pose, "idempotent : une reconnexion ne re-enveloppe pas");
+  conn._sendLoginMessage("hachage");
+  const lr = plat(envois[0].login_request);
+  assert.equal(lr.version, "1.3.9", "sous 1.3.8 le pair n'ecoute aucun message Cliprdr ; 1.3.9 pour coller d'un Mac a un Mac");
+  assert.equal(lr.my_platform, "Linux", "la plateforme du navigateur (ici celle du banc)");
+  assert.deepEqual(lr.option, { image_quality: 3, disable_audio: 2, enable_file_transfer: 2 }, "les options du bundle sont gardees, enable_file_transfer = Yes s'y ajoute");
+  assert.deepEqual([lr.username, lr.my_id, lr.my_name, lr.password, lr.video_ack_required], ["123456789", "web", "web", "hachage", true], "le reste est celui du bundle");
+  // Sans option memorisee, le bundle rend undefined : l'option de fichiers part quand meme.
+  const nu = { _id: "1", _ws: { sendMessage: (x) => envois.push(x) }, _sendLoginMessage() {}, getOptionMessage: () => undefined };
+  m.w.__rdAnnoncer(nu); nu._sendLoginMessage();
+  assert.deepEqual(plat(envois[1].login_request.option), { enable_file_transfer: 2 });
+});
+
+test("fpp ecrans et confidentialite : ce qu'un client qui annonce >= 1.2.4 doit dire autrement au pair", async () => {
+  const m = await montageFichiers();
+  m.w.onGlobalEvent(JSON.stringify({ name: "switch_display", display: "1" }));
+  assert.deepEqual(plat(m.envoyes.filter((x) => x.misc && x.misc.capture_displays).map((x) => x.misc.capture_displays)), [{ add: [], sub: [], set: [1] }],
+    "sans CaptureDisplays le pair capture l'ancien ecran EN PLUS du nouveau");
+  m.envoyes.length = 0; m.touches.length = 0;
+  m.w.setByName("toggle_option", "privacy-mode");
+  assert.deepEqual(plat(m.envoyes.filter((x) => x.misc && x.misc.toggle_privacy_mode).map((x) => x.misc.toggle_privacy_mode)), [{ impl_key: "", on: true }]);
+  assert.deepEqual(m.touches.map((t) => t[0]), ["toggle_option"], "le pont du bundle est toujours appele : son etat local suit");
+  m.envoyes.length = 0;
+  m.w.setByName("toggle_option", "disable-audio");
+  assert.equal(m.envoyes.filter((x) => x.misc && x.misc.toggle_privacy_mode).length, 0, "les autres options partent comme avant");
+  // Un pair Windows partage en RDP ATTEND le choix de session d'un client >= 1.2.4 avant d'envoyer l'image : on garde la courante.
+  m.w.curConn._peerInfo.windows_sessions = { sessions: [{ sid: 1, name: "Console" }, { sid: 3, name: "RDP" }], current_sid: 3 };
+  m.envoyes.length = 0; m.peerInfo(); await m.vider();
+  assert.deepEqual(plat(m.envoyes.filter((x) => x.misc && x.misc.selected_sid !== undefined).map((x) => x.misc)), [{ selected_sid: 3 }]);
+  delete m.w.curConn._peerInfo.windows_sessions;
+  m.envoyes.length = 0; m.peerInfo(); await m.vider();
+  assert.equal(m.envoyes.filter((x) => x.misc && x.misc.selected_sid !== undefined).length, 0, "une seule session : rien a choisir");
+  m.envoyes.length = 0;
+  // Le pair dit quelles mises en oeuvre il propose : on nomme la premiere.
+  m.w.curConn._peerInfo.platform_additions = JSON.stringify({ has_file_clipboard: true, supported_privacy_mode_impl: [["privacy_mode_impl_mag", "Mode 1"], ["autre", "Mode 2"]] });
+  m.w.setByName("toggle_option", "privacy-mode");
+  assert.equal(m.envoyes.find((x) => x.misc && x.misc.toggle_privacy_mode).misc.toggle_privacy_mode.impl_key, "privacy_mode_impl_mag");
+});
+
+test("fpp collage : des fichiers colles ICI sont annonces, la frappe est rejouee, puis liste et contenu sont servis a la demande", async () => {
+  const m = await montageFichiers();
+  const { fpp } = chargerLib();
+  const a = fichierTest("notes.txt", [10, 11, 12, 13, 14, 15, 16, 17]), b = fichierTest("vide.bin", []);
+  await m.coller([a, b]);
+  assert.deepEqual(plat(m.cliprdr()), [{ format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } }]);
+  assert.equal(m.depotsFichiers.n, 0, "plus de televersement par le panneau Fichiers");
+  assert.equal(m.rejeux().length, 1, "la frappe de collage est rejouee sur le poste distant : c'est elle qui fait coller l'application");
+  assert.equal(m.envoyes.length, 1, "rien n'est lu ni envoye tant que le poste ne le demande pas");
+  // Le poste colle : il demande la liste.
+  m.envoyes.length = 0;
+  await m.recevoir({ format_data_request: { requested_format_id: 49334 } });
+  const rep = m.cliprdr()[0].format_data_response;
+  assert.equal(rep.msg_flags, 1);
+  assert.deepEqual(plat(fpp.lire(octetsDe(rep.format_data))).map((f) => [f.nom, f.taille, f.mtime]), [["notes.txt", 8, 1700000000000], ["vide.bin", 0, 1700000000000]]);
+  // Puis la taille, puis une plage — dont il renvoie l'identifiant de flux.
+  m.envoyes.length = 0;
+  await m.recevoir({ file_contents_request: { stream_id: 0, list_index: 0, dw_flags: 1 } });
+  assert.deepEqual([...octetsDe(m.cliprdr()[0].file_contents_response.requested_data)], [8, 0, 0, 0, 0, 0, 0, 0]);
+  await m.recevoir({ file_contents_request: { stream_id: 0, list_index: 0, dw_flags: 2, n_position_low: 2, n_position_high: 0, cb_requested: 4 } });
+  const plage = m.cliprdr()[1].file_contents_response;
+  assert.deepEqual([plage.msg_flags, plage.stream_id, [...octetsDe(plage.requested_data)]], [1, 0, [12, 13, 14, 15]]);
+  assert.deepEqual(m.messages(), [], "pas encore tout transmis : aucun message");
+  await m.recevoir({ file_contents_request: { stream_id: 0, list_index: 0, dw_flags: 2, n_position_low: 0, n_position_high: 0, cb_requested: 4194304 } });
+  assert.deepEqual([...octetsDe(m.cliprdr()[2].file_contents_response.requested_data)], [10, 11, 12, 13, 14, 15, 16, 17], "une plage plus longue que le fichier rend ce qu'il reste");
+  assert.deepEqual(m.messages(), ["2 fichiers collés sur le poste distant."], "dit UNE fois, quand tout est parti");
+  // Hors liste, ou genre inconnu : un refus explicite, jamais un silence (le pair attend 5 s par essai).
+  m.envoyes.length = 0;
+  await m.recevoir({ file_contents_request: { stream_id: 9, list_index: 9, dw_flags: 2, cb_requested: 4 } });
+  await m.recevoir({ file_contents_request: { stream_id: 4, list_index: 0, dw_flags: 7 } });
+  assert.deepEqual(m.cliprdr().map((c) => [c.file_contents_response.msg_flags, c.file_contents_response.stream_id]), [[2, 9], [2, 4]]);
+});
+
+test("fpp collage : pair sans presse-papier de fichiers -> panneau Fichiers comme avant ; dossiers signales ; image toujours prioritaire", async () => {
+  const sans = await montageFichiers({ dispo: false });
+  await sans.coller([fichierTest("a.txt", [1])]);
+  assert.equal(sans.cliprdr().length, 0); assert.equal(sans.depotsFichiers.n, 1, "repli : televersement");
+  await sans.recevoir({ format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } });
+  assert.equal(sans.cliprdr().length, 0, "un pair qui n'a rien annonce n'est pas ecoute");
+  const m = await montageFichiers();
+  await m.coller([fichierTest("a.txt", [1])], 1);
+  assert.equal(m.cliprdr().length, 1);
+  assert.match(m.toasts().map((t) => t.texte).join("|"), /dossiers ne passent pas par le presse-papier/);
+  // Une image reste une IMAGE du presse-papier (elle doit pouvoir etre collee dans un document), pas un fichier.
+  const img = await montageFichiers();
+  await img.collerImage(new Blob([new Uint8Array(8)], { type: "image/png" }));
+  assert.equal(img.cliprdr().length, 0); assert.equal(img.envoyes.filter((x) => x.multi_clipboards).length, 1);
+  // Sans demande de liste en attente, une demande du poste recoit un refus net.
+  const vide = await montageFichiers();
+  await vide.recevoir({ format_data_request: { requested_format_id: 49334 } });
+  assert.deepEqual(plat(vide.cliprdr()[0].format_data_response), { msg_flags: 2, format_data: {} });
+});
+
+test("fpp reception : des fichiers copies SUR LE POSTE -> liste demandee, bouton, puis telechargement plage par plage au clic", async () => {
+  const m = await montageFichiers();
+  const { fpp } = chargerLib();
+  await m.recevoir({ format_list: { formats: [{ id: 7, format: "FileGroupDescriptorW" }, { id: 8, format: "FileContents" }] } });
+  assert.deepEqual(plat(m.cliprdr()), [{ format_list_response: { msg_flags: 1 } }, { format_data_request: { requested_format_id: 7 } }], "la liste est demandee sous l'identifiant du PAIR");
+  assert.equal(m.bouton(), null, "pas de bouton avant de savoir quoi");
+  const liste = fpp.liste([{ nom: "photos\\plage.jpg", taille: 5, mtime: 1700000000000 }, { nom: "photos", taille: 0, dossier: true }, { nom: "notes.txt", taille: 3, mtime: 0 }]);
+  await m.recevoir({ format_data_response: { msg_flags: 1, format_data: liste } });
+  assert.equal(m.bouton().textContent, "2 fichiers copiés ⇩", "les dossiers ne sont pas des fichiers a recuperer");
+  assert.equal(m.bar.classList.contains("attention"), true, "visible meme barre repliee");
+  assert.equal(m.envoyes.filter((x) => x.cliprdr && x.cliprdr.file_contents_request).length, 0, "RIEN n'est telecharge sans clic : copier sur le poste ne doit pas remplir ce disque");
+  // Le clic : chaque fichier est demande par plages, sous son index dans la liste du pair.
+  m.envoyes.length = 0;
+  const fini = m.bouton().onclick();
+  await m.vider();
+  const demandes = () => m.envoyes.filter((x) => x.cliprdr && x.cliprdr.file_contents_request).map((x) => plat(x.cliprdr.file_contents_request));
+  assert.deepEqual(demandes(), [{ stream_id: 0, list_index: 0, dw_flags: 2, n_position_low: 0, n_position_high: 0, cb_requested: 5, have_clip_data_id: false, clip_data_id: 0 }]);
+  await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 5, requested_data: Uint8Array.from([9]) } });
+  assert.equal(demandes().length, 1, "la reponse d'un autre flux n'est pas prise pour la notre");
+  await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 0, requested_data: Uint8Array.from([1, 2, 3]) } });
+  assert.deepEqual(demandes()[1], { stream_id: 0, list_index: 0, dw_flags: 2, n_position_low: 3, n_position_high: 0, cb_requested: 2, have_clip_data_id: false, clip_data_id: 0 }, "une plage plus courte que demande : on reprend ou elle s'arrete");
+  await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 0, requested_data: Uint8Array.from([4, 5]) } });
+  assert.equal(demandes()[2].list_index, 2, "puis le fichier suivant, sous SON index (le dossier, index 1, est saute)");
+  await m.recevoir({ file_contents_response: { msg_flags: 1, stream_id: 2, requested_data: Uint8Array.from([7, 8, 9]) } });
+  await fini; await m.vider();
+  assert.deepEqual(m.telechargements, ["plage.jpg", "notes.txt"], "enregistres sous leur seul nom, jamais sous un chemin venu du pair");
+  assert.deepEqual(m.messages(), ["2 fichiers téléchargés depuis le poste distant."]);
+  assert.equal(m.bouton().textContent, "2 fichiers copiés ⇩", "le bouton reste : on peut les reprendre tant que le poste les garde");
+});
+
+test("fpp reception : liste non demandee, refusee, ou piegee -> rien ; refus du poste en cours de route -> message, pas de fichier", async () => {
+  const m = await montageFichiers();
+  const { fpp } = chargerLib();
+  const liste = fpp.liste([{ nom: "a.txt", taille: 2 }]);
+  await m.recevoir({ format_data_response: { msg_flags: 1, format_data: liste } });
+  assert.equal(m.bouton(), null, "une liste que l'on n'a pas demandee n'ouvre rien");
+  const annoncer = () => m.recevoir({ format_list: { formats: fpp.formats() } });
+  await annoncer(); await m.recevoir({ format_data_response: { msg_flags: 2, format_data: new Uint8Array(0) } });
+  assert.equal(m.bouton(), null, "refus du poste");
+  const piege = Uint8Array.from(liste); const v = new DataView(piege.buffer);
+  "..\\evil".split("").forEach((c, i) => v.setUint16(4 + 72 + 2 * i, c.charCodeAt(0), true));
+  await annoncer(); await m.recevoir({ format_data_response: { msg_flags: 1, format_data: piege } });
+  assert.equal(m.bouton(), null, "un nom qui remonte l'arborescence fait rejeter TOUTE la liste");
+  // Une liste saine, puis le poste refuse la lecture.
+  await annoncer(); await m.recevoir({ format_data_response: { msg_flags: 1, format_data: liste } });
+  const fini = m.bouton().onclick(); await m.vider();
+  await m.recevoir({ file_contents_response: { msg_flags: 2, stream_id: 0, requested_data: new Uint8Array(0) } });
+  await fini; await m.vider();
+  assert.deepEqual(m.telechargements, []);
+  assert.match(m.toasts().map((t) => t.texte).join("|"), /Récupération interrompue : le poste distant a refusé la lecture/);
+  assert.equal(m.bouton().disabled, false, "le bouton redevient cliquable : on peut reessayer");
+  // Le poste copie autre chose (du texte) apres avoir copie des fichiers : nouvelle annonce de fichiers -> l'ancienne liste est oubliee.
+  await annoncer();
+  assert.equal(m.bouton(), null, "une nouvelle annonce retire le bouton de l'ancienne liste tant que la nouvelle n'est pas lue");
+});

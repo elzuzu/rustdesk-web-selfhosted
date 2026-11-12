@@ -861,6 +861,21 @@
     "Déposer ce contenu dans le presse-papier de ce navigateur. Un clic est nécessaire : le navigateur n'écrit pas dans le presse-papier sans geste de ta part.": "Put this content on this browser's clipboard. A click is required: the browser does not write to the clipboard without a gesture from you.",
     "Image reçue ⇩": "Image received ⇩",
     "Texte reçu ⇩": "Text received ⇩",
+    "Fichier copié ⇩": "File copied ⇩",
+    "{0} fichiers copiés ⇩": "{0} files copied ⇩",
+    "Télécharger ici les fichiers copiés sur le poste distant. Un clic est nécessaire : un navigateur ne peut pas déposer un fichier dans le presse-papier du système.": "Download here the files copied on the remote machine. A click is required: a browser cannot put a file in the system clipboard.",
+    "Ces fichiers ne peuvent pas être collés (nom vide ou trop long).": "These files cannot be pasted (empty or overlong name).",
+    "Fichier collé sur le poste distant.": "File pasted on the remote machine.",
+    "{0} fichiers collés sur le poste distant.": "{0} files pasted on the remote machine.",
+    "Lecture impossible : {0}": "Cannot read: {0}",
+    "Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image.": "Folders do not go through the clipboard: drop them on the image.",
+    "le poste distant ne répond pas": "the remote machine does not answer",
+    "le poste distant a refusé la lecture": "the remote machine refused the read",
+    "le presse-papier du poste distant a changé": "the remote clipboard has changed",
+    "{0} fichier(s) de plus de 2 Gio : à récupérer par le panneau Fichiers.": "{0} file(s) over 2 GiB: fetch them from the Files panel.",
+    "Fichier téléchargé depuis le poste distant.": "File downloaded from the remote machine.",
+    "{0} fichiers téléchargés depuis le poste distant.": "{0} files downloaded from the remote machine.",
+    "Récupération interrompue : {0}": "Download interrupted: {0}",
     "reprise abandonnée — recharge la page": "reconnection abandoned — reload the page",
     "reconnexion {0}/6 dans {1} s": "reconnecting {0}/6 in {1} s",
     "reconnexion en cours…": "reconnecting…",
@@ -1075,6 +1090,173 @@
     "Wrong 2FA Code": "Code de vérification refusé."
   };
 
+  // ----------------------------------------------- presse-papier de fichiers
+  // Le « presse-papier de fichiers » de RustDesk (message Cliprdr) reprend le
+  // format de Windows : une liste de descripteurs de 592 octets (FILEDESCRIPTORW)
+  // precedee de leur nombre, puis le contenu, demande par plages. Les memes
+  // octets servent les pairs Windows, Linux et macOS. Verifie dans la source du
+  // pair, version 1.5.3 : libs/clipboard/src/platform/unix (local_file.rs ecrit
+  // le descripteur, filetype.rs le relit, serv_files.rs sert le contenu) et
+  // src/clipboard_file.rs pour l'enchainement des messages.
+  //
+  //   descripteur : drapeaux u32 | 32 octets reserves | attributs u32 |
+  //                 12 octets reserves | mode unix u32 | date u64 (FILETIME) |
+  //                 taille haute u32 | taille basse u32 | nom, 260 unites UTF-16
+  var FPP = {
+    ID_LISTE: 49334, NOM_LISTE: "FileGroupDescriptorW",
+    ID_CONTENU: 49267, NOM_CONTENU: "FileContents",
+    DESCRIPTEUR: 592, NOM_UNITES: 260, NOM_MAX: 259,
+    BLOC: 1048576,                // ce que NOUS demandons par plage (le pair, lui, demande 4 Mio)
+    PLAGE_MAX: 8388608,           // plus grande plage que nous acceptons de servir d'un coup
+    FICHIERS_MAX: 2048,           // au-dela, une liste recue est refusee (592 octets par fichier)
+    TAILLE_MAX: 2147483648,       // un fichier recu est assemble en memoire : 2 Gio au plus
+    OK: 1, ECHEC: 2
+  };
+  var FPP_1970 = 116444736000000000;       // de 1601 a 1970, en centaines de nanosecondes
+  var DEUX32 = 4294967296;
+  var FD_ATTRIBUTS = 0x04, FD_MODE_UNIX = 0x08, FD_DATE = 0x20, FD_TAILLE = 0x40, FD_PROGRES = 0x4000;
+  var ATTR_DOSSIER = 0x10, ATTR_NORMAL = 0x80;
+
+  function fppErreur(message){ var e = new Error(message); e.name = "FppError"; return e; }
+
+  // Ce que l'on annonce au pair quand le presse-papier local porte des fichiers.
+  function fppFormats(){
+    return [{ id: FPP.ID_LISTE, format: FPP.NOM_LISTE }, { id: FPP.ID_CONTENU, format: FPP.NOM_CONTENU }];
+  }
+  // L'identifiant sous lequel le pair annonce sa LISTE de fichiers, ou null si
+  // l'annonce n'est pas une annonce de fichiers (il faut les deux formats, comme
+  // l'exige le pair lui-meme).
+  function fppIdListe(formats){
+    var liste = null, contenu = false;
+    (Array.isArray(formats) ? formats : []).forEach(function(f){
+      if (!f) return;
+      if (f.format === FPP.NOM_LISTE) liste = f.id | 0;
+      if (f.format === FPP.NOM_CONTENU) contenu = true;
+    });
+    return (liste !== null && contenu) ? liste : null;
+  }
+
+  // Le nom sous lequel un fichier LOCAL est annonce : son seul nom, sans chemin.
+  // null s'il ne peut pas l'etre (vide, « . », « .. », trop long pour le champ).
+  function fppNomAnnonce(nom){
+    nom = String(nom == null ? "" : nom).replace(/[\\\/]/g, "_").replace(/[\u0000-\u001f]/g, "");
+    if (!nom || nom === "." || nom === ".." || nom.length > FPP.NOM_MAX) return null;
+    return nom;
+  }
+  // Le chemin relatif annonce par le pair, separe par « \ » : rendu avec « / »,
+  // ou null s'il n'est pas un chemin relatif normalise (absolu, vide, « . »,
+  // « .. », lettre de lecteur) — on n'ecrit jamais rien sous un tel nom.
+  function fppCheminRecu(nom){
+    var c = String(nom == null ? "" : nom).replace(/\\/g, "/");
+    if (!c || c.charAt(0) === "/" || /^[A-Za-z]:/.test(c) || /[\u0000-\u001f]/.test(c)) return null;
+    var parts = c.split("/");
+    for (var i = 0; i < parts.length; i++){
+      if (!parts[i] || parts[i] === "." || parts[i] === "..") return null;
+    }
+    return c;
+  }
+  // Le nom sous lequel un fichier recu est ENREGISTRE ici : son dernier
+  // composant, sans rien qu'un systeme de fichiers local refuserait.
+  function fppNomLocal(chemin){
+    var c = String(chemin == null ? "" : chemin).replace(/\\/g, "/");
+    var n = c.slice(c.lastIndexOf("/") + 1).replace(/[\u0000-\u001f<>:"|?*]/g, "_").replace(/^\.+/, "_");
+    return n || "fichier";
+  }
+
+  // { nom, taille, mtime (ms), dossier } -> les 592 octets du descripteur.
+  function fppDescripteur(f){
+    var nom = f && f.nom, taille = Number(f && f.taille) || 0, dossier = !!(f && f.dossier);
+    if (typeof nom !== "string" || !nom || nom.length > FPP.NOM_MAX) throw fppErreur("nom de fichier inutilisable");
+    if (!(taille >= 0) || taille > Number.MAX_SAFE_INTEGER) throw fppErreur("taille de fichier inutilisable");
+    var o = new Uint8Array(FPP.DESCRIPTEUR), v = new DataView(o.buffer);
+    v.setUint32(0, FD_TAILLE | FD_DATE | FD_ATTRIBUTS | FD_PROGRES | FD_MODE_UNIX, true);
+    v.setUint32(36, dossier ? ATTR_DOSSIER : ATTR_NORMAL, true);
+    v.setUint32(52, dossier ? 493 : 420, true);              // 0755 / 0644
+    // FILETIME : centaines de nanosecondes depuis 1601. Le produit depasse 2^53 ;
+    // l'erreur d'arrondi reste sous la microseconde, sans objet pour une date de fichier.
+    var ms = Number(f && f.mtime); if (!(ms > 0)) ms = 0;
+    var t = ms * 10000 + FPP_1970, haut = Math.floor(t / DEUX32);
+    v.setUint32(56, (t - haut * DEUX32) >>> 0, true);
+    v.setUint32(60, haut >>> 0, true);
+    v.setUint32(64, Math.floor(taille / DEUX32) >>> 0, true);
+    v.setUint32(68, taille >>> 0, true);
+    for (var i = 0; i < nom.length; i++) v.setUint16(72 + 2 * i, nom.charCodeAt(i), true);
+    return o;                                                // le reste du champ est deja nul : nom termine
+  }
+  // La liste complete : le nombre de fichiers, puis un descripteur par fichier.
+  function fppListe(fichiers){
+    var n = fichiers.length, o = new Uint8Array(4 + FPP.DESCRIPTEUR * n);
+    new DataView(o.buffer).setUint32(0, n, true);
+    for (var i = 0; i < n; i++) o.set(fppDescripteur(fichiers[i]), 4 + FPP.DESCRIPTEUR * i);
+    return o;
+  }
+  // L'inverse, pour une liste RECUE du pair. Leve si elle est mal formee, trop
+  // longue, ou si un nom n'est pas un chemin relatif propre.
+  function fppLire(octets){
+    if (!octets || octets.length < 4) throw fppErreur("liste de fichiers tronquee");
+    var v = new DataView(octets.buffer, octets.byteOffset, octets.byteLength), n = v.getUint32(0, true);
+    if (octets.length !== 4 + FPP.DESCRIPTEUR * n) throw fppErreur("liste de fichiers de longueur incoherente");
+    if (n > FPP.FICHIERS_MAX) throw fppErreur("trop de fichiers dans la liste");
+    var res = [];
+    for (var i = 0; i < n; i++){
+      var b = 4 + FPP.DESCRIPTEUR * i, drapeaux = v.getUint32(b, true), attributs = v.getUint32(b + 36, true);
+      var nom = "", fini = false;
+      for (var k = 0; k < FPP.NOM_UNITES; k++){
+        var u = v.getUint16(b + 72 + 2 * k, true);
+        if (u === 0){ fini = true; break; }
+        nom += String.fromCharCode(u);
+      }
+      if (!fini) throw fppErreur("nom de fichier non termine");
+      var chemin = fppCheminRecu(nom);
+      if (chemin === null) throw fppErreur("nom de fichier refuse");
+      var taille = v.getUint32(b + 64, true) * DEUX32 + v.getUint32(b + 68, true);
+      if (taille > Number.MAX_SAFE_INTEGER) throw fppErreur("taille de fichier inutilisable");
+      var t = v.getUint32(b + 60, true) * DEUX32 + v.getUint32(b + 56, true);
+      var mtime = ((drapeaux & FD_DATE) && t >= FPP_1970) ? Math.round((t - FPP_1970) / 10000) : 0;
+      res.push({ nom: chemin, taille: taille, dossier: !!(attributs & ATTR_DOSSIER), mtime: mtime, index: i });
+    }
+    return res;
+  }
+  // Une demande de contenu du pair, decodee. Les positions et longueurs sont des
+  // entiers NON signes transportes dans des champs signes.
+  //   -> { genre: "taille" | "plage", index, flux, debut, longueur } ou null
+  function fppDemande(r){
+    if (!r) return null;
+    var index = r.list_index | 0, flux = r.stream_id | 0;
+    if (index < 0) return null;
+    if ((r.dw_flags | 0) === 1) return { genre: "taille", index: index, flux: flux, debut: 0, longueur: 8 };
+    if ((r.dw_flags | 0) !== 2) return null;
+    return { genre: "plage", index: index, flux: flux,
+             debut: (r.n_position_high >>> 0) * DEUX32 + (r.n_position_low >>> 0),
+             longueur: Math.min(r.cb_requested >>> 0, FPP.PLAGE_MAX) };
+  }
+  // La reponse a une demande de taille : huit octets, petit-boutiste.
+  function fppTaille(n){
+    var o = new Uint8Array(8), v = new DataView(o.buffer);
+    v.setUint32(0, n >>> 0, true); v.setUint32(4, Math.floor(n / DEUX32) >>> 0, true);
+    return o;
+  }
+  // Notre propre demande de plage, telle que le pair l'attend.
+  function fppDemanderPlage(index, debut, longueur){
+    return { stream_id: index, list_index: index, dw_flags: 2,
+             n_position_low: debut % DEUX32, n_position_high: Math.floor(debut / DEUX32),
+             cb_requested: longueur, have_clip_data_id: false, clip_data_id: 0 };
+  }
+  // Le pair annonce-t-il le presse-papier de fichiers ? (PeerInfo.platform_additions, un objet JSON a plat.)
+  function fppDisponible(additions){
+    try { var a = typeof additions === "string" ? JSON.parse(additions || "{}") : additions; return !!(a && a.has_file_clipboard === true); }
+    catch (_) { return false; }
+  }
+  // La plateforme que l'on annonce au pair, d'apres celle du navigateur.
+  function fppPlateforme(p){
+    p = String(p == null ? "" : p).toLowerCase();
+    if (/iphone|ipad|ios/.test(p)) return "iOS";
+    if (/android/.test(p)) return "Android";
+    if (/mac|darwin/.test(p)) return "Mac OS";
+    if (/win/.test(p)) return "Windows";
+    return "Linux";
+  }
+
   window.RDLib = {
     v: 1,
     i18n: { creer: creerI18n, langue: langueDe, EN: EN, STATUTS: STATUTS },
@@ -1099,6 +1281,9 @@
       signature: signature
     },
     prefs:  { create: creerPrefs, OK: PREFS_OK },
-    recent: { create: creerRecent }
+    recent: { create: creerRecent },
+    fpp: { C: FPP, formats: fppFormats, idListe: fppIdListe, nomAnnonce: fppNomAnnonce, cheminRecu: fppCheminRecu,
+           nomLocal: fppNomLocal, descripteur: fppDescripteur, liste: fppListe, lire: fppLire, demande: fppDemande,
+           taille: fppTaille, demanderPlage: fppDemanderPlage, disponible: fppDisponible, plateforme: fppPlateforme }
   };
 })();

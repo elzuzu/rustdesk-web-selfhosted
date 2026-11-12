@@ -35,7 +35,7 @@ that was missing**: the original client wires up display and nothing else.
 | Keyboard | text, accents, non-US layouts, dead keys, AltGr characters, control keys |
 | PC ↔ Mac shortcuts | translated to the combination with the same effect (copy, word and line moves, Home/End, Alt+F4…), or sent raw for a remote terminal |
 | Clipboard | text, **images and rich text** both ways; a remote copy lands in the local clipboard by itself, and the local one can follow automatically (opt-in, Chromium) |
-| Files | remote panel: browse, upload, download, create, rename, delete |
+| Files | **copy here, paste there**: a file copied on your machine is pasted (`Ctrl+V` / `Cmd+V`) wherever the remote cursor is, as with the native client; a file copied on the remote machine downloads here in one click. Plus the remote panel: browse, upload, download, create, rename, delete |
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
 | Displays | a selector to switch between the remote machine's monitors, shown when it has more than one |
 | Remote actions | Ctrl+Alt+Del, lock, restart, mute remote audio, suspend clipboard, privacy mode, block local input |
@@ -265,17 +265,33 @@ browser: whether the peer writes its clipboard synchronously (the replay delay a
 is a guess), and what the peer does with `custom_image_quality` combined with a
 quality preset.
 
+### Copying and pasting files
+
+This is RustDesk's own file clipboard (`Cliprdr` messages), not a disguised transfer:
+nothing is read or sent until the application on the other side pastes.
+
+- **From your machine to the remote one.** Copy one or more files in Finder or
+  Explorer, then `Ctrl+V` / `Cmd+V` in the session: they land wherever the remote
+  cursor is (a Finder folder, the desktop…). The page announces them, replays the paste
+  keystroke, then serves the list and the content as the remote machine asks for them.
+- **From the remote machine to yours.** Copy files on the remote machine: a green
+  "File copied ⇩" button appears, even with the bar collapsed. One click downloads them.
+  Nothing is downloaded without that click — copying a file remotely does not fill your disk.
+- **Requirements.** The remote machine must announce it (`has_file_clipboard`, RustDesk
+  1.3.8 or newer, file transfer allowed on its side). To that end the page announces
+  version 1.3.9 when logging in; it used to announce none, and the remote machine treated
+  it as a very old client (no files, and a remote → local clipboard reduced to plain text).
+  Otherwise `Ctrl+V` falls back to uploading through the Files panel, as before.
+- **Limits.** Folders do not go through the clipboard (drop them on the image); a file
+  received from the remote machine is assembled in memory, 2 GiB at most.
+
 ### What will never be possible
 
-**Copying a file on the Mac and pasting it into your local file manager.** A
+**Pasting into your local file manager a file copied on the remote machine.** A
 browser may only write `text/plain`, `text/html` and `image/png` to the system
 clipboard; there is no path to `CF_HDROP` (Windows) or `NSFilenamesPboardType`
-(macOS). Chrome's web custom formats stay tab-to-tab. The other direction does
-work: a file copied in Finder does reach `clipboardData.files`, and `Ctrl+V`
-uploads it.
-
-Teleport, Guacamole and Kasm reached the same conclusion: none of them uses the
-clipboard for files; all open a side channel.
+(macOS). Chrome's web custom formats stay tab-to-tab. Hence the one-click download in
+that direction: it is the shortest path a browser allows.
 
 Console diagnostics: `rdFiles()`.
 

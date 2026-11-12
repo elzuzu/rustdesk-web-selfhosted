@@ -1956,6 +1956,58 @@ await test("flotte-contraste : texte >= 4,5:1 sur la page d'accueil et dans le d
   }
 });
 
+// ============================================================ presse-papier de fichiers
+enTete("Presse-papier de fichiers — vrai collage, vrais File, vrai telechargement");
+// Le pair annonce le presse-papier de fichiers dans peer_info (platform_additions) : c'est lui qui decide.
+const sessionFichiers = async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(() => { window.curConn._peerInfo.platform_additions = JSON.stringify({ has_file_clipboard: true });
+    window.onGlobalEvent(JSON.stringify({ name: "peer_info" })); window.__envoyes.length = 0; window.__touches.length = 0; window.__rdActive().focus(); });
+};
+const cliprdr = (p) => p.evaluate(() => window.__envoyes.filter((m) => m.cliprdr).map((m) => { const c = m.cliprdr, o = {};
+  for (const k of Object.keys(c)) { const v = c[k]; o[k] = {}; for (const kk of Object.keys(v)) o[k][kk] = v[kk] instanceof Uint8Array ? [...v[kk]] : v[kk]; } return o; }));
+
+await test("files-paste-local-to-remote : un fichier copie ici et colle dans la session est annonce, la frappe rejouee, puis servi par plages", async (p) => {
+  await sessionFichiers(p);
+  await p.evaluate(() => { const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([10, 11, 12, 13, 14, 15])], "notes.txt", { type: "text/plain", lastModified: 1700000000000 }));
+    document.activeElement.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); });
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.cliprdr && m.cliprdr.format_list), null, { timeout: 5000 });
+  assert.deepEqual((await cliprdr(p))[0].format_list.formats.map((f) => f.format), ["FileGroupDescriptorW", "FileContents"]);
+  // La frappe de collage part au poste distant (le pair est un Mac, le clavier du banc traduit : Cmd+V).
+  await p.waitForFunction(() => window.__touches.some(([n, v]) => n === "input_key" && JSON.parse(v).name === "v" && JSON.parse(v).down === "true"), null, { timeout: 5000 });
+  assert.equal(await p.evaluate(() => !!document.getElementById("rdfiles") && getComputedStyle(document.getElementById("rdfiles")).display !== "none"), false, "le panneau Fichiers ne s'ouvre pas");
+  // Le poste colle : liste, puis une plage du VRAI File.
+  await p.evaluate(() => { window.__envoyes.length = 0; window.__rdFppRecevoir({ cliprdr: { format_data_request: { requested_format_id: 49334 } } }); });
+  const liste = (await cliprdr(p))[0].format_data_response;
+  assert.equal(liste.msg_flags, 1); assert.equal(liste.format_data.length, 4 + 592);
+  assert.equal(String.fromCharCode(...liste.format_data.slice(4 + 72, 4 + 72 + 18).filter((_, i) => i % 2 === 0)), "notes.txt", "nom en UTF-16 au decalage 72");
+  await p.evaluate(() => { window.__envoyes.length = 0;
+    window.__rdFppRecevoir({ cliprdr: { file_contents_request: { stream_id: 0, list_index: 0, dw_flags: 2, n_position_low: 1, n_position_high: 0, cb_requested: 3 } } }); });
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.cliprdr && m.cliprdr.file_contents_response), null, { timeout: 5000 });
+  assert.deepEqual((await cliprdr(p))[0].file_contents_response, { msg_flags: 1, stream_id: 0, requested_data: [11, 12, 13] });
+});
+
+await test("files-copy-remote-to-local : des fichiers copies sur le poste -> un bouton, visible barre repliee ; un clic les telecharge", async (p) => {
+  await sessionFichiers(p);
+  // La liste que le pair enverrait, fabriquee par la meme bibliotheque (le format est verifie au banc du gabarit).
+  await p.evaluate(() => { window.__rdFppRecevoir({ cliprdr: { format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } } });
+    window.__rdFppRecevoir({ cliprdr: { format_data_response: { msg_flags: 1, format_data: window.RDLib.fpp.liste([{ nom: "photos\\plage.jpg", taille: 4, mtime: 1700000000000 }]) } } }); });
+  const b = p.locator('#rdbar .rdppbtn[data-kind="fichiers"]');
+  await b.waitFor({ state: "visible", timeout: 5000 });
+  assert.equal(await b.textContent(), "Fichier copié ⇩");
+  assert.equal(await p.evaluate(() => document.getElementById("rdbar").classList.contains("replie")), true, "barre repliee : le bouton se voit quand meme");
+  assert.equal((await cliprdr(p)).some((c) => c.file_contents_request), false, "rien n'est telecharge sans clic");
+  // Le clic : le vrai telechargement du navigateur, avec le contenu servi par le « pair ».
+  await p.evaluate(() => { const env = window.curConn._ws.sendMessage; window.curConn._ws.sendMessage = function (m) { env.call(this, m);
+    const r = m.cliprdr && m.cliprdr.file_contents_request;
+    if (r) setTimeout(() => window.__rdFppRecevoir({ cliprdr: { file_contents_response: { msg_flags: 1, stream_id: r.stream_id, requested_data: new Uint8Array([1, 2, 3, 4]).subarray(r.n_position_low, r.n_position_low + r.cb_requested) } } }), 0); }; });
+  const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 8000 }), b.click()]);
+  assert.equal(dl.suggestedFilename(), "plage.jpg", "sous son seul nom, jamais sous le chemin venu du pair");
+  const chemin = await dl.path();
+  assert.deepEqual([...fs.readFileSync(chemin)], [1, 2, 3, 4], "les octets recus, dans l'ordre");
+});
+
 // ---------------------------------------------------------------------- bilan
 await navigateur.close();
 serveur.close();

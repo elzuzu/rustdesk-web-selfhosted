@@ -32,6 +32,19 @@ la console présente** — une seule implémentation par fonction, et la console
 - **Calage de l'image** : la zone libre entre les barres (console) passe par le calage au pixel physique (page) ; la vue 1:1 reste.
 - **Limitation de débit** : 60 requêtes/min avec rafale de 100 (mesuré le 2026-09-15), au lieu de 20/min et 40.
 
+### Copier-coller de fichiers, comme avec le client natif
+- **De la machine locale vers le poste** : un fichier copié ici se colle (`Ctrl+V` / `Cmd+V`) là où se trouve le curseur du poste
+  distant. **Du poste vers la machine locale** : un fichier copié là-bas se télécharge ici d'un clic (un navigateur ne peut pas
+  déposer un fichier dans le presse-papier du système). C'est le presse-papier de fichiers de RustDesk (`Cliprdr`) ; le
+  téléversement par le panneau Fichiers ne reste qu'en repli.
+- **La page annonce une version (1.3.9), sa plateforme et l'option de fichiers à la connexion.** Elle n'annonçait aucune version :
+  le poste la traitait en client d'avant 1.2.0 — pas de presse-papier de fichiers, et un presse-papier distant → local réduit
+  au texte. Conséquences traitées : `CaptureDisplays` après un changement d'écran (sinon le poste capture les deux),
+  `TogglePrivacyMode` pour le mode confidentialité.
+- Format vérifié contre les tests du pair (RustDesk 1.5.3) : descripteur de 592 octets, dates, plages en entiers non signés.
+  Une liste reçue mal formée, trop longue ou dont un nom remonte l'arborescence est rejetée en entier.
+- Limites : pas de dossiers par le presse-papier ; 2 Gio par fichier reçu.
+
 ### Installation (révélé par un conteneur candidat monté à côté du site en service, le 2026-11-12)
 - **Installation neuve : la page répondait 403 à l'utilisateur connecté.** `setup.sh` passe en `umask 077` pour protéger `.env`
   et `nginx.conf` ; tout `html/` sortait donc en 700/600, illisible par les workers nginx (sur une mise à jour : les nouveaux
@@ -45,7 +58,7 @@ la console présente** — une seule implémentation par fonction, et la console
 - `verify.sh` rejoue la séquence de `setup.sh` sous `umask 077` et charge la page **avec** le cookie de session.
 
 ### Bancs de test
-- Gabarit 206 tests, navigateur 112 ; planchers de `verify.sh` relevés. Rejoué sans WebCodecs (`RD_SANS_VIDEODECODER=1`) : 108, et
+- Gabarit 216 tests, navigateur 114 ; planchers de `verify.sh` relevés. Rejoué sans WebCodecs (`RD_SANS_VIDEODECODER=1`) : 108, et
   4 tests propres à WebCodecs ignorés et annoncés.
 - Le banc navigateur ne dépend plus de la machine : clavier PC forcé dans les deux tests de raccourcis (ils échouaient sur un Mac),
   et Chrome est lancé sans couper `RenderDocument` (Playwright 1.56.1 la coupe ; sous Chrome 157 sans tête, tout plein écran

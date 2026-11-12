@@ -35,7 +35,7 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Clavier | texte, accents, dispositions non-US, touches mortes, caractères AltGr, touches de contrôle |
 | Raccourcis PC ↔ Mac | traduits vers la combinaison de même effet (copier, déplacements par mot et par ligne, Début/Fin, Alt+F4…), ou transmis bruts pour un terminal distant |
 | Presse-papier | texte, **images et texte enrichi** dans les deux sens ; une copie distante arrive seule dans le presse-papier local, et le local peut suivre automatiquement (sur accord, Chromium) |
-| Fichiers | panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
+| Fichiers | **copier ici, coller là-bas** : un fichier copié sur ta machine se colle (`Ctrl+V` / `Cmd+V`) là où se trouve le curseur du poste distant, comme avec le client natif ; un fichier copié sur le poste se télécharge ici d'un clic. Et le panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
 | Écrans | un sélecteur pour passer d'un moniteur du poste distant à l'autre, affiché s'il en a plusieurs |
 | Actions distantes | Ctrl+Alt+Suppr, verrouillage, redémarrage, son distant coupé, presse-papier suspendu, mode confidentialité, blocage de la saisie locale |
@@ -271,17 +271,34 @@ navigateur ne peut pas trancher : si le pair écrit son presse-papier de façon
 synchrone (le délai de rejeu ci-dessus est une supposition), et ce qu'il fait de
 `custom_image_quality` combiné à un préréglage de qualité.
 
+### Copier-coller de fichiers
+
+C'est le presse-papier de fichiers de RustDesk lui-même (messages `Cliprdr`), pas un
+transfert déguisé : rien n'est lu ni envoyé tant que l'application d'en face ne colle pas.
+
+- **De ta machine vers le poste distant.** Copie un ou plusieurs fichiers dans le
+  Finder ou l'Explorateur, puis `Ctrl+V` / `Cmd+V` dans la session : ils arrivent là
+  où se trouve le curseur du poste (dossier du Finder, bureau…). La page les annonce,
+  rejoue la frappe de collage, puis sert la liste et le contenu à la demande du poste.
+- **Du poste distant vers ta machine.** Copie des fichiers sur le poste : un bouton
+  vert « Fichier copié ⇩ » apparaît, même barre repliée. Un clic les télécharge. Rien
+  n'est téléchargé sans ce clic — copier un fichier sur le poste ne remplit pas ton disque.
+- **Conditions.** Le poste doit l'annoncer (`has_file_clipboard`, RustDesk 1.3.8 ou plus
+  récent, transfert de fichiers autorisé chez lui). La page annonce pour cela la version
+  1.3.9 à la connexion ; avant, elle n'en annonçait aucune, et le poste la traitait en très
+  vieux client (pas de fichiers, et un presse-papier distant → local réduit au texte).
+  Sinon `Ctrl+V` retombe sur le téléversement par le panneau Fichiers, comme avant.
+- **Limites.** Les dossiers ne passent pas par le presse-papier (glisse-les sur l'image) ;
+  un fichier reçu du poste est assemblé en mémoire, 2 Gio au plus.
+
 ### Ce qui ne sera jamais possible
 
-**Copier un fichier sur le Mac et le coller dans le Finder local.** Un navigateur
+**Coller dans le Finder local un fichier copié sur le poste distant.** Un navigateur
 ne peut écrire dans le presse-papier du système que `text/plain`, `text/html` et
 `image/png` ; il n'existe aucun chemin vers `CF_HDROP` (Windows) ni
 `NSFilenamesPboardType` (macOS). Les *web custom formats* de Chrome restent
-d'onglet à onglet. Le sens inverse, lui, fonctionne : un fichier copié dans le
-Finder arrive bien dans `clipboardData.files`, et `Ctrl+V` le téléverse.
-
-C'est aussi la conclusion de Teleport, Guacamole et Kasm : aucun n'utilise le
-presse-papier pour les fichiers, tous ouvrent un canal latéral.
+d'onglet à onglet. D'où le téléchargement d'un clic dans ce sens-là : c'est le plus
+court chemin qu'un navigateur autorise.
 
 Diagnostic dans la console : `rdFiles()`.
 
