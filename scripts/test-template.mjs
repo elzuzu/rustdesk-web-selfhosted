@@ -1944,11 +1944,14 @@ test("audit B20 : un collage d'image n'ouvre PAS en plus le televersement de fic
   await m.collerImage(new Blob([new Uint8Array(100)], { type: "image/png" }));
   assert.equal(images(m).length, 1);
   assert.equal(m.depotsFichiers.n, 0, "la capture d'ecran partait AUSSI au televersement avant c110499");
-  // Un fichier qui n'est pas une image, lui, va bien au televersement.
+  // Un fichier qui n'est pas une image ne part pas en image — et n'ouvre plus le panneau Fichiers non plus :
+  // il passe par le presse-papier de fichiers, ou le poste dit pourquoi il ne le prend pas (tests « fpp collage »).
   let evite = false; const fichier = new Blob([new Uint8Array(10)], { type: "application/pdf" });
   m.ecouteurs.paste.forEach((f) => f({ preventDefault() { evite = true; },
     clipboardData: { items: [{ kind: "file", type: "application/pdf", getAsFile: () => fichier }], files: [fichier], getData: () => "" } }));
-  assert.equal(m.depotsFichiers.n, 1);
+  assert.equal(evite, true, "le collage est pris en charge par la page");
+  assert.equal(images(m).length, 1, "aucune image de plus");
+  assert.equal(m.depotsFichiers.n, 0, "un collage n'ouvre jamais le panneau Fichiers");
 });
 
 test("audit C23 : le vrai next() de la liaison passe par ppFiltrer (le crochet est bien installe)", async () => {
@@ -3674,14 +3677,22 @@ test("fpp demandes : taille, plage en entiers NON signes, plafond ; annonce : il
   assert.deepEqual(plat(fpp.formats()), [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }]);
   assert.equal(fpp.idListe([{ id: 5, format: "FileContents" }, { id: 9, format: "FileGroupDescriptorW" }]), 9);
   for (const f of [[{ id: 9, format: "FileGroupDescriptorW" }], [{ id: 5, format: "FileContents" }], [], null, [{ id: 1, format: "CF_TEXT" }]]) assert.equal(fpp.idListe(f), null);
-  assert.equal(fpp.disponible('{"has_file_clipboard":true}'), true);
-  for (const a of ['{"has_file_clipboard":false}', "{}", "", undefined, "pas du json", '{"has_file_clipboard":"true"}']) assert.equal(fpp.disponible(a), false, String(a));
+  // Ce que le pair annonce : vrai, faux, ou rien du tout.
+  assert.deepEqual(['{"has_file_clipboard":true}', '{"has_file_clipboard":false}', "{}", "", undefined, "pas du json", '{"has_file_clipboard":"true"}', { has_file_clipboard: false }].map(fpp.annonce),
+    [true, false, null, null, null, null, null, false]);
+  // « vrai » suffit, sur tout systeme.
+  for (const p of ["Windows", "Mac OS", "Linux", "", undefined]) assert.equal(fpp.disponible('{"has_file_clipboard":true}', p), true, String(p));
+  // « faux » d'un pair WINDOWS : il ne dit « vrai » qu'a un client Windows, mais il prend les fichiers de tous (sa propre source).
+  assert.equal(fpp.disponible('{"has_file_clipboard":false,"is_installed":true}', "Windows"), true);
+  // « faux » ailleurs : les messages seraient ignores. Et sans annonce, jamais.
+  for (const p of ["Mac OS", "Linux", "Android", "", undefined, "windows"]) assert.equal(fpp.disponible('{"has_file_clipboard":false}', p), false, String(p));
+  for (const a of ["{}", "", undefined, "pas du json", '{"has_file_clipboard":"true"}']) assert.equal(fpp.disponible(a, "Windows"), false, String(a));
 });
 
 // Une session dont le pair annonce (ou non) le presse-papier de fichiers.
-async function montageFichiers({ dispo = true, plateforme = "Mac OS" } = {}) {
+async function montageFichiers({ dispo = true, plateforme = "Mac OS", additions } = {}) {
   const m = await montageSortant({ plateforme });
-  m.w.curConn._peerInfo.platform_additions = JSON.stringify(dispo ? { has_file_clipboard: true } : {});
+  m.w.curConn._peerInfo.platform_additions = JSON.stringify(additions !== undefined ? additions : dispo ? { has_file_clipboard: true } : {});
   m.peerInfo(); await m.vider();
   m.envoyes.length = 0; m.touches.length = 0;
   const dejaDits = m.toasts().length;                       // le debut de session a ses propres messages (ou sont les reglages…)
@@ -3782,12 +3793,39 @@ test("fpp collage : des fichiers colles ICI sont annonces, la frappe est rejouee
   assert.deepEqual(m.cliprdr().map((c) => [c.file_contents_response.msg_flags, c.file_contents_response.stream_id]), [[2, 9], [2, 4]]);
 });
 
-test("fpp collage : pair sans presse-papier de fichiers -> panneau Fichiers comme avant ; dossiers signales ; image toujours prioritaire", async () => {
-  const sans = await montageFichiers({ dispo: false });
-  await sans.coller([fichierTest("a.txt", [1])]);
-  assert.equal(sans.cliprdr().length, 0); assert.equal(sans.depotsFichiers.n, 1, "repli : televersement");
-  await sans.recevoir({ format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } });
-  assert.equal(sans.cliprdr().length, 0, "un pair qui n'a rien annonce n'est pas ecoute");
+test("fpp poste Windows : il repond « faux » a un client qui n'est pas Windows, et prend pourtant les fichiers — dans les deux sens", async () => {
+  // Le cas d'un Mac (ou d'un Linux) qui pilote un PC : c'etait le repli sur le panneau Fichiers.
+  const m = await montageFichiers({ plateforme: "Windows", additions: { has_file_clipboard: false, is_installed: true } });
+  await m.coller([fichierTest("a.txt", [1, 2, 3])]);
+  assert.deepEqual(m.cliprdr().map((c) => Object.keys(c)[0]), ["format_list"], "les fichiers sont annonces au poste");
+  assert.equal(m.rejeux().length, 1, "et la frappe de collage rejouee");
+  assert.equal(m.depotsFichiers.n, 0, "le panneau Fichiers ne s'ouvre pas");
+  assert.deepEqual(m.messages(), [], "aucun refus a l'ecran");
+  // L'Explorateur colle : liste, puis taille — Windows nomme ses flux a sa facon, on lui rend son identifiant.
+  m.envoyes.length = 0;
+  await m.recevoir({ format_data_request: { requested_format_id: 49334 } });
+  await m.recevoir({ file_contents_request: { stream_id: 305419896, list_index: 0, dw_flags: 1, have_clip_data_id: false, clip_data_id: 0 } });
+  assert.equal(m.cliprdr()[0].format_data_response.msg_flags, 1);
+  assert.deepEqual([m.cliprdr()[1].file_contents_response.stream_id, [...octetsDe(m.cliprdr()[1].file_contents_response.requested_data)]], [305419896, [3, 0, 0, 0, 0, 0, 0, 0]]);
+  // Sens inverse : Windows annonce ses deux formats sous des identifiants a LUI, attribues a l'execution.
+  m.envoyes.length = 0;
+  await m.recevoir({ format_list: { formats: [{ id: 49161, format: "FileGroupDescriptorW" }, { id: 49158, format: "FileContents" }] } });
+  assert.deepEqual(plat(m.cliprdr()), [{ format_list_response: { msg_flags: 1 } }, { format_data_request: { requested_format_id: 49161 } }],
+    "la liste est demandee sous l'identifiant du poste, pas sous le notre");
+});
+
+test("fpp collage : pair sans presse-papier de fichiers -> un message a l'ecran, JAMAIS le panneau Fichiers ; dossiers signales ; image toujours prioritaire", async () => {
+  // Rien d'annonce (pair ancien, mobile), ou « faux » ailleurs que sous Windows : meme refus, dit avec ce que le poste est.
+  for (const [plateforme, additions] of [["Linux", {}], ["Mac OS", { has_file_clipboard: false }], ["Android", {}]]) {
+    const sans = await montageFichiers({ plateforme, additions });
+    await sans.coller([fichierTest("a.txt", [1])]);
+    assert.equal(sans.cliprdr().length, 0, plateforme);
+    assert.equal(sans.depotsFichiers.n, 0, plateforme + " : un collage n'ouvre plus le panneau Fichiers");
+    assert.equal(sans.rejeux().length, 0, plateforme + " : aucune frappe rejouee, le presse-papier du poste n'a pas change");
+    assert.deepEqual(sans.messages(), [`Ce poste (${plateforme}, RustDesk 1.4.2) ne prend pas les fichiers par le presse-papier. Le panneau Fichiers reste disponible.`]);
+    await sans.recevoir({ format_list: { formats: [{ id: 49334, format: "FileGroupDescriptorW" }, { id: 49267, format: "FileContents" }] } });
+    assert.equal(sans.cliprdr().length, 0, plateforme + " : un pair qui n'a rien annonce n'est pas ecoute");
+  }
   const m = await montageFichiers();
   await m.coller([fichierTest("a.txt", [1])], 1);
   assert.equal(m.cliprdr().length, 1);

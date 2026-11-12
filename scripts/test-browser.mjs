@@ -1988,6 +1988,34 @@ await test("files-paste-local-to-remote : un fichier copie ici et colle dans la 
   assert.deepEqual((await cliprdr(p))[0].file_contents_response, { msg_flags: 1, stream_id: 0, requested_data: [11, 12, 13] });
 });
 
+// Le retour d'Alex du 2026-11-12 : un collage de fichiers ouvrait le panneau « Fichiers distants ». Deux causes, deux controles.
+await test("files-paste-windows-et-refus : un PC Windows prend les fichiers bien qu'il reponde « faux » ; ailleurs, un message — jamais le panneau Fichiers", async (p) => {
+  await sessionSimulee(p);
+  const poste = (platform, additions) => p.evaluate(([pf, ad]) => { document.querySelectorAll(".rdtoast").forEach((t) => t.remove());
+    window.curConn._peerInfo.platform = pf; window.curConn._peerInfo.platform_additions = JSON.stringify(ad);
+    window.onGlobalEvent(JSON.stringify({ name: "peer_info" })); window.__envoyes.length = 0; window.__touches.length = 0; window.__rdActive().focus(); }, [platform, additions]);
+  const coller = () => p.evaluate(() => { const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([1, 2, 3])], "notes.txt", { type: "text/plain", lastModified: 1700000000000 }));
+    document.activeElement.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); });
+  const panneau = () => p.evaluate(() => { const f = document.getElementById("rdfiles"); return !!f && getComputedStyle(f).display !== "none"; });
+  const refus = () => p.evaluate(() => [...document.querySelectorAll(".rdtoast")].map((t) => t.textContent).filter((t) => /presse-papier/.test(t)));
+  // Un PC Windows repond has_file_clipboard:false a un client qui n'est pas Windows — et accepte quand meme ses fichiers.
+  await poste("Windows", { has_file_clipboard: false, is_installed: true });
+  await coller();
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.cliprdr && m.cliprdr.format_list), null, { timeout: 5000 });
+  await p.waitForFunction(() => window.__touches.some(([n, v]) => n === "input_key" && JSON.parse(v).name === "v" && JSON.parse(v).down === "true"), null, { timeout: 5000 });
+  assert.equal(await panneau(), false, "PC Windows : le panneau Fichiers ne s'ouvre pas");
+  assert.deepEqual(await refus(), [], "PC Windows : aucun refus");
+  // Un poste qui n'annonce rien : on le dit, avec ce qu'il est, et rien ne part ni ne s'ouvre.
+  await poste("Linux", {});
+  await coller();
+  await p.waitForFunction(() => [...document.querySelectorAll(".rdtoast")].some((t) => /ne prend pas les fichiers par le presse-papier/.test(t.textContent)), null, { timeout: 5000 });
+  assert.deepEqual(await refus(), ["Ce poste (Linux, RustDesk 1.4.2) ne prend pas les fichiers par le presse-papier. Le panneau Fichiers reste disponible."]);
+  assert.equal(await panneau(), false, "le panneau Fichiers ne s'ouvre pas non plus");
+  assert.equal((await cliprdr(p)).length, 0, "rien n'est annonce a un poste qui n'ecoute pas");
+  assert.equal(await p.evaluate(() => window.__touches.filter(([n]) => n === "input_key").length), 0, "aucune frappe rejouee");
+});
+
 await test("files-copy-remote-to-local : des fichiers copies sur le poste -> un bouton, visible barre repliee ; un clic les telecharge", async (p) => {
   await sessionFichiers(p);
   // La liste que le pair enverrait, fabriquee par la meme bibliotheque (le format est verifie au banc du gabarit).

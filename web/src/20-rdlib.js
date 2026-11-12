@@ -869,6 +869,7 @@
     "{0} fichiers collés sur le poste distant.": "{0} files pasted on the remote machine.",
     "Lecture impossible : {0}": "Cannot read: {0}",
     "Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image.": "Folders do not go through the clipboard: drop them on the image.",
+    "Ce poste ({0}, RustDesk {1}) ne prend pas les fichiers par le presse-papier. Le panneau Fichiers reste disponible.": "This machine ({0}, RustDesk {1}) does not take files through the clipboard. The Files panel remains available.",
     "le poste distant ne répond pas": "the remote machine does not answer",
     "le poste distant a refusé la lecture": "the remote machine refused the read",
     "le presse-papier du poste distant a changé": "the remote clipboard has changed",
@@ -1242,10 +1243,30 @@
              n_position_low: debut % DEUX32, n_position_high: Math.floor(debut / DEUX32),
              cb_requested: longueur, have_clip_data_id: false, clip_data_id: 0 };
   }
-  // Le pair annonce-t-il le presse-papier de fichiers ? (PeerInfo.platform_additions, un objet JSON a plat.)
-  function fppDisponible(additions){
-    try { var a = typeof additions === "string" ? JSON.parse(additions || "{}") : additions; return !!(a && a.has_file_clipboard === true); }
-    catch (_) { return false; }
+  // Ce que le pair dit du presse-papier de fichiers dans PeerInfo.platform_additions
+  // (un objet JSON a plat) : true, false, ou null s'il n'en parle pas du tout.
+  function fppAnnonce(additions){
+    try {
+      var a = typeof additions === "string" ? JSON.parse(additions || "{}") : additions;
+      if (!a || typeof a !== "object" || typeof a.has_file_clipboard !== "boolean") return null;
+      return a.has_file_clipboard;
+    } catch (_) { return null; }
+  }
+  // Peut-on s'en servir avec ce pair ? Verifie dans sa source (1.3.8 a 1.5.3) :
+  //   - true  : oui, quel que soit son systeme ;
+  //   - false : un pair WINDOWS ne repond « vrai » qu'a un client lui-meme
+  //             Windows (connection.rs, is_both_windows), mais il remet tout
+  //             message Cliprdr a son gestionnaire de connexions sans regarder
+  //             qui l'envoie — c'est ainsi qu'il sert les clients Linux et
+  //             macOS, et le client natif ne teste d'ailleurs que la PRESENCE
+  //             de la cle (toolbar.dart). Ailleurs, « faux » veut dire que les
+  //             messages seront ignores ;
+  //   - rien  : le pair ne connait pas ce presse-papier (ancien, mobile, ou
+  //             compile sans).
+  function fppDisponible(additions, plateformePair){
+    var a = fppAnnonce(additions);
+    if (a === true) return true;
+    return a === false && String(plateformePair == null ? "" : plateformePair) === "Windows";
   }
   // La plateforme que l'on annonce au pair, d'apres celle du navigateur.
   function fppPlateforme(p){
@@ -1284,6 +1305,7 @@
     recent: { create: creerRecent },
     fpp: { C: FPP, formats: fppFormats, idListe: fppIdListe, nomAnnonce: fppNomAnnonce, cheminRecu: fppCheminRecu,
            nomLocal: fppNomLocal, descripteur: fppDescripteur, liste: fppListe, lire: fppLire, demande: fppDemande,
-           taille: fppTaille, demanderPlage: fppDemanderPlage, disponible: fppDisponible, plateforme: fppPlateforme }
+           taille: fppTaille, demanderPlage: fppDemanderPlage, annonce: fppAnnonce, disponible: fppDisponible,
+           plateforme: fppPlateforme }
   };
 })();

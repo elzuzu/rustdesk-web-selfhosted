@@ -35,8 +35,13 @@ la console présente** — une seule implémentation par fonction, et la console
 ### Copier-coller de fichiers, comme avec le client natif
 - **De la machine locale vers le poste** : un fichier copié ici se colle (`Ctrl+V` / `Cmd+V`) là où se trouve le curseur du poste
   distant. **Du poste vers la machine locale** : un fichier copié là-bas se télécharge ici d'un clic (un navigateur ne peut pas
-  déposer un fichier dans le presse-papier du système). C'est le presse-papier de fichiers de RustDesk (`Cliprdr`) ; le
-  téléversement par le panneau Fichiers ne reste qu'en repli.
+  déposer un fichier dans le presse-papier du système). C'est le presse-papier de fichiers de RustDesk (`Cliprdr`).
+- **Un collage n'ouvre plus jamais le panneau Fichiers.** Si le poste ne connaît pas ce presse-papier, la page le dit à l'écran
+  (système et version du poste) et s'arrête là ; le panneau reste accessible par son bouton.
+- **Poste Windows piloté depuis un Mac ou un Linux.** Un PC répond `has_file_clipboard: false` à un client qui n'est pas sous
+  Windows, mais accepte ses fichiers (vérifié dans sa source, 1.3.8 à 1.5.3). La page exigeait « vrai » et retombait sur le
+  panneau ; elle fait maintenant comme le client natif. Une ligne `[fichiers] …` en console dit, à chaque session, le système
+  du poste, sa version et ce qu'il annonce.
 - **La page annonce une version (1.3.9), sa plateforme et l'option de fichiers à la connexion.** Elle n'annonçait aucune version :
   le poste la traitait en client d'avant 1.2.0 — pas de presse-papier de fichiers, et un presse-papier distant → local réduit
   au texte. Conséquences traitées : `CaptureDisplays` après un changement d'écran (sinon le poste capture les deux),

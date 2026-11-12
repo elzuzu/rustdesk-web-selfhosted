@@ -1402,7 +1402,7 @@
   // copies sur le poste sont donc recuperes d'un clic, en telechargement.
   var VERSION_ANNONCEE = "1.3.9";
   var FPP = RDLib.fpp.C;
-  var fpp = { dispo: false, sortants: null, annonce: null, entrants: null, attente: null, enCours: false };
+  var fpp = { dispo: false, poste: "", sortants: null, annonce: null, entrants: null, attente: null, enCours: false };
 
   function annoncerClient(c){
     if (!c || typeof c !== "object" || c.__rdAnnonce || typeof c._sendLoginMessage !== "function") return;
@@ -1464,11 +1464,22 @@
     var ws = pi.windows_sessions;
     if (ws && ws.sessions && ws.sessions.length > 1 && rdSend({ misc: { selected_sid: ws.current_sid >>> 0 } }))
       console.log("[session] " + ws.sessions.length + " sessions Windows proposees : la session courante est gardee");
-    fpp.dispo = RDLib.fpp.disponible(pi.platform_additions);
+    var annonce = RDLib.fpp.annonce(pi.platform_additions);
+    fpp.dispo = RDLib.fpp.disponible(pi.platform_additions, pi.platform);
+    fpp.poste = [String(pi.platform || "?"), String(pi.version || "?")];
     fpp.sortants = null; fpp.attente = null; fpp.enCours = false;
     fppOublierEntrants();
-    console.log("[fichiers] presse-papier de fichiers " + (fpp.dispo ? "disponible"
-      : "indisponible sur ce poste (le panneau Fichiers reste le seul chemin)"));
+    // Ce que le poste a dit, en clair : c'est la premiere chose a lire quand un
+    // collage de fichiers ne donne rien.
+    console.log("[fichiers] presse-papier de fichiers " + (fpp.dispo ? "disponible" : "INDISPONIBLE")
+      + " — poste " + fpp.poste[0] + ", RustDesk " + fpp.poste[1] + ", annonce du poste : "
+      + (annonce === null ? "aucune" : String(annonce)));
+  }
+  // Pourquoi des fichiers colles ne partent pas : dit a l'ecran, sans ouvrir
+  // quoi que ce soit d'autre.
+  function fppRefus(){
+    return T("Ce poste ({0}, RustDesk {1}) ne prend pas les fichiers par le presse-papier. Le panneau Fichiers reste disponible.",
+             fpp.poste ? fpp.poste[0] : "?", fpp.poste ? fpp.poste[1] : "?");
   }
 
   // ---- sens local -> distant : des fichiers colles ICI.
@@ -1631,6 +1642,7 @@
       fppEnvoyer({ format_data_request: { requested_format_id: id } });
     } else if (cl.format_data_request){
       // Le poste colle : il demande la liste de ce que nous avons annonce.
+      console.log("[fichiers] le poste distant colle : il demande la liste (" + (fpp.sortants ? fpp.sortants.length : 0) + " fichier(s))");
       if (fpp.sortants && fpp.sortants.length)
         fppEnvoyer({ format_data_response: { msg_flags: FPP.OK, format_data: RDLib.fpp.liste(fpp.sortants) } });
       else fppEnvoyer({ format_data_response: { msg_flags: FPP.ECHEC, format_data: new Uint8Array(0) } });
@@ -1797,9 +1809,10 @@
 
       // Un fichier copie dans le Finder ou l'Explorateur arrive ici sous forme
       // de File : le presse-papier n'en porte qu'une POIGNEE, les octets n'etant
-      // lus qu'a la demande. Quand le poste distant sait le faire, il est COLLE
-      // la-bas, la ou se trouve son curseur, comme avec le client natif. Sinon
-      // (pair ancien, option refusee), il part par le panneau Fichiers.
+      // lus qu'a la demande. Il est COLLE sur le poste distant, la ou se trouve
+      // son curseur, comme avec le client natif. Un collage n'ouvre JAMAIS le
+      // panneau Fichiers : si le poste ne connait pas ce presse-papier, on le
+      // dit a l'ecran, avec ce qu'il a annonce, et rien d'autre ne se passe.
       if (cd.files && cd.files.length){
         var fichiers = [], dossiers = 0;
         for (var k = 0; k < items.length; k++){
@@ -1811,15 +1824,14 @@
           if (fk) fichiers.push(fk);
         }
         if (!fichiers.length && !dossiers) fichiers = Array.prototype.slice.call(cd.files);
-        if (fichiers.length && fppColler(fichiers, function(){ rejouerCollage(0, 250); })){
-          if (dossiers) notifier(T("Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image."), "erreur");
+        if (!fpp.dispo){
+          console.log("[fichiers] " + cd.files.length + " fichier(s) colle(s), mais le poste ne les prend pas par le presse-papier");
+          notifier(fppRefus(), "erreur");
           return;
         }
-        if (window.RDFT){
-          console.log("[presse-papier] "+cd.files.length+" fichier(s) — televersement");
-          window.RDFT.accepterDepot(cd);
-          return;
-        }
+        if (fichiers.length) fppColler(fichiers, function(){ rejouerCollage(0, 250); });
+        if (dossiers) notifier(T("Les dossiers ne passent pas par le presse-papier : glisse-les sur l'image."), "erreur");
+        return;
       }
       var t="", h="";
       try{ t=cd.getData("text/plain")||""; }catch(_){}

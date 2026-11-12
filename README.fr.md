@@ -283,11 +283,19 @@ transfert déguisé : rien n'est lu ni envoyé tant que l'application d'en face 
 - **Du poste distant vers ta machine.** Copie des fichiers sur le poste : un bouton
   vert « Fichier copié ⇩ » apparaît, même barre repliée. Un clic les télécharge. Rien
   n'est téléchargé sans ce clic — copier un fichier sur le poste ne remplit pas ton disque.
-- **Conditions.** Le poste doit l'annoncer (`has_file_clipboard`, RustDesk 1.3.8 ou plus
-  récent, transfert de fichiers autorisé chez lui). La page annonce pour cela la version
-  1.3.9 à la connexion ; avant, elle n'en annonçait aucune, et le poste la traitait en très
-  vieux client (pas de fichiers, et un presse-papier distant → local réduit au texte).
-  Sinon `Ctrl+V` retombe sur le téléversement par le panneau Fichiers, comme avant.
+- **Conditions.** Le poste doit connaître ce presse-papier (`has_file_clipboard` dans ce
+  qu'il annonce, RustDesk 1.3.8 ou plus récent sous macOS et Linux, transfert de fichiers
+  autorisé chez lui). La page annonce pour cela la version 1.3.9 à la connexion ; avant,
+  elle n'en annonçait aucune, et le poste la traitait en très vieux client (pas de
+  fichiers, et un presse-papier distant → local réduit au texte).
+- **Poste Windows.** Un PC répond `has_file_clipboard: false` à tout client qui n'est pas
+  lui-même sous Windows — donc à un navigateur sur Mac ou Linux — tout en acceptant ses
+  fichiers : la page s'en sert quand même, comme le client natif, qui ne regarde que la
+  présence de l'annonce.
+- **Un collage n'ouvre jamais le panneau Fichiers.** Si le poste ne connaît pas ce
+  presse-papier, la page le dit à l'écran avec ce qu'il est (système, version) et rien
+  d'autre ne se passe. La console du navigateur garde la ligne `[fichiers] presse-papier
+  de fichiers …` écrite au début de chaque session : système, version et annonce du poste.
 - **Limites.** Les dossiers ne passent pas par le presse-papier (glisse-les sur l'image) ;
   un fichier reçu du poste est assemblé en mémoire, 2 Gio au plus.
 

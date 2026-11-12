@@ -277,11 +277,19 @@ nothing is read or sent until the application on the other side pastes.
 - **From the remote machine to yours.** Copy files on the remote machine: a green
   "File copied ⇩" button appears, even with the bar collapsed. One click downloads them.
   Nothing is downloaded without that click — copying a file remotely does not fill your disk.
-- **Requirements.** The remote machine must announce it (`has_file_clipboard`, RustDesk
-  1.3.8 or newer, file transfer allowed on its side). To that end the page announces
-  version 1.3.9 when logging in; it used to announce none, and the remote machine treated
-  it as a very old client (no files, and a remote → local clipboard reduced to plain text).
-  Otherwise `Ctrl+V` falls back to uploading through the Files panel, as before.
+- **Requirements.** The remote machine must know this clipboard (`has_file_clipboard` in
+  what it announces, RustDesk 1.3.8 or newer on macOS and Linux, file transfer allowed on
+  its side). To that end the page announces version 1.3.9 when logging in; it used to
+  announce none, and the remote machine treated it as a very old client (no files, and a
+  remote → local clipboard reduced to plain text).
+- **Windows machines.** A PC answers `has_file_clipboard: false` to any client that is not
+  itself on Windows — hence to a browser on a Mac or on Linux — while still accepting its
+  files: the page uses it anyway, like the native client, which only looks at whether the
+  announcement is there.
+- **Pasting never opens the Files panel.** If the remote machine does not know this
+  clipboard, the page says so on screen, naming what the machine is (system, version), and
+  nothing else happens. The browser console keeps the `[fichiers] presse-papier de
+  fichiers …` line written when each session starts: system, version and announcement.
 - **Limits.** Folders do not go through the clipboard (drop them on the image); a file
   received from the remote machine is assembled in memory, 2 GiB at most.
 
