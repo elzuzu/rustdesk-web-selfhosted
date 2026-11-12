@@ -130,3 +130,13 @@ for f in libopus.js libopus.wasm yuv.js yuv.wasm; do
   [ -f "$D/../../$f" ] && cp -f "$D/../../$f" "$D/"
 done
 echo "  workers copies dans js/dist/"
+
+# Nos propres fichiers (icone, manifeste d'application). Ils sont aussi copies
+# par extract-assets.sh — mais setup.sh SAUTE l'extraction quand html/ existe
+# deja : sur un deploiement en place, une mise a jour ne les aurait jamais
+# apportes, et le manifeste aurait ete servi… par la page d'accueil.
+RACINE="$(cd "$(dirname "$0")/.." && pwd)"
+for f in favicon.svg manifest.json icon-192.png icon-512.png; do
+  [ -f "$RACINE/web/$f" ] && cp -f "$RACINE/web/$f" "$RACINE/html/"
+done
+echo "  fichiers de la page copies dans html/"

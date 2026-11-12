@@ -2599,6 +2599,9 @@ test("manifeste : la page est installable, et rien n'y pointe hors du deploiemen
   assert.match(html, /<link rel="manifest" href="manifest\.json" crossorigin="use-credentials">/);
   const extraction = lire(path.join(RACINE, "scripts", "extract-assets.sh"));
   for (const f of ["manifest.json", "icon-192.png", "icon-512.png"]) assert.ok(extraction.includes(f), f + " n'est pas copie dans html/");
+  // setup.sh saute l'extraction quand html/ existe : une MISE A JOUR ne passe que par patch-assets.sh.
+  const correctifs = lire(path.join(RACINE, "scripts", "patch-assets.sh"));
+  for (const f of ["manifest.json", "icon-192.png", "icon-512.png"]) assert.ok(correctifs.includes(f), f + " n'est pas copie lors d'une mise a jour");
 });
 
 // ====================================================================
