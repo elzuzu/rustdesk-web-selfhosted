@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RustDesk</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+<meta name="theme-color" content="#0d0f12">
+
+<script>
+//@inclure 00-stockage.js
+</script>
+
+<style>
+/*@inclure style.css*/
+</style>
+<link rel="stylesheet" href="rd-console.css">
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+//@inclure 10-diagnostic.js
+</script>
+
+<script>
+//@inclure 20-rdlib.js
+</script>
+
+<script src="ogvjs-1.8.6/ogv.js"></script>
+<script src="yuv-canvas-1.2.6.js"></script>
+<script type="module" crossorigin src="js/dist/index.js"></script>
+
+<script>
+//@inclure 30-session.js
+</script>
+
+<script>
+//@inclure 40-fichiers.js
+</script>
+<script defer src="rd-console.js"></script>
+<link rel="modulepreload" href="js/dist/vendor.js">
+</body>
+</html>

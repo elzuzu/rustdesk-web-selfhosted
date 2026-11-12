@@ -27,23 +27,33 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 
 | | |
 |---|---|
-| Vidéo | H265 **matériel** des deux côtés via WebCodecs, repli VP9 puis logiciel |
-| Souris | déplacement, clics gauche/droit, molette, coordonnées mises à l'échelle |
-| Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
-| `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
-| Presse-papier | texte dans les deux sens ; **images et texte enrichi** aussi, sur Chromium |
+| Vidéo | H265 ou H264 **matériel** des deux côtés via WebCodecs, puis AV1, VP9, et le logiciel en dernier recours ; couleurs exactes, affichage au pixel près quand les tailles le permettent |
+| Souris | déplacement, clics gauche/droit, coordonnées mises à l'échelle ; un glisser terminé hors de l'image relâche quand même le bouton |
+| Molette, trackpad | les pixels sont cumulés en crans : un trackpad ne défile plus dix fois trop vite |
+| Tactile | un doigt pilote la souris (toucher, glisser, appui long = clic droit), deux doigts font défiler ; un bouton sort le clavier de l'appareil |
+| Plein écran | avec capture du clavier sur Chromium : Échap, Alt+Tab, Cmd+W partent au poste distant |
+| Clavier | texte, accents, dispositions non-US, touches mortes, caractères AltGr, touches de contrôle |
+| Raccourcis PC ↔ Mac | traduits vers la combinaison de même effet (copier, déplacements par mot et par ligne, Début/Fin, Alt+F4…), ou transmis bruts pour un terminal distant |
+| Presse-papier | texte, **images et texte enrichi** dans les deux sens ; une copie distante arrive seule dans le presse-papier local, et le local peut suivre automatiquement (sur accord, Chromium) |
 | Fichiers | panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
+| Écrans | un sélecteur pour passer d'un moniteur du poste distant à l'autre, affiché s'il en a plusieurs |
+| Actions distantes | Ctrl+Alt+Suppr, verrouillage, redémarrage, son distant coupé, presse-papier suspendu, mode confidentialité, blocage de la saisie locale |
+| 2FA | un pair qui exige un code de vérification le demande, au lieu d'échouer sur « Login Error » |
 | Curseur | le vrai curseur distant, avec son point chaud |
 | Audio | Opus, avec réveil du contexte au premier geste |
 | Déploiements sans coupure | la couche TLS patiente pendant un redémarrage du conteneur au lieu d'échouer |
+| Onglet caché | la session survit à un changement d'onglet : la lecture ne dépend plus de minuteurs que le navigateur ralentit |
 | Reprise automatique | une session coupée se relance seule, avec délai croissant — pas de retour au formulaire |
 | Réglages | qualité, plafond de cadence et codec sont **mémorisés** et réappliqués à chaque session, reprise automatique comprise |
 | Barre de réglages | se replie en une petite poignée : le coin haut-droit de l'écran distant reste cliquable |
-| Connexions récentes | les dix derniers ID, sous le champ de connexion |
+| Connexions récentes | les dix derniers postes, par nom et ID, sous le champ de connexion |
+| Langue | français ou anglais, selon le navigateur ou le choix fait sur l'écran de connexion |
+| Installable | un manifeste d'application : la page s'installe comme une application, dans une fenêtre sans onglets |
 | Veille écran | l'écran ne se verrouille pas tant qu'une session est active, comme YouTube en lecture |
 | Mesure | percentiles p50/p95/p99 de latence et de décodage, en surimpression |
 | Accès | authentification Basic + cookie de session de 90 jours |
+| Durcissement | politique de contenu, aucune requête vers un tiers, texte du pair jamais injecté comme du HTML |
 
 **Non supporté** : coller un fichier du Mac dans le Finder local. Voir
 [Transfert de fichiers](#transfert-de-fichiers) — ce n'est pas une limite de ce
@@ -121,7 +131,7 @@ redémarrages.
 | `web` | `nginx:alpine` | assets, authentification, proxy WebSocket |
 | `tls` | `caddy:2-alpine` | terminaison TLS 443, ACME automatique |
 
-## Les cinq correctifs du bundle
+## Les six correctifs du bundle
 
 `scripts/patch-assets.sh` les réapplique de façon idempotente à partir de
 `html/js/dist/index.js.orig`. Sans eux, rien ne fonctionne :
@@ -141,6 +151,10 @@ redémarrages.
    de 128 Kio) et `window.__rdZstdDecoder` (le décodeur lui-même, pour que la page
    choisisse la taille de destination — voir
    [Presse-papier riche](#presse-papier-riche--ce-qui-marche-et-où)).
+6. **Texte du pair injecté comme du HTML** — l'écran d'attente écrivait le message
+   d'erreur par `innerHTML`, et ce message vient du pair (`LoginResponse.error`).
+   Un pair hostile pouvait exécuter du script dans la page, qui détient les mots
+   de passe mémorisés. Le texte est maintenant échappé.
 
 ## Transfert de fichiers
 
@@ -202,21 +216,39 @@ partout. Conditions :
 La touche de collage se reconnaît à sa lettre, ou — sous une disposition non
 latine comme le cyrillique — à la touche physique.
 
-**Poste distant → navigateur.** Un bouton vert par type — « Image reçue ⇩ »,
-« Texte reçu ⇩ » — apparaît à côté de la poignée de la barre de réglages, sans la
-déplier. Il faut cliquer : écrire dans le presse-papier du système exige, selon les
-navigateurs, une activation récente de la page (Safari l'exige strictement), donc
-une pose automatique à la réception n'est pas fiable — Guacamole expose une zone
-dédiée pour la même raison. Le décodage et la conversion en PNG se font dans une
-tâche à part, jamais sur la boucle de messages (qui acquitte aussi chaque image
-vidéo), et le résultat est confié au presse-papier sous forme de promesse : le clic
-est honoré que la conversion soit terminée ou non. Un emplacement par type : un
-texte arrivant après une image ne l'efface plus. Ce sens n'est **testé que sur
-Chromium**. Firefox (à partir de la version 127) et Safari exposent la même API
-`ClipboardItem` et peuvent l'accepter — Safari exige l'activation de l'utilisateur,
-une raison de plus pour le clic — mais rien ne le vérifie ici, et le code se replie
-sur l'attente de l'image quand un navigateur refuse une promesse. KasmVNC, seul
-projet comparable à l'avoir fait, restreint son presse-papier riche à Chromium.
+**Poste distant → navigateur.** Copier sur le poste distant suffit : ce qui en
+arrive est écrit dans le presse-papier local **tout de suite, sans bouton ni
+message**. C'est possible parce qu'une copie distante est presque toujours
+déclenchée par un geste *dans cette page* — `Ctrl+C`, un clic sur un menu — qui
+ouvre pour quelques secondes le droit d'écrire du navigateur, et le contenu
+revient en bien moins d'une.
+
+Quand le navigateur refuse — la page n'a pas le focus, ou il est plus strict — le
+bouton vert d'avant (« Image reçue ⇩ », « Texte reçu ⇩ ») apparaît près de la
+poignée des réglages, et le dépôt est repris de lui-même à ton prochain clic ou
+appui de touche dans la page. Il n'est **pas** repris si la page a perdu le focus
+entre-temps : tu as pu copier autre chose ailleurs, et l'écraser avec un contenu
+plus ancien serait une faute. Le texte simple des anciens pairs prend le même
+chemin ; le bundle le posait par `execCommand("copy")` hors de tout geste, ce que
+les navigateurs refusent sans rien dire.
+
+Le décodage et la conversion en PNG se font dans une tâche à part, jamais sur la
+boucle de messages (qui acquitte aussi chaque trame vidéo). Un emplacement par
+type : un texte arrivé après une image ne l'efface pas. Le dépôt automatique est
+**testé sur Chromium** ; Firefox devrait l'accepter dans sa propre fenêtre
+d'activation, Safari est plus strict et montrera le plus souvent le bouton.
+
+**Presse-papier automatique (navigateur → poste distant, sur accord).** `Ctrl+V`
+a toujours marché : l'événement `paste` porte le contenu. Mais « Coller » dans un
+menu du poste distant, ou un clic du milieu, n'en produisent aucun : le
+presse-papier distant n'avait pas ce que tu venais de copier ici. **Actions →
+Presse-papier automatique** règle cela : une fois la permission du navigateur
+accordée, le presse-papier local est lu à chaque retour sur la page et envoyé
+s'il a changé — ce que fait le client natif. `Ctrl+V` colle alors immédiatement,
+le contenu étant déjà là-bas. C'est désactivé par défaut, parce que cela envoie
+ce que tu as copié, mots de passe compris, au poste distant dès que la page
+reprend le focus. Chromium seulement : Firefox et Safari redemandent à chaque
+lecture.
 
 Une image venue du poste distant par l'ancien message `clipboard` est
 interceptée avant le bundle, dont la branche décode le contenu en texte sans
@@ -253,8 +285,9 @@ Diagnostic dans la console : `rdFiles()`.
 
 ## Ce qui a été réimplémenté
 
-Le client V1 ne câble **que l'affichage**. Tout le reste vit dans
-`web/index.html.template`, via `window.curConn` et `setByName`, **sans jamais
+Le client V1 ne câble **que l'affichage**. Tout le reste vit dans `web/src/`,
+assemblé en une page par `scripts/build-page.py` (voir
+[Organisation des sources](#organisation-des-sources)), via `window.curConn` et `setByName`, **sans jamais
 patcher le bundle** : les deux fonctions que le pont attend de l'hôte
 (`onGlobalEvent`, `onRgba`), la couche souris et clavier, le presse-papier
 sortant, la résolution, le curseur, et le décodeur WebCodecs.
@@ -292,9 +325,16 @@ récent d'abord. Une entrée est enregistrée quand une session **aboutit**, pas
 clic sur Connect : les fautes de frappe ne s'accumulent pas. Un clic remplit le
 champ (chiffres seuls — le bundle n'enlève pas les espaces) et donne le focus à
 Connect ; `Suppr` sur une entrée focalisée la retire, la croix aussi à la souris,
-« Effacer » vide la liste. Seuls des chiffres et des horodatages sont stockés
-(`rd-recent`) — jamais un hôte, jamais un mot de passe (l'entrée `peers` du bundle
-porte les mots de passe mémorisés et n'est pas touchée). La liste est amorcée une
+« Effacer » vide la liste. Ce qui est stocké (`rd-recent`) : l'ID, un horodatage,
+et le nom de poste annoncé par le pair — jamais un hôte de serveur, jamais un mot
+de passe (l'entrée `peers` du bundle porte les mots de passe mémorisés).
+
+**Mots de passe mémorisés.** Le bundle garde le mot de passe d'un poste **en
+clair** dans le stockage du navigateur. La page l'imposait ; c'est maintenant la
+case « Mémoriser les mots de passe sur cet appareil » de l'écran de connexion,
+cochée par défaut. La décocher efface aussitôt les mots de passe stockés et
+empêche le bundle d'en garder de nouveaux. À décocher sur toute machine qui n'est
+pas la tienne. La liste est amorcée une
 seule fois à partir des ID que le bundle connaissait déjà.
 
 **Console de session et liste des postes.** Voir les deux sections ci-dessous.
@@ -331,13 +371,13 @@ ne garde que ses icônes.
 |---|---|---|
 | Video › Quality, Latency, View | **Qualité**, plafond d'images/s, **codec**, **Vue** (ajustée / 1:1 avec défilement), résolution distante, ajuster à la fenêtre | Transfer (WebRTC/FEC/Native/Direct), mode Smart, EDID, Orientation : sans objet — voir plus bas |
 | Audio › Speaker | **Son du poste** (`disable-audio` : le poste n'envoie plus d'audio) | Micro et caméra : non repris |
-| Keyboard | **Ctrl devient Cmd**, **clavier virtuel** (AZERTY/QWERTY selon la langue, Ctrl/Alt/Maj/Cmd collants), touches Impr. écran / Menu / Pause | Le *Bad link mode* n'a pas lieu d'être : ce client envoie des événements de touche discrets |
+| Keyboard | **Raccourcis traduits PC ↔ Mac** (désactivable ; grisé entre deux postes de même famille), **clavier virtuel** (AZERTY/QWERTY selon la langue, Ctrl/Alt/Maj/Cmd collants), touches Impr. écran / Menu / Pause | Le *Bad link mode* n'a pas lieu d'être : ce client envoie des événements de touche discrets |
 | Mouse | Mode **absolu / relatif** avec sensibilité, **bouton principal**, **vitesse** et **sens** de défilement (4 modes), **anti-veille**, boutons Retour/Avance | Le mode relatif exige un pair ≥ 1.4.5 (grisé avec la raison sinon) |
 | Toolbox › Clipboard, Shortcut | Envoyer du texte (copier vers le poste, ou **le taper** — utile à un écran de connexion), raccourcis selon l'OS du poste et les vôtres (validés, mémorisés), **capture d'écran et enregistrement vidéo** | OCR, Wake-on-LAN, terminal : non repris |
 | Accessories (alimentation) | Menu **Poste** : Ctrl+Alt+Suppr, verrouiller, **redémarrer (deux clics)**, choix de l'écran, confidentialité, blocage des entrées, verrouillage en fin de session, presse-papier partagé, curseur dans l'image | Grisé avec la raison quand l'OS du poste ne sait pas le faire |
 | Toolbar › Switch Port, Fullscreen, Stats, Collapse | Sélecteur de **Postes**, **plein écran avec verrouillage du clavier**, **statistiques de connexion** (4 courbes en direct), replier | Pas de perte de paquets à tracer : la liaison est TCP, une perte se voit en latence |
 | Help › export logs | **Aide** : test du relais, **export du journal sans aucun secret**, version et lien vers la source | |
-| Settings › Preferences | **Thème** (auto / clair / sombre), **langue** (auto / français / English), barre de statut, plein écran épuré | |
+| Settings › Preferences | **Thème** (auto / clair / sombre), barre de statut, plein écran épuré | La **langue** se choisit sur l'écran de connexion (un seul réglage pour la page et la console) |
 
 **Ce qui n'est volontairement pas là**, parce que c'est du *matériel* GLKVM ou un autre transport : Virtual Media (ISO / disque
 USB), Accessories (Fingerbot, carte ATX), EDID et identité USB, Apps Center (Tailscale / ZeroTier / NetBird), mise à jour du
@@ -390,8 +430,20 @@ service ne prétend pas savoir. Après un redémarrage de hbbs, tous les postes 
 
 Le client d'origine ne déclare **aucune** capacité de décodage : le serveur
 retombe alors sur VP9 logiciel, y compris quand la machine contrôlée dispose d'un
-encodeur matériel. Ce dépôt déclare `supported_decoding{prefer:H265}` après
-`peer_info` et bascule le décodeur du navigateur sur WebCodecs.
+encodeur matériel. Ce dépôt sonde ce que le navigateur sait décoder via WebCodecs
+— H265, H264, AV1, VP9 —, déclare le tout dans `supported_decoding` après
+`peer_info`, et préfère le meilleur, dans l'ordre du mode « auto » du pair : H265,
+H264, AV1, VP9.
+
+Le pair a le dernier mot. H265 et H264 n'existent chez lui qu'avec un encodeur
+matériel, et les premières trames d'une session sont toujours du VP9, émises
+avant qu'il ait lu la déclaration. Le décodeur **suit donc le flux réellement
+reçu**, pas celui qui a été demandé. Un codec qui échoue trois fois est écarté
+pour toute la vie de la page et le suivant est essayé ; le décodage logiciel est
+le dernier barreau, plus le premier repli.
+
+H264 et AV1 sont couverts par les bancs de test (négociation, bascule, repli)
+mais n'ont **pas été mesurés face à un vrai pair**, contrairement à H265.
 
 Vérification côté machine contrôlée, pendant une session web :
 
@@ -403,7 +455,120 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 > une session native ouverte en parallèle peut faire retomber les deux en VP9.
 > Pour toute mesure, n'ouvrir qu'une session.
 
-Un sélecteur dans la barre permet de forcer `h265`, `vp9` ou le décodage logiciel.
+Un sélecteur dans la barre permet de forcer `h265`, `h264`, `av1`, `vp9` ou le
+décodage logiciel. Un codec forcé est le seul déclaré ; si le pair ne sait pas
+l'encoder, il répond en VP9 et la surimpression affiche le codec réellement utilisé.
+
+## Actions distantes, écrans, 2FA
+
+Le bundle sait déjà envoyer Ctrl+Alt+Suppr, verrouiller la session distante,
+changer d'écran et basculer les options de session ; rien dans son interface ne
+les appelait. Le menu **Actions** de la barre le fait.
+
+- Le **mode confidentialité** et le **blocage de la saisie locale** dépendent du
+  pair (plateforme, permissions, service installé). Le pair répond par un
+  `BackNotification`, que le bundle décode sans rien en faire : la page le lit,
+  dit si la demande a été acceptée, et ne coche l'option que dans ce cas. Un mode
+  confidentialité refusé est aussi retiré des options du bundle pour ce pair, qui
+  le redemanderait sinon à chaque connexion.
+- **Redémarrer** demande confirmation. La session tombe ; la reprise automatique
+  abandonne après une minute environ, il faut donc recharger la page une fois la
+  machine revenue.
+- **Écrans** : le sélecteur apparaît quand `peer_info` annonce plus d'un écran.
+  La page ne change d'état qu'à la confirmation du pair.
+- **2FA** : sur `2FA Required`, la page demande le code à six chiffres et
+  l'envoie en `auth_2fa`. Non testé face à un vrai pair en 2FA ; « faire confiance
+  à cet appareil » n'est pas implémenté, le code est donc demandé à chaque connexion.
+
+## Organisation des sources
+
+```
+web/src/page.html          le squelette : en-tête, balises du bundle, lignes d'inclusion
+web/src/style.css          tous les styles
+web/src/00-stockage.js     garde-fous du stockage, hôte et clé cuits par le déploiement
+web/src/10-diagnostic.js   diagnostic des liaisons, état partagé, curseur distant
+web/src/20-rdlib.js        RDLib : logique pure, sans DOM — ce que le banc Node teste directement
+web/src/30-session.js      entrées, vidéo, presse-papier, barre, écran de connexion
+web/src/40-fichiers.js     le panneau de fichiers
+```
+
+`python3 scripts/build-page.py` les assemble en `web/index.html.template`, qui
+n'est **pas versionné** : `setup.sh`, `verify.sh`, la CI et les deux bancs de test
+le reconstruisent avant de s'en servir. La page servie reste un seul fichier de
+blocs en ligne — seules les sources sont découpées.
+
+## Clavier : un PC devant un Mac
+
+RustDesk transmet les modificateurs un pour un : `Ctrl+C` arrive en `Control+C`
+sur le Mac, où copier est `Cmd+C`. Permuter Ctrl et Cmd règle les lettres et casse
+le reste : `Ctrl+←` (mot précédent sur PC) devenait `Cmd+←` (début de ligne),
+`Ctrl+Tab` ouvrait le sélecteur d'applications, Début et Fin ne bougeaient pas le
+curseur. Les raccourcis sont maintenant **traduits** vers la combinaison qui a le
+même effet de l'autre côté :
+
+| Sur le clavier PC | Envoyé au Mac | Effet |
+|---|---|---|
+| `Ctrl` + lettre | `Cmd` + lettre | copier, coller, enregistrer, chercher, tout sélectionner… |
+| `Ctrl+←/→/↑/↓`, `Ctrl+Retour arrière`, `Ctrl+Suppr` | `Option` + la même | se déplacer ou effacer mot par mot |
+| `Début` / `Fin` | `Cmd+←` / `Cmd+→` | début / fin de ligne |
+| `Ctrl+Début` / `Ctrl+Fin` | `Cmd+↑` / `Cmd+↓` | début / fin du document |
+| `Ctrl+Y` | `Cmd+Maj+Z` | rétablir |
+| `Ctrl+Tab`, `Ctrl+Espace` | inchangés | onglet suivant, complétion |
+| `Alt+F4` / `Ctrl+F4` | `Cmd+Q` / `Cmd+W` | quitter / fermer l'onglet |
+| `Alt+Tab` | `Cmd+Tab` | changer d'application |
+| `Alt+←` / `Alt+→` | `Cmd+[` / `Cmd+]` | page précédente / suivante |
+| `Ctrl+Inser`, `Maj+Suppr`, `Maj+Inser` | copier, couper, coller | les autres touches de presse-papier du PC |
+| `Ctrl+Maj+Échap` | `Cmd+Option+Échap` | forcer à quitter |
+| Touche Windows | `Control` | |
+| `Ctrl` + clic | `Cmd` + clic | sélection multiple (un `Ctrl` + clic est un clic droit sur Mac) |
+
+`Maj` est toujours conservé : toutes les variantes de sélection suivent. Le sens
+est choisi d'après les deux plateformes : un clavier Mac devant un poste Windows
+ou Linux reçoit la table inverse, et rien n'est traduit entre deux postes de la
+même famille — le bouton de la barre (**PC→Mac**, **Mac→PC**) n'apparaît que s'il
+y a quelque chose à traduire. Un clic le passe en mode **brut**, où chaque touche
+part telle quelle : c'est ce qu'il faut dans un terminal distant (`Ctrl+C` = SIGINT).
+
+Trois autres corrections sur le même chemin :
+
+- **AltGr.** Windows présente AltGr comme `Ctrl+Alt` : `@`, `#`, `€`, `{` d'un
+  clavier français ou suisse partaient comme des raccourcis et n'étaient jamais
+  tapés. Ce sont des caractères.
+- **Relâchement.** Lâcher `Ctrl` avant la lettre est courant ; le relâchement de
+  la lettre arrivait alors sans `Ctrl`, passait pour du texte, et rien ne partait
+  — le Mac gardait `Cmd+C` enfoncé. Le relâchement rejoue exactement ce qui a été
+  enfoncé.
+- `Alt+Tab`, `Alt+F4`, `Ctrl+W` et `Ctrl+T` n'atteignent la page qu'en **plein
+  écran** sur Chromium ; sinon le système local les garde.
+
+Ce qui reste différent : le sélecteur d'applications ne peut pas être tenu ouvert
+(chaque `Alt+Tab` est un `Cmd+Tab` complet), et `F2`, `Suppr` sur un fichier ou
+`Impr écran` n'ont pas d'équivalent Mac unique et partent tels quels.
+
+## Entrées : tactile, molette, plein écran
+
+- **Tactile.** Un doigt est la souris : un toucher est un clic gauche à l'endroit
+  touché, toucher puis glisser tient le bouton, un appui long immobile est un clic
+  droit. Deux doigts qui glissent ensemble font défiler, dans le sens « naturel ».
+  Le bouton **Clavier**, affiché sur les appareils tactiles, sort le clavier de
+  l'appareil. Testé dans l'émulation tactile de Chromium, pas sur une tablette réelle.
+- **Molette.** Le pair compte en crans. Un cran part tous les 100 px de défilement
+  cumulé : une molette de souris ne change pas, un trackpad est assagi.
+- **Plein écran.** Sur Chromium, l'API Keyboard Lock donne au poste distant les
+  raccourcis que le navigateur ou le système gardent d'ordinaire ; maintenir Échap
+  pour sortir. Firefox et Safari passent en plein écran sans cette capture.
+
+## Durcissement du déploiement
+
+- nginx n'**hérite pas** des `add_header` du niveau `server` dans un bloc
+  `location` qui en déclare un. Les trois blocs qui posent le cookie de session
+  partaient donc sans `X-Frame-Options` ni `nosniff`. Les en-têtes y sont
+  maintenant répétés, et un test échoue si l'un d'eux disparaît.
+- Une politique de contenu interdit tout script, image ou connexion vers un autre
+  hôte. Elle garde `'unsafe-inline'` : la page est faite de blocs en ligne et le
+  formulaire du bundle utilise des attributs `onclick`. Le banc navigateur tourne
+  sous cette politique exacte, lue dans `nginx.conf.template`.
+- HSTS est envoyé par Caddy, là où TLS se termine.
 
 ## Vérifier une modification
 
@@ -446,6 +611,68 @@ le passe).
 Les mêmes étapes tournent en intégration continue, mais ce script n'en dépend
 pas : un dépôt cloné doit être vérifiable hors ligne, et la boucle est plus
 courte que de pousser pour savoir.
+
+## Onglet caché : pourquoi la session tombait en timeout, et ce qui a changé
+
+**La cause.** Le bundle lit chaque message en *interrogeant* son tampon par
+`setTimeout(…, 1)`. Dans un onglet caché, le navigateur ralentit les minuteurs :
+une fois par seconde d'abord, puis **une fois par minute** au bout de cinq
+minutes. Pendant ce temps la page ne lit rien : elle ne répond plus aux sondes du
+poste distant et n'acquitte plus les trames vidéo — et le pair ferme toute
+liaison restée muette 30 secondes (`connection.rs` :
+`last_recv_time.elapsed() >= SEC30` → `"Timeout"`). Les messages, eux, arrivent
+toujours : l'événement `message` d'un WebSocket n'est pas ralenti. Un second
+défaut s'y ajoutait : le « Timeout » de 12 secondes du bundle était mesuré quand
+le minuteur en retard se réveillait enfin, si bien qu'une page qui avait
+seulement dormi déclarait morte une liaison vivante.
+
+**La correction.**
+
+- La lecture est pilotée par l'**arrivée** d'un message, plus par un minuteur. Le
+  remplacement se fait sur la classe de liaison du bundle : la connexion de
+  transfert de fichiers en profite aussi. Un minuteur ne reste qu'en filet, et un
+  minuteur en retard est reconnu comme « la page dormait », pas comme un silence.
+- Tant que l'onglet est caché, les trames sont **acquittées sans être décodées**
+  et la page demande 5 images par seconde au pair. Le retour rétablit ton plafond
+  de cadence et redemande une image-clé : l'image revient, à jour, en une
+  fraction de seconde. Personne ne regardait : cela ne fait qu'enlever de la charge.
+- La session tient un **verrou Web Locks**, qui empêche Chrome et Edge de *geler*
+  l'onglet (économie d'énergie, onglets en veille).
+
+**Ce qui peut encore couper une session.** Un onglet que le navigateur
+**décharge** pour récupérer de la mémoire (économiseur de mémoire de Chrome,
+onglets en veille d'Edge réglés pour décharger) est entièrement retiré ; au
+retour la page se recharge, et il ne reste que la reprise automatique. Exclure le
+site dans les réglages de performances du navigateur si cela arrive. Un
+ordinateur mis en veille coupe toutes les liaisons, quoi que fasse la page.
+
+Vérifié dans les bancs, y compris sur la vraie classe de liaison du bundle,
+minuteurs neutralisés. **Pas** vérifié sur une vraie session cachée dix minutes.
+
+## Qualité d'image sans coût supplémentaire
+
+- **Couleurs.** RustDesk convertit l'écran en YUV avec libyuv, donc en BT.601, et
+  n'en écrit rien dans le flux. Sans indication, le navigateur suppose BT.709 : le
+  vert pur revenait en (0, 216, 2), le rouge pur en (255, 26, 1). Le décodeur
+  reçoit maintenant la matrice. Mesuré dans Chromium sur VP9, H264 et AV1 — le
+  vert revient en (0, 255, 2). Le coût est nul : c'est le même calcul avec
+  d'autres coefficients, et un flux qui porte une étiquette de couleur garde la
+  priorité.
+- **Netteté.** Quand l'image est à quelques pour cent d'un nombre entier de
+  pixels physiques par pixel distant, elle y est calée et dessinée sans
+  interpolation. Une image de 1920 pixels affichée sur 1905 était rééchantillonnée
+  en entier pour un gain de place invisible ; sur un écran à 125 % ou 150 %, elle
+  tombe maintenant exactement sur les pixels physiques.
+- **« Ajuster »** choisit la résolution distante en pixels *physiques*. Sur un
+  écran à 150 %, il prenait une image un tiers trop petite, puis l'agrandissait.
+
+La meilleure qualité pour la moindre charge est donc : cliquer sur **Ajuster**,
+pour que la résolution distante corresponde à ta fenêtre. Moins de pixels à
+encoder, aucun à interpoler.
+
+Ce qui a été regardé et **pas** fait, parce que cela coûte : la chrominance 4:4:4
+(texte coloré plus net, moitié plus de données environ), et un ratio de qualité
+plus élevé — la page demande déjà 1,5, le « meilleur » de RustDesk.
 
 ## Dépannage : `invalid key` sur le relais
 

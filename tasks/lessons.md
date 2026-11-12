@@ -57,3 +57,22 @@
 
 ## Un bouton ajouté dans la barre change les listes attendues des tests
 - **Règle** : après avoir ajouté un bouton de barre (ici « Postes »), chercher les tests qui énumèrent les boutons (`i18n-anglais`).
+
+## Un banc ne doit pas dépendre de la machine qui le joue (réconciliation du 2026-11-12)
+- **Règle** : un test qui suppose une plateforme (clavier PC), un décodeur (WebCodecs) ou un réglage du navigateur le déclare :
+  `clavierPC(ctx)`, option `webcodecs: true` (ignoré et annoncé sous `RD_SANS_VIDEODECODER=1`), option `sansConsole: true`
+  pour la barre d'origine de la page.
+- **Pourquoi** : sur `origin/main` seul, le banc donnait 36/41 sur un Mac — trois tests supposaient `#player`, deux un clavier
+  PC (la page lit la plateforme locale dans le navigateur). Et le même matin, Chrome s'est mis à jour de 156 à 157 : sous
+  Playwright 1.56.1, qui coupe `RenderDocument`, tout plein écran sans tête était refusé (« not granted »), même sur une page vide.
+- **Comment l'appliquer** : devant un échec, rejouer d'abord le test sur la version d'avant ; s'il échoue aussi, chercher la
+  cause dans l'environnement (version du navigateur, plateforme) avant de toucher au produit.
+
+## Deux couches, une seule implémentation par fonction
+- **Règle** : la page (`web/src/`) fait ; la console (`web/js/`) présente et **pilote** le contrôle de la page (un clic sur son
+  bouton, la lecture de son état par `window.__rdPoste`), sans jamais refaire le travail.
+- **Pourquoi** : les deux lignes avaient chacune leur plein écran, leur écoute d'Entrée, leur langue. Fusionnées telles quelles :
+  deux captures du clavier concurrentes (la seconde rejette la première), deux connexions sur une seule touche Entrée, deux
+  titres sur la carte de connexion, une classe CSS de la console (`.rdactions`) qui restylait un `<select>` de la page.
+- **Comment l'appliquer** : avant d'ajouter une fonction à la console, chercher si la page l'a déjà (grep du repère `data-rd`
+  et des `window.__rd*`) ; préfixer les classes de la console (`rdpop-…`) pour qu'elles ne touchent pas celles de la page.

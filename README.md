@@ -27,23 +27,33 @@ that was missing**: the original client wires up display and nothing else.
 
 | | |
 |---|---|
-| Video | **hardware** H265 on both ends via WebCodecs, falling back to VP9 then software |
-| Mouse | movement, left/right click, wheel, correctly scaled coordinates |
-| Keyboard | text, accents, non-US layouts, dead keys, control keys |
-| `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
-| Clipboard | text both ways; **images and rich text** too, on Chromium |
+| Video | **hardware** H265 or H264 on both ends via WebCodecs, then AV1, VP9, and software as a last resort; exact colours, pixel-exact display when the sizes allow |
+| Mouse | movement, left/right click, correctly scaled coordinates; a drag that ends outside the image still releases the button |
+| Wheel, trackpad | pixels are accumulated into notches, so a trackpad no longer scrolls ten times too fast |
+| Touch | one finger drives the mouse (tap, drag, long press = right click), two fingers scroll; a button brings up the device keyboard |
+| Full screen | with keyboard capture on Chromium: Esc, Alt+Tab, Cmd+W go to the remote machine |
+| Keyboard | text, accents, non-US layouts, dead keys, AltGr characters, control keys |
+| PC ↔ Mac shortcuts | translated to the combination with the same effect (copy, word and line moves, Home/End, Alt+F4…), or sent raw for a remote terminal |
+| Clipboard | text, **images and rich text** both ways; a remote copy lands in the local clipboard by itself, and the local one can follow automatically (opt-in, Chromium) |
 | Files | remote panel: browse, upload, download, create, rename, delete |
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
+| Displays | a selector to switch between the remote machine's monitors, shown when it has more than one |
+| Remote actions | Ctrl+Alt+Del, lock, restart, mute remote audio, suspend clipboard, privacy mode, block local input |
+| 2FA | a peer that requires a verification code prompts for it instead of failing with "Login Error" |
 | Cursor | the real remote cursor, with its hotspot |
 | Audio | Opus, with the audio context resumed on first gesture |
 | Zero-downtime deploys | the TLS layer waits for the web container instead of erroring out during a restart |
+| Hidden tab | the session survives a tab switch: reading no longer depends on timers the browser slows down |
 | Auto-reconnect | a dropped session retries on its own, with backoff — no fallback to the connect form |
 | Settings | quality, frame-rate cap and codec are **remembered** and reapplied on every session, including after an auto-reconnect |
 | Settings bar | collapses to a small handle: the top-right corner of the remote screen stays clickable |
-| Recent connections | the last ten IDs, under the login field |
+| Recent connections | the last ten machines, by name and ID, under the login field |
+| Language | French or English, following the browser or the choice made on the login screen |
+| Installable | a web app manifest: the page installs as an application, in a window without tabs |
 | Screen wake lock | the display never sleeps while a session is live, like YouTube during playback |
 | Metrics | p50/p95/p99 percentiles for latency and decode time, as an overlay |
 | Access | Basic authentication plus a 90-day session cookie |
+| Hardening | content security policy, no third-party request, peer-supplied text never injected as HTML |
 
 **Not supported**: pasting a file from the Mac into your local file manager. See
 [File transfer](#file-transfer) — that is a limit of the web platform, not of
@@ -121,7 +131,7 @@ Two containers. Configuration and assets are baked into the images; only the
 | `web` | `nginx:alpine` | assets, authentication, WebSocket proxy |
 | `tls` | `caddy:2-alpine` | TLS termination on 443, automatic ACME |
 
-## The five bundle patches
+## The six bundle patches
 
 `scripts/patch-assets.sh` reapplies them idempotently from
 `html/js/dist/index.js.orig`. Without them, nothing works:
@@ -140,6 +150,10 @@ Two containers. Configuration and assets are baked into the images; only the
    function, sized for a 128 KiB file block) and `window.__rdZstdDecoder` (the
    decoder itself, so the page chooses the destination size — see
    [Rich clipboard](#rich-clipboard-what-works-and-where)).
+6. **Peer text injected as HTML** — the waiting screen wrote the error message
+   through `innerHTML`, and that message comes from the peer
+   (`LoginResponse.error`). A hostile peer could run script in the page, which
+   holds the remembered passwords. The text is now escaped.
 
 ## File transfer
 
@@ -198,21 +212,37 @@ clipboard instead of the file uploader. This direction needs no permission — t
 The keys that trigger a paste are recognised by their letter, or — under a
 non-Latin layout such as Cyrillic — by the physical key.
 
-**Remote → browser.** A green button per kind — "Image reçue ⇩", "Texte reçu ⇩" —
-appears next to the settings bar's handle, without expanding it. Click it: writing
-to the system clipboard requires, depending on the browser, a recent user
-activation (Safari strictly), so posting automatically on arrival is not
-reliable — Guacamole exposes a dedicated area for the same reason. Decoding and
-conversion to PNG happen in a separate task, never on the message loop (which also
-acknowledges every video frame), and the result is handed to the clipboard as a
-promise, so the click is honoured whether or not the conversion has finished. One
-slot per kind: a text arriving after an image no longer erases it. This direction
-is only **tested on Chromium**. Firefox (from version 127) and Safari expose the
-same `ClipboardItem` API and may accept it — Safari requires the user activation,
-which is one more reason for the click — but that is untested here, and the code
-falls back to waiting for the image when a browser refuses a promise value. KasmVNC,
-the only comparable project to have done this, limits its rich clipboard to
-Chromium.
+**Remote → browser.** Copying on the remote machine is enough: what arrives is
+written to the local clipboard **at once, with no button and no notice**. That is
+possible because a remote copy is almost always triggered by a gesture *in this
+page* — `Ctrl+C`, a click on a menu — which opens the browser's permission to
+write for a few seconds, and the content comes back in well under one.
+
+When the browser refuses — the page does not have the focus, or the browser is
+stricter — the green button of before ("Image reçue ⇩", "Texte reçu ⇩") appears
+next to the settings handle, and the write is retried by itself at your next
+click or key press in the page. It is **not** retried if the page lost the focus
+in between: you may have copied something else elsewhere, and overwriting it with
+older content would be a fault. Plain text from older peers takes the same path;
+the bundle used to post it through `execCommand("copy")` outside any gesture,
+which browsers silently refuse.
+
+Decoding and conversion to PNG happen in a separate task, never on the message
+loop (which also acknowledges every video frame). One slot per kind: a text
+arriving after an image does not erase it. Automatic writing is **tested on
+Chromium**; Firefox should accept it within its own activation window, Safari is
+stricter and will mostly show the button.
+
+**Automatic clipboard (browser → remote, opt-in).** `Ctrl+V` has always worked:
+the `paste` event carries the content. But "Paste" from a menu of the remote
+machine, or a middle click, produces no such event, so the remote clipboard did
+not hold what you had just copied locally. **Actions → Automatic clipboard**
+fixes that: once you accept the browser's permission prompt, the local clipboard
+is read every time you come back to the page and sent if it changed — what the
+native client does. `Ctrl+V` then pastes immediately, since the content is
+already there. It is off by default because it sends whatever you copied,
+passwords included, to the remote machine as soon as the page regains focus.
+Chromium only: Firefox and Safari ask again at every read.
 
 An image arriving over the legacy `clipboard` message is intercepted before the
 bundle, whose branch decodes the payload as text unconditionally — without that,
@@ -249,8 +279,9 @@ Console diagnostics: `rdFiles()`.
 
 ## What was reimplemented
 
-The V1 client wires up **display only**. Everything else lives in
-`web/index.html.template`, through `window.curConn` and `setByName`, **without
+The V1 client wires up **display only**. Everything else lives in `web/src/`,
+assembled into one page by `scripts/build-page.py` (see
+[Source layout](#source-layout)), through `window.curConn` and `setByName`, **without
 ever patching the bundle**: the two functions the bridge expects from its host
 (`onGlobalEvent`, `onRgba`), the full mouse and keyboard layer, outbound
 clipboard, resolution control, remote cursor, and the WebCodecs decoder.
@@ -285,9 +316,16 @@ of that corner. To go back to the old always-open bar, expand it once.
 first. An entry is recorded when a session **succeeds**, not when you click
 Connect, so typos do not pile up. Clicking one fills the field (digits only — the
 bundle does not strip spaces) and moves focus to Connect; `Del` on a focused entry
-removes it, the × does the same with the mouse, "Effacer" empties the list. Only
-digits and timestamps are stored (`rd-recent`) — never a host, never a password
-(the bundle's own `peers` entry holds the remembered passwords and is left alone).
+removes it, the × does the same with the mouse, "Clear" empties the list. What is
+stored (`rd-recent`) is the ID, a timestamp, and the machine name the peer
+announced — never a server host, never a password (the bundle's own `peers` entry
+holds the remembered passwords).
+
+**Remembered passwords.** The bundle keeps a peer's password **in clear text** in
+the browser's storage. The page used to force that on; it is now the "Remember
+passwords on this device" box of the login screen, ticked by default. Unticking it
+erases the stored passwords at once and stops the bundle from keeping new ones.
+Untick it on any machine that is not yours.
 The list is seeded once from the IDs the bundle already knew.
 
 **Session console and machine list.** See the two sections below.
@@ -323,13 +361,13 @@ The bar is collapsed by default to a small handle (as before); expand it to reac
 |---|---|---|
 | Video › Quality, Latency, View | **Quality**, frame-rate cap, **codec**, **View** (fitted / 1:1 with scrolling), remote resolution, fit to window | Transfer (WebRTC/FEC/Native/Direct), Smart mode, EDID, Orientation: not applicable — see below |
 | Audio › Speaker | **Machine sound** (`disable-audio`: the machine stops sending audio) | Microphone and camera: not ported |
-| Keyboard | **Ctrl becomes Cmd**, **virtual keyboard** (AZERTY/QWERTY by language, sticky Ctrl/Alt/Shift/Cmd), Print Screen / Menu / Pause keys | *Bad link mode* is moot: this client sends discrete key events |
+| Keyboard | **PC ↔ Mac shortcut translation** (can be turned off; greyed out between two machines of the same family), **virtual keyboard** (AZERTY/QWERTY by language, sticky Ctrl/Alt/Shift/Cmd), Print Screen / Menu / Pause keys | *Bad link mode* is moot: this client sends discrete key events |
 | Mouse | **Absolute / relative** mode with sensitivity, **primary button**, **scroll speed** and **direction** (4 modes), **anti-sleep jiggle**, Back/Forward buttons | Relative mode needs a peer ≥ 1.4.5 (greyed out with the reason otherwise) |
 | Toolbox › Clipboard, Shortcut | Send text (copy to the machine, or **type it out** — useful at a login screen), shortcuts by remote OS plus your own (validated, persisted), **screenshot and video recording** | OCR, Wake-on-LAN, terminal: not ported |
 | Accessories (power) | **Machine** menu: Ctrl+Alt+Del, lock, **restart (two clicks)**, screen picker, privacy mode, block input, lock at session end, shared clipboard, cursor in the image | Greyed out with the reason when the remote OS cannot do it |
 | Toolbar › Switch Port, Fullscreen, Stats, Collapse | **Machines** switcher, **full screen with Keyboard Lock**, **connection statistics** (4 live curves), collapse | There is no packet loss to chart: the link is TCP, a loss shows up as latency |
 | Help › export logs | **Help**: relay test, **log export without any secret**, version and source link | |
-| Settings › Preferences | **Theme** (auto / light / dark), **language** (auto / français / English), status bar, clean full screen | |
+| Settings › Preferences | **Theme** (auto / light / dark), status bar, clean full screen | The **language** is chosen on the login screen (one setting for the page and the console) |
 
 **What is deliberately not here**, because it is GLKVM *hardware* or a different transport: Virtual Media (ISO / USB disk),
 Accessories (Fingerbot, ATX board), EDID and USB identity, Apps Center (Tailscale / ZeroTier / NetBird), firmware upgrade,
@@ -379,8 +417,19 @@ troubleshooting: [docs/FLOTTE.md](docs/FLOTTE.md) (in French).
 
 The original client declares **no** decoding capability, so the server falls back
 to software VP9 — even when the controlled machine has a hardware encoder. This
-repository declares `supported_decoding{prefer:H265}` after `peer_info` and
-switches the browser decoder to WebCodecs.
+repository probes what the browser can decode through WebCodecs — H265, H264,
+AV1, VP9 — declares all of it in `supported_decoding` after `peer_info`, and
+prefers the best one, in the peer's own "auto" order: H265, H264, AV1, VP9.
+
+The peer has the final say. H265 and H264 only exist on its side with a hardware
+encoder, and the first frames of a session are always VP9, sent before it has read
+the declaration. The decoder therefore **follows the stream that actually
+arrives** rather than the one that was asked for. A codec that fails three times
+is dropped for the lifetime of the page and the next one down is tried; software
+decoding is the last rung, not the first fallback.
+
+H264 and AV1 are covered by the test benches (negotiation, switching, fallback)
+but have **not been measured against a real peer** the way H265 has.
 
 To verify, on the controlled machine during a web session:
 
@@ -391,7 +440,116 @@ usable: h265=true → encoder: H265 → new encoder: HWRAM(hevc_videotoolbox, �
 > Negotiation is the **intersection of all active connections**: a native session
 > open in parallel can drop both back to VP9. Open only one session when measuring.
 
-A selector in the toolbar lets you force `h265`, `vp9`, or software decoding.
+A selector in the toolbar lets you force `h265`, `h264`, `av1`, `vp9`, or software
+decoding. A forced codec is the only one declared; if the peer cannot encode it,
+it answers in VP9 and the status overlay shows the codec really in use.
+
+## Remote actions, displays, 2FA
+
+The bundle already knows how to send Ctrl+Alt+Del, lock the remote session,
+switch display and toggle session options; nothing in its interface called them.
+The **Actions** menu of the toolbar does.
+
+- **Privacy mode** and **block local input** depend on the peer (platform,
+  permissions, installed service). The peer answers with a `BackNotification`,
+  which the bundle decodes and ignores: the page reads it, says whether the
+  request was accepted, and ticks the option only when it was. A refused privacy
+  mode is also cleared from the bundle's per-peer options, which would otherwise
+  request it again at every login.
+- **Restart** asks for confirmation. The session drops; auto-reconnect gives up
+  after about a minute, so reload the page once the machine is back.
+- **Displays**: the selector appears when `peer_info` lists more than one
+  display. The page only changes its state when the peer confirms the switch.
+- **2FA**: on `2FA Required` the page prompts for the six-digit code and sends
+  it as `auth_2fa`. Untested against a real 2FA peer; "trust this device" is not
+  implemented, so the code is asked at every connection.
+
+## Source layout
+
+```
+web/src/page.html          the skeleton: head, the bundle's script tags, include lines
+web/src/style.css          all the styles
+web/src/00-stockage.js     storage guards, the server host and key baked by the deployment
+web/src/10-diagnostic.js   connection diagnostics, shared state, remote cursor
+web/src/20-rdlib.js        RDLib: pure logic, no DOM — what the Node bench tests directly
+web/src/30-session.js      input, video, clipboard, toolbar, login screen
+web/src/40-fichiers.js     the file panel
+```
+
+`python3 scripts/build-page.py` assembles them into `web/index.html.template`,
+which is **not versioned**: `setup.sh`, `verify.sh`, CI and both test benches
+rebuild it before using it. The served page is still one file of inline blocks —
+only the sources are split.
+
+## Keyboard: a PC in front of a Mac
+
+RustDesk sends modifiers one for one, so `Ctrl+C` reaches the Mac as `Control+C`,
+where copy is `Cmd+C`. Swapping Ctrl and Cmd fixes the letters and breaks the rest:
+`Ctrl+←` (previous word on a PC) became `Cmd+←` (start of line), `Ctrl+Tab` opened
+the application switcher, and Home/End did not move the caret. Shortcuts are now
+**translated** to the combination that has the same effect on the other side:
+
+| On the PC keyboard | Sent to the Mac | Effect |
+|---|---|---|
+| `Ctrl` + letter | `Cmd` + letter | copy, paste, save, find, select all… |
+| `Ctrl+←/→/↑/↓`, `Ctrl+Backspace`, `Ctrl+Del` | `Option` + same | move or erase word by word |
+| `Home` / `End` | `Cmd+←` / `Cmd+→` | start / end of line |
+| `Ctrl+Home` / `Ctrl+End` | `Cmd+↑` / `Cmd+↓` | start / end of document |
+| `Ctrl+Y` | `Cmd+Shift+Z` | redo |
+| `Ctrl+Tab`, `Ctrl+Space` | unchanged | next tab, completion |
+| `Alt+F4` / `Ctrl+F4` | `Cmd+Q` / `Cmd+W` | quit / close the tab |
+| `Alt+Tab` | `Cmd+Tab` | switch application |
+| `Alt+←` / `Alt+→` | `Cmd+[` / `Cmd+]` | back / forward |
+| `Ctrl+Insert`, `Shift+Del`, `Shift+Insert` | copy, cut, paste | the other PC clipboard keys |
+| `Ctrl+Shift+Esc` | `Cmd+Option+Esc` | force quit |
+| Windows key | `Control` | |
+| `Ctrl` + click | `Cmd` + click | multiple selection (a `Ctrl` click is a right click on a Mac) |
+
+`Shift` is always kept, so every selection variant follows. The direction is chosen
+from the two platforms: a Mac keyboard in front of a Windows or Linux machine gets
+the reverse table, and nothing is translated between two machines of the same
+family — the toolbar button (**PC→Mac**, **Mac→PC**) only appears when there is
+something to translate. Click it for **raw** mode, where every key goes through
+untouched: that is what a remote terminal needs (`Ctrl+C` = SIGINT).
+
+Three more fixes on the same path:
+
+- **AltGr.** Windows reports AltGr as `Ctrl+Alt`, so `@`, `#`, `€`, `{` on a
+  French or Swiss keyboard were sent as shortcuts and never typed. They are text.
+- **Key release.** Letting go of `Ctrl` before the letter is common; the letter's
+  release then arrived without `Ctrl`, was taken for text, and nothing was sent —
+  the Mac kept `Cmd+C` held. The release now replays exactly what was pressed.
+- `Alt+Tab`, `Alt+F4`, `Ctrl+W` and `Ctrl+T` only reach the page in **full
+  screen** on Chromium; otherwise the local system keeps them.
+
+What stays different: the application switcher cannot be held open (each `Alt+Tab`
+is one complete `Cmd+Tab`), and `F2`, `Del` on a file or `PrintScreen` have no
+single Mac equivalent and are sent as they are.
+
+## Input: touch, wheel, full screen
+
+- **Touch.** One finger is the mouse: a tap is a left click where you touched, a
+  touch-then-drag holds the button, a long press without moving is a right click.
+  Two fingers moving together scroll, in the "natural" direction. The **Keyboard**
+  button, shown on touch devices, brings up the device keyboard. Tested in
+  Chromium's touch emulation, not on a physical tablet.
+- **Wheel.** The peer counts notches. One notch is sent per 100 px of accumulated
+  scroll, which leaves a mouse wheel unchanged and tames a trackpad.
+- **Full screen.** On Chromium the Keyboard Lock API hands the remote machine the
+  shortcuts the browser or the system normally keep; hold Esc to leave. Firefox
+  and Safari go full screen without the capture.
+
+## Deployment hardening
+
+- nginx does **not** inherit `add_header` from the `server` level into a
+  `location` that declares one of its own. The three locations that set the
+  session cookie were therefore served without `X-Frame-Options` or `nosniff`.
+  The headers are now repeated in each, and a test fails if one goes missing.
+- A content security policy forbids any script, image or connection to another
+  host. It keeps `'unsafe-inline'`: the page is made of inline blocks and the
+  bundle's form uses `onclick` attributes. The real-browser bench runs under this
+  exact policy, read from `nginx.conf.template`.
+- HSTS is sent by Caddy, where TLS terminates.
 
 ## Verifying a change
 
@@ -431,6 +589,65 @@ login form. Without Playwright or a browser it skips itself with a message;
 
 The same steps run in CI, but this does not depend on it: a clone should be
 verifiable offline, and the loop is shorter than pushing to find out.
+
+## Hidden tab: why the session timed out, and what changed
+
+**The cause.** The bundle reads each incoming message by *polling* its buffer with
+`setTimeout(…, 1)`. In a hidden tab the browser slows timers down: once per
+second at first, then **once per minute** after five minutes. During that time the
+page reads nothing, so it neither answers the remote machine's probes nor
+acknowledges video frames — and the peer closes any connection that stays silent
+for 30 seconds (`connection.rs`: `last_recv_time.elapsed() >= SEC30` →
+`"Timeout"`). The messages themselves still arrive: a WebSocket's `message` event
+is not throttled. A second defect sat on top: the bundle's own 12-second
+"Timeout" was measured when the late timer finally fired, so a page that had only
+been asleep declared a live connection dead.
+
+**The fix.**
+
+- Reading is now driven by the **arrival** of a message, not by a timer. The
+  replacement is made on the bundle's connection class, so the file-transfer
+  connection gets it too. A timer remains as a safety net only, and a late timer
+  is recognised as "the page slept", not as silence.
+- While the tab is hidden, frames are **acknowledged without being decoded** and
+  the page asks the peer for 5 frames per second. Coming back restores your
+  frame-rate cap and requests a key frame: the picture is back, up to date, in a
+  fraction of a second. Nobody was watching, so this only removes load.
+- The session holds a **Web Lock**, which keeps Chrome and Edge from *freezing*
+  the tab (energy saver, sleeping tabs).
+
+**What can still cut a session.** A tab the browser **discards** to reclaim
+memory (Chrome's Memory Saver, Edge's sleeping tabs set to discard) is unloaded
+entirely; on return the page reloads and auto-reconnect is all that is left.
+Exclude the site in the browser's performance settings if that happens. A
+suspended computer cuts every connection, whatever the page does.
+
+Verified in the benches, including against the bundle's real connection class
+with timers disabled. **Not** verified over a real ten-minute hidden session.
+
+## Image quality at no extra cost
+
+- **Colours.** RustDesk converts the screen to YUV with libyuv, which means
+  BT.601, and writes nothing about it in the stream. With no indication the
+  browser assumes BT.709: pure green came back as (0, 216, 2) and pure red as
+  (255, 26, 1). The decoder is now told the matrix. Measured in Chromium on VP9,
+  H264 and AV1 — green returns as (0, 255, 2). The cost is nil: it is the same
+  computation with other coefficients, and a stream that does carry a colour tag
+  still takes precedence.
+- **Sharpness.** When the picture is within a few percent of a whole number of
+  physical pixels per remote pixel, it is snapped to it and drawn without
+  interpolation. A 1920-pixel picture shown on 1905 pixels was being resampled in
+  full for an invisible gain of space; on a 125 % or 150 % display it now lands
+  exactly on the physical pixels.
+- **"Fit"** picks the remote resolution in *physical* pixels. On a 150 % display
+  it used to choose a picture one third too small, then enlarge it.
+
+The best quality for the least load is therefore: click **Fit**, so the remote
+resolution matches your window. Fewer pixels to encode, none to interpolate.
+
+What was looked at and **not** done, because it does cost something: 4:4:4 chroma
+(sharper coloured text, about half as much data again), and a higher quality
+ratio — the page already asks for 1.5, RustDesk's "best".
 
 ## Troubleshooting: `invalid key` on the relay
 

@@ -201,7 +201,7 @@
 
     // --- capture et enregistrement
     corps.appendChild(noeud("h4", "rdpop-sous", t("tb.capture")));
-    var cap = noeud("div", "rdactions");
+    var cap = noeud("div", "rdpop-actions");
     var photo = ui.bouton(t("cap.photo"), function(){ capturer(); }, "camera", "rdbtn"); photo.setAttribute("data-action", "capture");
     var rec = ui.bouton(t("cap.enreg"), function(){ if (enr.rec) arreterEnregistrement(); else demarrerEnregistrement(); }, "enregistrer", "rdbtn");
     rec.setAttribute("data-action", "enregistrer");

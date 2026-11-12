@@ -2,7 +2,9 @@
 //
 // Chaque module declare ses cles par C.i18n.ajouter({ fr: {...}, en: {...} }) : les textes restent a cote du
 // code qui les emploie, et un test verifie la parite des deux langues (memes cles, memes {parametres}).
-// Langue : « auto » suit celle du navigateur (francais ailleurs que « en » → anglais), ou « fr » / « en » force.
+// Langue : celle de la PAGE (window.__rdLangue : le choix fait sur l'ecran de connexion, sinon le navigateur). La console
+// n'a pas de reglage de langue a elle : deux reglages donneraient une interface a moitie traduite. Sans la page (banc
+// Node, page en panne), on retombe sur la langue du navigateur. « fr » / « en » passes a definir() forcent (tests).
 (function(){
   var C = window.RDConsole = window.RDConsole || {};
   var CAT = { fr: {}, en: {} }, courante = "fr", abonnes = [];
@@ -15,6 +17,7 @@
   }
   function detecter(pref){
     if (pref === "fr" || pref === "en") return pref;
+    try { if (window.__rdLangue === "fr" || window.__rdLangue === "en") return window.__rdLangue; } catch (e) {}
     var l = "fr";
     try { l = String((window.navigator && window.navigator.language) || "fr").toLowerCase(); } catch (e) {}
     return l.indexOf("fr") === 0 ? "fr" : "en";

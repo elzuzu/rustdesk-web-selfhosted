@@ -12,7 +12,6 @@
     drawer:       ["ouvert", "ferme"],
     statut:       ["visible", "masquee"],
     theme:        ["auto", "clair", "sombre"],       // auto = suit le theme du systeme
-    langue:       ["auto", "fr", "en"],              // auto = suit la langue du navigateur
     plein:        ["barres", "masquees"],            // en plein ecran : garder statut et tiroir, ou les masquer
     vue:          ["ajuste", "pixel"],               // image ajustee a la fenetre, ou 1 pixel distant = 1 pixel ecran
     souris:       ["absolu", "relatif"],
@@ -32,7 +31,7 @@
     sensib: [1, 20]                                  // sensibilite de la souris relative, en dixiemes (10 = 1,0)
   };
   var DEFAUT = {
-    drawer: "ferme", statut: "visible", theme: "auto", langue: "auto", plein: "masquees", vue: "ajuste",
+    drawer: "ferme", statut: "visible", theme: "auto", plein: "masquees", vue: "ajuste",
     souris: "absolu", bouton: "gauche", sens: "standard", jiggle: "inactif", clavierV: "ferme", taux: 1, sensib: 10,
     secVideo: "ouverte", secAudio: "ouverte", secClavier: "ouverte", secSouris: "ouverte", secAffichage: "ouverte"
   };

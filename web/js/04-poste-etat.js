@@ -53,6 +53,7 @@
     option: function(nom){ var c = window.curConn; return !!(c && c._options && c._options[nom]); },
     surChangement: function(f){ abonnes.push(f); },
     oublier: oublier,
+    signaler: prevenir,
     _observer: observer
   };
 })();

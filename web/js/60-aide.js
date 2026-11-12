@@ -101,7 +101,7 @@
     el.appendChild(noeud("h3", "rdpop-titre", t("bar.aide.titre")));
     var corps = noeud("div", "rdpop-corps"); el.appendChild(corps);
     corps.appendChild(noeud("h4", "rdpop-sous", t("aide.diag")));
-    var actions = noeud("div", "rdactions");
+    var actions = noeud("div", "rdpop-actions");
     var sortie = noeud("p", "rdaide rdaide-resultat"); sortie.setAttribute("role", "status"); sortie.hidden = true;
     var relais = ui.bouton(t("aide.relais"), function(ev, b){
       if (typeof window.rdRelayTest !== "function") return;

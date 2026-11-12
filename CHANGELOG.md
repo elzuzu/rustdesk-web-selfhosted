@@ -1,5 +1,44 @@
 # Journal des versions
 
+## Non publié — fusion des deux lignes de développement
+
+La console de session et la liste des postes (1.0.0, ci-dessous) et la ligne publiée sur GitHub (codecs, entrées, écran de
+connexion, sécurité, langue) avaient avancé séparément depuis `e1928dd`. Elles sont réunies. Règle de la fusion : **la page fait,
+la console présente** — une seule implémentation par fonction, et la console pilote les contrôles de la page au lieu de les refaire.
+
+### Apporté par la ligne GitHub
+- **Codecs** H264 et AV1 en plus de H265 et VP9, sondés et annoncés au pair ; le décodeur suit le flux reçu.
+- **Entrées** : tactile (un doigt la souris, deux la molette), molette cumulée, capture du pointeur, clavier de l'appareil.
+- **Clavier** : raccourcis **traduits** entre PC et Mac (plus une simple permutation Ctrl/Cmd), AltGr, relâchements exacts.
+- **Presse-papier** : distant vers local sans bouton ; local vers distant sur accord (« Presse-papier automatique »).
+- **Écran de connexion** : en-tête, un seul champ, mot de passe incorrect redemandé, mémorisation au choix, **2FA**.
+- **Sécurité** : politique de contenu (CSP), `Referrer-Policy`, `Permissions-Policy`, en-têtes répétés dans chaque `location`
+  (y compris, désormais, celles de la console et de l'API de la flotte) ; message du pair échappé (correctif 6 du bundle).
+- **Session** : plus de coupure en onglet caché, couleurs exactes (BT.601), image calée au pixel physique.
+- **Sources** : la page est découpée dans `web/src/` et assemblée par `scripts/build-page.py` ; application installable.
+
+### Arbitrages (une implémentation par fonction)
+- **Écran de connexion** : structure, textes et comportement de la page ; l'apparence (carte, contraste mesuré, téléphone) vient
+  de la console. `web/js/05-login.js` ne garde que « Aller » sur le clavier mobile et le focus initial.
+- **Langue** : un seul réglage, celui de l'écran de connexion (`rd-prefs.lang`). La console le suit ; le choix de langue du
+  tiroir est **retiré** (changer de langue en session aurait laissé la page à moitié traduite).
+- **Plein écran** : le bouton de la console clique celui de la page — une seule capture du clavier, un seul message.
+- **Actions, écrans, options du poste** : présentés par la fenêtre « Poste » ; les menus `<select>` de la page restent dans la
+  barre sans s'afficher, et reparaissent si la console ne se monte pas. L'état d'une option (confidentialité, blocage de la
+  saisie) est celui que **le poste a confirmé**, plus celui que l'on suppose après un clic.
+- **Presse-papier automatique** : nouvel interrupteur dans « Poste », qui pilote la fonction de la page.
+- **Raccourcis** : l'interrupteur « Traduire les raccourcis » remplace « Ctrl devient Cmd » ; grisé, avec la raison, entre deux
+  postes de même famille.
+- **Calage de l'image** : la zone libre entre les barres (console) passe par le calage au pixel physique (page) ; la vue 1:1 reste.
+- **Limitation de débit** : 60 requêtes/min avec rafale de 100 (mesuré le 2026-09-15), au lieu de 20/min et 40.
+
+### Bancs de test
+- Gabarit 202 tests, navigateur 112 ; planchers de `verify.sh` relevés. Rejoué sans WebCodecs (`RD_SANS_VIDEODECODER=1`) : 108, et
+  4 tests propres à WebCodecs ignorés et annoncés.
+- Le banc navigateur ne dépend plus de la machine : clavier PC forcé dans les deux tests de raccourcis (ils échouaient sur un Mac),
+  et Chrome est lancé sans couper `RenderDocument` (Playwright 1.56.1 la coupe ; sous Chrome 157 sans tête, tout plein écran
+  était alors refusé).
+
 ## 1.0.0 — console de session complète et liste des postes
 
 Alignement du client web RustDesk sur l'**interface et les réglages** de la console GL.iNet GLKVM — sans composant GL.iNet et sans

@@ -61,8 +61,8 @@ for s in setup.sh scripts/*.sh; do bash -n "$s"; done
 vert "  ✓ tous les scripts se parsent"
 
 titre "Syntaxe Python des outils"
-python3 -m py_compile scripts/relay-probe.py
-vert "  ✓ scripts/relay-probe.py"
+python3 -m py_compile scripts/relay-probe.py scripts/build-page.py
+vert "  ✓ scripts/relay-probe.py, scripts/build-page.py"
 python3 -I -m py_compile fleet/server.py scripts/online-probe.py
 vert "  ✓ fleet/server.py, scripts/online-probe.py"
 
@@ -74,6 +74,11 @@ tail -3 "$T/fleet.log" | grep -q '^OK' || { rouge "  ✗ tests du service flotte
 PLANCHER_FLOTTE=19
 [ "${n:-0}" -ge "$PLANCHER_FLOTTE" ] || { rouge "  ✗ service flotte : $n tests, plancher $PLANCHER_FLOTTE"; exit 1; }
 vert "  ✓ service flotte ($n tests, plancher $PLANCHER_FLOTTE)"
+
+titre "Assemblage de la page"
+# web/index.html.template est un produit de web/src/ : tout ce qui suit le lit.
+rm -f web/index.html.template
+python3 scripts/build-page.py
 
 titre "Le piege retire doit rester retire"
 # « docker exec hbbs cat /root/id_ed25519.pub » a ete la seule instruction que
@@ -135,8 +140,8 @@ done
 # Plancher du nombre de tests : un test supprime ou desactive en silence ne doit
 # pas faire passer le controle. A RELEVER quand on ajoute des tests, jamais a
 # baisser sans raison ecrite dans le commit.
-PLANCHER_GABARIT=150
-PLANCHER_NAVIGATEUR=86
+PLANCHER_GABARIT=202
+PLANCHER_NAVIGATEUR=112
 
 titre "Banc du gabarit"
 # Meme controle que la CI. Il exige html/js/dist/, produit juste au-dessus.

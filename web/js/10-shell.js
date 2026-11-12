@@ -28,12 +28,11 @@
       "video.codec": "Codec", "video.codec.aide": "Auto retient le décodage matériel quand il existe.",
       "opt.qualite.balanced": "Équilibré", "opt.qualite.best": "Qualité", "opt.qualite.low": "Fluidité",
       "opt.fps": "{n} i/s max", "opt.codec.auto": "Codec auto", "opt.codec.h265": "H265", "opt.codec.vp9": "VP9", "opt.codec.logiciel": "Logiciel",
-      "clavier.swap": "Ctrl devient Cmd", "clavier.swap.aide": "Actif : copier/coller comme sur macOS. Désactivé : Ctrl reste Ctrl (terminal).",
+      "clavier.swap": "Traduire les raccourcis", "clavier.swap.aide": "Actif : un raccourci produit le même effet sur le poste (Ctrl+C ↔ Cmd+C, Début/Fin, mot précédent…). Désactivé : les touches partent telles quelles (terminal).",
+      "clavier.swap.direct": "Rien à traduire : les deux postes sont de la même famille.",
       "souris.hf": "Souris haute fréquence", "souris.hf.aide": "Plus fidèle, mais consomme plus de débit sortant.",
       "aff.theme": "Thème", "aff.theme.aide": "Auto suit le thème de votre système.",
       "theme.auto": "Auto", "theme.clair": "Clair", "theme.sombre": "Sombre",
-      "aff.langue": "Langue", "aff.langue.aide": "Auto suit la langue du navigateur.",
-      "langue.auto": "Auto", "langue.fr": "Français", "langue.en": "English",
       "aff.statut": "Barre de statut", "aff.statut.aide": "Résumé du flux en bas de l'écran.",
       "aff.plein": "Plein écran épuré", "aff.plein.aide": "En plein écran, masque le tiroir et la barre de statut.",
       "statut.relais": "Relais", "statut.relais.aide": "Ce client passe toujours par le relais du serveur.", "statut.direct": "Direct",
@@ -53,12 +52,11 @@
       "video.codec": "Codec", "video.codec.aide": "Auto picks hardware decoding when available.",
       "opt.qualite.balanced": "Balanced", "opt.qualite.best": "Quality", "opt.qualite.low": "Smoothness",
       "opt.fps": "{n} fps max", "opt.codec.auto": "Auto codec", "opt.codec.h265": "H265", "opt.codec.vp9": "VP9", "opt.codec.logiciel": "Software",
-      "clavier.swap": "Ctrl becomes Cmd", "clavier.swap.aide": "On: copy/paste like macOS. Off: Ctrl stays Ctrl (terminal).",
+      "clavier.swap": "Translate shortcuts", "clavier.swap.aide": "On: a shortcut has the same effect on the remote machine (Ctrl+C ↔ Cmd+C, Home/End, previous word…). Off: keys are sent as typed (terminal).",
+      "clavier.swap.direct": "Nothing to translate: both machines are of the same family.",
       "souris.hf": "High-frequency mouse", "souris.hf.aide": "More accurate, but uses more upstream bandwidth.",
       "aff.theme": "Theme", "aff.theme.aide": "Auto follows your system theme.",
       "theme.auto": "Auto", "theme.clair": "Light", "theme.sombre": "Dark",
-      "aff.langue": "Language", "aff.langue.aide": "Auto follows the browser language.",
-      "langue.auto": "Auto", "langue.fr": "Français", "langue.en": "English",
       "aff.statut": "Status bar", "aff.statut.aide": "Stream summary at the bottom of the screen.",
       "aff.plein": "Clean full screen", "aff.plein.aide": "In full screen, hides the drawer and the status bar.",
       "statut.relais": "Relay", "statut.relais.aide": "This client always goes through the server relay.", "statut.direct": "Direct",
@@ -80,7 +78,7 @@
   var monte = false, renonce = false, demarre = false, essais = 0;
   var barre = null, tiroir = null, statut = null, btnSession = null, pairEl = null, observateur = null;
   var tickStatut = null, tickObs = null;
-  var deplaces = [], resynchros = [], elements = [], popovers = [], ecouteurs = [], internes = [];
+  var deplaces = [], resynchros = [], elements = [], popovers = [], ecouteurs = [], internes = [], veilleurs = [];
   var ligneEl = null, tagsEl = null, etatEl = null, lienEl = null, rttEl = null, pairIdEl = null;
   var mesure = { frames: 0, t: 0 }, derniere = "";
 
@@ -248,6 +246,8 @@
 
   function demonter(){
     try { if (observateur) observateur.disconnect(); } catch (e) {}
+    veilleurs.forEach(function(v){ try { v.disconnect(); } catch (e) {} });
+    veilleurs = [];
     try { if (tickStatut) clearInterval(tickStatut); if (tickObs) clearInterval(tickObs); } catch (e) {}
     tickStatut = tickObs = null;
     ecouteurs.forEach(function(x){ try { x[0].removeEventListener(x[1], x[2], x[3]); } catch (e) {} });
@@ -272,7 +272,7 @@
     });
     // Les boutons du gabarit ont ete habilles : on leur rend leur texte nu.
     try {
-      [".rdfilesbtn", ".quit"].forEach(function(s){
+      [".rdfilesbtn", ".quit", ".rdclavier"].forEach(function(s){
         var b = barre && barre.querySelector(s);
         if (b && b.getAttribute("data-rdico")) {
           var l = b.querySelector(".rdlbl"), tx = l ? l.textContent : b.textContent;
@@ -288,7 +288,7 @@
   // de l'arbre d'accessibilite).
   function habiller(){
     try {
-      [[".rdfilesbtn", "dossier"], [".quit", "quitter"]].forEach(function(p){
+      [[".rdfilesbtn", "dossier"], [".quit", "quitter"], [".rdclavier", "clavier"]].forEach(function(p){
         var b = barre.querySelector(p[0]);
         if (!b || b.getAttribute("data-rdico")) return;
         var texte = b.textContent;
@@ -326,7 +326,7 @@
   function monter(){
     barre = document.getElementById("rdbar");
     try {
-      C.i18n.definir(etat.langue);
+      C.i18n.definir();
       var sel = prendre("resolution"), fit = prendre("ajuster"), qual = prendre("qualite"),
           fps = prendre("cadence"), cod = prendre("codec"), swp = prendre("swap");
       var rd = window.RD || {};
@@ -339,9 +339,27 @@
       ajouterLigneInterne("video", 40, function(){ return ui.ligne(t("video.cadence"), fps, t("video.cadence.aide")); });
       ajouterLigneInterne("video", 50, function(){ return ui.ligne(t("video.codec"), cod, t("video.codec.aide")); });
       ajouterLigneInterne("clavier", 10, function(){
-        return ui.ligne(t("clavier.swap"), interrupteurSur(swp, function(){
+        var l = ui.ligne(t("clavier.swap"), interrupteurSur(swp, function(){
           try { return window.localStorage.getItem("rd-swap-ctrl") !== "0"; } catch (e) { return true; }
         }, "swap"), t("clavier.swap.aide"));
+        // La page masque son bouton quand il n'y a rien a traduire (PC devant PC, Mac devant Mac) : la ligne reste
+        // visible, grisee, avec la raison. La plateforme du pair n'est connue qu'a peer_info, souvent APRES le montage
+        // (et le tiroir peut deja etre ouvert) : on suit le style que la page ecrit sur son bouton, pas un minuteur.
+        var aide = l.querySelector(".rdaide"), cb = l.querySelector("input");
+        var maj = function(){
+          var direct = swp.style.display === "none";
+          if (direct) l.setAttribute("data-indisponible", "1"); else l.removeAttribute("data-indisponible");
+          l.title = direct ? t("clavier.swap.direct") : "";
+          if (aide) aide.textContent = t(direct ? "clavier.swap.direct" : "clavier.swap.aide");
+          if (cb) cb.disabled = direct;
+        };
+        resynchros.push(maj); maj();
+        if (typeof MutationObserver === "function") {
+          var v = new MutationObserver(maj);
+          v.observe(swp, { attributes: true, attributeFilter: ["style"] });
+          veilleurs.push(v);
+        }
+        return l;
       });
       ajouterLigneInterne("souris", 10, function(){
         return ui.ligne(t("souris.hf"), ui.interrupteur(rd.coalesce, function(on){
@@ -352,12 +370,6 @@
         return ui.ligne(t("aff.theme"), ui.segmente([["auto", t("theme.auto")], ["clair", t("theme.clair")], ["sombre", t("theme.sombre")]], etat.theme, function(v){
           memoriser({ theme: v }); appliquer();
         }), t("aff.theme.aide"));
-      });
-      ajouterLigneInterne("affichage", 20, function(){
-        return ui.ligne(t("aff.langue"), ui.segmente([["auto", t("langue.auto")], ["fr", t("langue.fr")], ["en", t("langue.en")]], etat.langue, function(v){
-          memoriser({ langue: v });
-          setTimeout(function(){ C.i18n.definir(v); }, 0);       // reconstruit la console dans la nouvelle langue (cf. surChangement)
-        }), t("aff.langue.aide"));
       });
       ajouterLigneInterne("affichage", 30, function(){
         return ui.ligne(t("aff.statut"), ui.interrupteur(etat.statut === "visible", function(on){
@@ -499,7 +511,8 @@
     }
   }
 
-  // Changement de langue : la console se reconstruit (le DOM seulement, jamais la session).
+  // Changement de langue : la console se reconstruit (le DOM seulement, jamais la session). La langue est celle de la
+  // page, fixee au chargement : en service ceci ne sert donc qu'au premier montage ; le banc s'en sert pour forcer.
   function remonter(){
     if (!monte) return;
     demonter(); purgerInternes();
@@ -520,7 +533,7 @@
   function demarrer(){
     if (demarre) return;
     demarre = true;
-    C.i18n.definir(etat.langue);
+    C.i18n.definir();
     if (!tenter()) {
       var attente = setInterval(function(){
         essais++;

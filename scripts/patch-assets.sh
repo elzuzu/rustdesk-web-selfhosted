@@ -64,6 +64,18 @@ old='async function S3(u){const e=1024*1024*64'
 assert s.count(old)==1, "patch 5 : motif absent"
 s=s.replace(old,'window.__rdUnzstd=(u)=>S3(u);window.__rdZstdDecoder=async()=>(u4||await w3(),u4);'+old); n+=1
 
+# 6) Texte du pair injecte comme du HTML.
+#    L'ecran d'attente affiche le message d'erreur par innerHTML, et ce message
+#    vient du pair (LoginResponse.error) ou du serveur de rendez-vous : un pair
+#    malveillant y placait une balise avec un gestionnaire d'evenement, executee
+#    dans la page — qui detient les mots de passe memorises. On echappe.
+ECH='String(t).replace(/[&<>"\x27]/g,x=>"&#"+x.charCodeAt(0)+";")'
+for old in ('<div style="color: red; font-weight: bold;">\x27+t+"</div>"',
+            '<div style="font-weight: bold;">\x27+t+"</div>"'):
+    assert s.count(old)==1, "patch 6 : motif absent"
+    s=s.replace(old, old.replace('+t+', '+'+ECH+'+'))
+n+=1
+
 # --- Pre-condition d'ecriture : le format de fil d'authentification est intact --
 #
 # La verification precede l'ecriture, et c'est le point important : un
@@ -118,3 +130,13 @@ for f in libopus.js libopus.wasm yuv.js yuv.wasm; do
   [ -f "$D/../../$f" ] && cp -f "$D/../../$f" "$D/"
 done
 echo "  workers copies dans js/dist/"
+
+# Nos propres fichiers (icone, manifeste d'application). Ils sont aussi copies
+# par extract-assets.sh — mais setup.sh SAUTE l'extraction quand html/ existe
+# deja : sur un deploiement en place, une mise a jour ne les aurait jamais
+# apportes, et le manifeste aurait ete servi… par la page d'accueil.
+RACINE="$(cd "$(dirname "$0")/.." && pwd)"
+for f in favicon.svg manifest.json icon-192.png icon-512.png; do
+  [ -f "$RACINE/web/$f" ] && cp -f "$RACINE/web/$f" "$RACINE/html/"
+done
+echo "  fichiers de la page copies dans html/"

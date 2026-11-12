@@ -107,6 +107,11 @@ body.rd-console #rdbar:not(.replie) button.quit{order:90;color:var(--rd-danger-t
 body.rd-console #rdbar:not(.replie) button.quit:hover{background:color-mix(in oklch,var(--rd-danger) 26%,transparent)}
 body.rd-console #rdbar:not(.replie) .rdhandle{inline-size:2rem;padding:0;font-size:1rem;color:var(--rd-text-2)}
 
+/* Une seule presentation par fonction : ecrans, actions et plein ecran sont dans les fenetres de la console, qui PILOTENT
+   ces controles de la page. Ils restent dans la barre (la page y tient ses gestionnaires) sans s'afficher ; si la console
+   ne se monte pas, body.rd-console n'existe pas et ils reparaissent. !important : la page ecrit leur display en ligne. */
+body.rd-console #rdbar :is([data-rd="ecrans-page"],[data-rd="actions-page"],[data-rd="plein-page"]){display:none!important}
+
 /* Le poste distant : l'emplacement du futur « changer d'appareil ». */
 body.rd-console #rdbar .rdpair{order:-2;display:inline-flex;align-items:center;gap:.45rem;
        padding:.3125rem .75rem;border:1px solid var(--rd-border);border-radius:999px;
@@ -235,7 +240,7 @@ body.rd-console .rdpop .rdaide{color:var(--rd-text-2);font-size:.75rem;line-heig
 body.rd-console .rdpop :is(button,input,select,textarea,summary):focus-visible{outline:2px solid var(--rd-focus);outline-offset:2px}
 
 /* Boutons d'action des fenetres. */
-body.rd-console .rdactions{display:grid;gap:.375rem;padding:.25rem 1rem .5rem}
+body.rd-console .rdpop-actions{display:grid;gap:.375rem;padding:.25rem 1rem .5rem}
 body.rd-console .rdbtn{display:inline-flex;align-items:center;gap:.55rem;block-size:2.25rem;padding:0 .85rem;margin:0;
        border:1px solid var(--rd-border);border-radius:.625rem;background:var(--rd-surface-2);color:var(--rd-text);
        font:500 .8125rem/1 var(--rd-font);cursor:pointer;text-align:start;
@@ -250,7 +255,7 @@ body.rd-console .rdbtn-danger .rdico{color:inherit}
 body.rd-console [data-indisponible]{opacity:.6}
 
 /* Choix de l'ecran du poste. */
-body.rd-console .rdecrans{display:grid;gap:.25rem;padding:.25rem 1rem .5rem}
+body.rd-console .rdpop-ecrans{display:grid;gap:.25rem;padding:.25rem 1rem .5rem}
 body.rd-console .rdecran{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.6rem;padding:.5rem .65rem;margin:0;
        border:1px solid var(--rd-border);border-radius:.625rem;background:transparent;color:var(--rd-text);
        font:500 .8125rem/1.2 var(--rd-font);cursor:pointer;text-align:start;transition:background-color .12s,border-color .12s}
@@ -455,8 +460,11 @@ body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);col
 }
 
 /* ===================================================== ecran de connexion
-   Le formulaire du bundle (un <table> de trois lignes), son invite de mot de passe et son ecran
-   d'attente, habilles en carte. TOUJOURS sombre : c'est l'ecran d'avant la session, sur le fond
+   Le formulaire du bundle, son invite de mot de passe et son ecran d'attente, habilles en carte.
+   La STRUCTURE et les textes viennent de la page (web/src/30-session.js, habillerFormulaire) :
+   en-tete #rd-entete, lignes hote et cle masquees, <label for=id>, pied #rd-pied, titre
+   #rd-mdp-titre. Ici, seulement l'apparence — aucun titre n'est ecrit en CSS, sauf celui de
+   l'ecran d'attente et de « Connexion manuelle », traduits par :lang(). TOUJOURS sombre : c'est l'ecran d'avant la session, sur le fond
    sombre de la page ; le theme du tiroir ne s'y applique pas (il n'existe qu'une fois en session).
    Les memes valeurs que les jetons de la console, cote sombre. Specificite : le gabarit pose
    « #app>#connect », « #app input » et « #app td » ; chaque regle ci-dessous les surpasse. */
@@ -470,14 +478,32 @@ body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);col
      box-shadow:0 1px 0 oklch(1 0 0/.04) inset,0 28px 70px oklch(0 0 0/.5),0 0 90px oklch(.5 .2 264/.1)}
 #app>:is(#connect,#password,#status)::before{display:block;margin-block-end:1.25rem;
      font-size:1.25rem;font-weight:650;line-height:1.2;letter-spacing:-.012em}
-#app>#connect::before{content:"Connexion au poste distant"}
-#app>#password::before{content:"Mot de passe du poste"}
 #app>#status::before{content:"Connexion en cours"}
+:lang(en) #app>#status::before{content:"Connecting"}
+/* En-tete pose par la page : logo a gauche, titre et sous-titre a droite. */
+#app>#connect #rd-entete{display:grid;grid-template-columns:auto 1fr;column-gap:.85rem;align-items:center;margin:0 0 1.35rem}
+#app>#connect #rd-entete img{grid-row:1/3;margin:0;border-radius:.7rem}
+#app>#connect #rd-entete h1{margin:0;font-size:1.25rem;font-weight:650;line-height:1.2;letter-spacing:-.012em;color:var(--lg-text)}
+#app>#connect #rd-entete p{margin:.15rem 0 0;font-size:.875rem;color:var(--lg-text-2)}
+#app>#password #rd-mdp-titre{margin:0 0 1.25rem;font-size:1.25rem;font-weight:650;line-height:1.2;letter-spacing:-.012em;color:var(--lg-text)}
+#app>#status #text{margin-top:0}
 
 #app>#connect :is(table,tbody,tr,td){display:block!important;inline-size:100%;padding:0;box-sizing:border-box}
+#app>#connect table{border:0;border-radius:0;background:none}
+/* L'hote et la cle viennent du deploiement : la page masque leurs lignes (attribut hidden). */
+#app>#connect tr[hidden]{display:none!important}
 #app>#connect tr{margin-block-end:.9rem}
-#app>#connect td:has(>span){margin-block-end:.3rem;font-size:.75rem;font-weight:600;letter-spacing:.02em;
+#app>#connect td:has(>:is(span,label)){margin-block-end:.3rem;font-size:.75rem;font-weight:600;letter-spacing:.02em;
      color:var(--lg-text-2)}
+#app>#connect td>label{color:inherit;font-size:inherit}
+/* Pied pose par la page : memorisation des mots de passe, serveur, langue. */
+#app>#connect #rd-pied{margin:1.1rem 0 0;max-inline-size:none;padding-block-start:1rem;border-block-start:1px solid var(--lg-border);
+     color:var(--lg-text-2);font-size:.8125rem}
+#app>#connect #rd-pied #rd-serveur{justify-content:flex-start;flex-wrap:wrap;margin:.65rem 0 0}
+#app>#connect #rd-pied #rd-serveur b{color:var(--lg-text);font-weight:600}
+#app>#connect #rd-pied #rd-langue{margin-inline-start:auto;block-size:2rem;padding:0 .5rem;border:1px solid var(--lg-border-strong);
+     border-radius:.5rem;background:var(--lg-field);color:var(--lg-text);font:inherit}
+#app>#connect #rd-pied #rd-langue:focus-visible{outline:2px solid var(--lg-focus);outline-offset:2px}
 #app>#connect td:empty{display:none!important}
 #app :is(input,#confirm,#cancel,#connect button){font-family:inherit}
 #app>:is(#connect,#password) input{inline-size:100%;min-inline-size:0;box-sizing:border-box;
@@ -529,7 +555,10 @@ body.rd-console #rdmodal .boite button.ok.danger{background:var(--rd-danger);col
        box-shadow:0 1px 0 oklch(1 0 0/.04) inset,0 28px 70px oklch(0 0 0/.5),0 0 90px oklch(.5 .2 264/.1)}
 #app>#rdflotte[hidden]{display:none}
 #app>#rdflotte:not([hidden])+#connect{margin-top:1rem}
+/* Avec « Mes postes » au-dessus, la carte de connexion n'est plus l'entree principale : son en-tete cede la place a un titre discret. */
+#app>#rdflotte:not([hidden])+#connect #rd-entete{display:none}
 #app>#rdflotte:not([hidden])+#connect::before{content:"Connexion manuelle";font-size:1rem;color:var(--lg-text-2)}
+:lang(en) #app>#rdflotte:not([hidden])+#connect::before{content:"Manual connection"}
 #rdflotte .rdfl-entete{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1rem;margin-block-end:1rem}
 #rdflotte .rdfl-entete h2{margin:0;font-size:1.25rem;font-weight:650;letter-spacing:-.012em}
 #rdflotte .rdfl-compte{color:var(--lg-text-2);font-size:.8125rem;font-variant-numeric:tabular-nums}

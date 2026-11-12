@@ -75,13 +75,32 @@ Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome .
 - [ ] Contrôle avec un vrai pair et un vrai hbbs (Alex) — voir « Non vérifié » ci-dessus
 - [ ] Push (décision d'Alex ; publierait aussi `59f9661`)
 
+## Réconciliation avec `origin/main` (2026-11-12) — FAIT, branche `reconcilier-main-origin`, non poussée
+`main` local (9 commits, console + flotte, v1.0.0) et `origin/main` (8 commits : codecs, entrées, écran de connexion, CSP, langue,
+`web/src/`) avaient divergé depuis `e1928dd`. Fusion dans une branche à part ; `main` n'est pas touché.
+
+- [x] Conflits de texte : `nginx.conf.template`, `scripts/verify.sh`, les deux bancs ; `web/index.html.template` supprimé côté
+      distant → les 4 retouches locales du gabarit sont reportées dans `web/src/page.html` et `web/src/30-session.js`
+- [x] Règle : **la page fait, la console présente**. Par recouvrement — connexion (structure : page ; apparence : console),
+      langue (page seule, réglage du tiroir retiré), plein écran / actions / écrans / options (fenêtres de la console, qui
+      pilotent les contrôles de la page ; état confirmé par le poste), raccourcis traduits (interrupteur du tiroir),
+      calage d'image (zone libre de la console + calage au pixel de la page)
+- [x] nginx : les 5 en-têtes de sécurité répétés dans `location ~ ^/rd-console` et `location /api/` (ils n'héritaient de rien)
+- [x] Bancs : gabarit 202, navigateur 112 (108 + 4 ignorés et annoncés sans WebCodecs) ; option `sansConsole` pour les tests de la barre d'origine ; clavier PC forcé ;
+      `RenderDocument` non coupé (Chrome 157 sans tête refusait tout plein écran sous Playwright 1.56.1)
+- Retiré : le choix de langue du tiroir (et la clé `langue` du magasin `rd-console`) ; l'écoute d'Entrée et les `aria-label`
+  de `05-login.js` (la page le fait, avec un vrai `<label>`) ; les titres de carte écrits en CSS (sauf l'écran d'attente)
+- Reste à trancher par Alex : deux boutons « Clavier » sur écran tactile (clavier de l'appareil, de la page ; clavier virtuel,
+  de la console) — complémentaires, mais de même libellé
+- Toujours non vérifié contre un vrai pair et un vrai hbbs : voir « Version finale 1.0.0 »
+
 ## Matrice de non-régression (14 fonctions à protéger)
 Connexion ID/clé/hôte · mot de passe mémorisé · résolution + Ajuster · qualité/cadence/codec mémorisés · Ctrl↔Cmd ·
 presse-papier texte · presse-papier image/HTML · fichiers · HUD traversant · bannières d'erreur · reprise auto · wake lock ·
 diagnostics console · auth Basic + cookie + rate-limit.
 
 ## Repéré, hors périmètre (non planifié sauf accord)
-- Pas de CSP ; `add_header` du niveau `server` nginx probablement perdus dans les `location` authentifiées (déduit, non testé)
+- ~~Pas de CSP ; `add_header` perdus dans les `location` authentifiées~~ — réglé par la ligne GitHub (`6ff2694`), étendu aux blocs de la console et de l'API
 - `set_real_ip_from 172.18.0.0/16` codé en dur
 - Secrets cuits dans l'image (ne jamais la pousser sur un registre public)
 - `setup.sh` saute l'extraction des assets si `html/js/dist/index.js.orig` existe (assets périmés après un pull)

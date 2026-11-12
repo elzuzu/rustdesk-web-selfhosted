@@ -7,6 +7,10 @@ Caddyfile
 # Arborescence servie, reconstruite par setup.sh depuis assets/
 html/
 
+# La page assemblee depuis web/src/ par scripts/build-page.py : un produit,
+# pas une source. setup.sh, verify.sh, la CI et les tests la reconstruisent.
+web/index.html.template
+
 # Divers
 node_modules/
 __pycache__/

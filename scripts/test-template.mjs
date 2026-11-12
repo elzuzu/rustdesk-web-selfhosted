@@ -41,6 +41,9 @@ const TARBALL = path.join(RACINE, "assets", "rustdesk-web-assets.tar.gz");
 const MIO = 1024 * 1024;
 
 const lire = (p) => fs.readFileSync(p, "utf8");
+// Le gabarit est assemble depuis web/src/ : le banc teste TOUJOURS les sources
+// courantes, jamais un gabarit reste d'un assemblage precedent.
+execFileSync("python3", [path.join(RACINE, "scripts", "build-page.py")], { stdio: "pipe" });
 const html = lire(GABARIT);
 
 // Meme regex que scripts/check-syntax.sh : les blocs porteurs d'un src= sont
@@ -226,7 +229,7 @@ test("bar-children-direct : le greffon fichiers et le presse-papier visent les e
   // controles a plat.
   assert.match(html, /var q = bar\.querySelector\("button\.quit"\);\s*\n\s*if \(q\) bar\.insertBefore\(b, q\)/);
   assert.match(html, /bar\.insertBefore\(b, bar\.firstChild\)/);
-  assert.match(html, /\[sel,fit,qual,fps,cod,swp,quit\]\.forEach\(function\(x\)\{ bar\.appendChild\(x\); \}\)/);
+  assert.match(html, /\[sel,fit,qual,fps,cod,swp,ecr,act,clav,plein,quit\]\.forEach\(function\(x\)\{ bar\.appendChild\(x\); \}\)/);
 });
 
 test("hud-sibling-rule : la regle #rdbar:hover ~ #rdhud reste valable", () => {
@@ -1104,13 +1107,19 @@ avecVendor("inbound : ClipboardItem qui refuse une promesse (TypeError) -> repli
   assert.ok((await m.ecrits[0].obj["image/png"]).size > 0, "un Blob, plus une promesse");
 });
 
-avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ; le texte simple reste", async () => {
+avecVendor("inbound : un message « clipboard » est toujours pris par la page — image comme texte simple", async () => {
   const m = await montageEntrant();
   const img = { clipboard: { format: 22, compress: false, content: Uint8Array.from([1, 2, 3]), width: 1, height: 1 } };
   const r = m.w.__rdPpFiltrer(img);
   assert.equal(r.clipboard, undefined, "sinon le bundle ferait TextDecoder sur du PNG");
+  // Le texte simple aussi : le bundle le posait par execCommand hors de tout geste, sans effet.
   const txt = { clipboard: { format: 0, compress: false, content: utf8("salut") } };
-  assert.equal(m.w.__rdPpFiltrer(txt).clipboard.format, 0, "le texte simple est laisse au bundle");
+  assert.equal(m.w.__rdPpFiltrer(txt).clipboard, undefined);
+  assert.ok(boutons(m.barre).includes("Texte reçu ⇩"), JSON.stringify(boutons(m.barre)));
+  // Sans API de presse-papier (page en http), le bundle garde la main.
+  m.w.navigator.clipboard = undefined;
+  const t2 = { clipboard: { format: 0, compress: false, content: utf8("salut") } };
+  assert.equal(m.w.__rdPpFiltrer(t2).clipboard.format, 0);
 });
 
 
@@ -1120,7 +1129,7 @@ avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ;
 // chaque echec produit un retour, la limite porte sur ce qui part, le collage
 // distant est retarde selon la taille, et le focus ne se perd plus.
 // ====================================================================
-async function montageSortant({ version = "1.4.2", vivante = true, prete = true, dims = { w: 800, h: 600 },
+async function montageSortant({ version = "1.4.2", plateforme = "Mac OS", vivante = true, prete = true, dims = { w: 800, h: 600 },
                                 init = {}, qualiteBundle, formulaire = false } = {}) {
   const bac = creerBac();
   const w = bac.window, doc = bac.document;
@@ -1173,7 +1182,8 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   const depotsFichiers = { n: 0 };
   w.RDFT.accepterDepot = () => { depotsFichiers.n++; };          // espion : un collage d'image ne doit PAS televerser
   w.RD.ready = prete;
-  w.curConn = { _id: "123456789", _peerInfo: { version },
+  // Le clavier du banc est un PC (navigator.userAgent « node »), le pair un Mac par defaut.
+  w.curConn = { _id: "123456789", _peerInfo: { version, platform: plateforme },
                 _ws: { _websocket: { readyState: 1 },
                        sendMessage(m) { envoyes.push(m); journal.push(m.misc && m.misc.option ? "opt:" + Object.keys(m.misc.option).join(",") : "msg"); },
                        next: async () => null },
@@ -1944,8 +1954,9 @@ test("audit B20 : un collage d'image n'ouvre PAS en plus le televersement de fic
 test("audit C23 : le vrai next() de la liaison passe par ppFiltrer (le crochet est bien installe)", async () => {
   const m = await montageSortant();
   const msg = { clipboard: { format: 22, compress: false, content: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), width: 1, height: 1 } };
-  m.w.curConn._ws.next = async () => msg;
-  m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());       // le veilleur appelle patchConn
+  // Comme le bundle dans start() : une liaison NEUVE est affectee a la connexion.
+  // L'accroche sur _ws l'instrumente a l'affectation, sans attendre le veilleur.
+  m.w.curConn._ws = { ...m.w.curConn._ws, next: async () => msg };
   const recu = await m.w.curConn._ws.next();
   assert.equal(recu.clipboard, undefined, "l'image est retiree du message avant le bundle");
   assert.ok(m.bar.children.some((c) => c.className === "rdppbtn"), "et son bouton est apparu : le message a bien traverse ppFiltrer");
@@ -2234,8 +2245,8 @@ test("console-template-contract : les reperes data-rd et les balises que la cons
 test("console-fit-measures-container : fitCanvas et placerHud mesurent #canvas, plus la fenetre", () => {
   assert.match(html, /function zoneImage\(c\)\{[\s\S]*?p\.clientWidth > 0 && p\.clientHeight > 0[\s\S]*?return \{ w:w, h:h, left:l, bottom:b \};/);
   const fit = html.slice(html.indexOf("function fitCanvas()"), html.indexOf("window.__rdFit = fitCanvas"));
-  assert.match(fit, /var z = zoneImage\(c\);/);
-  assert.match(fit, /Math\.min\(z\.w\/c\.width, z\.h\/c\.height\)/);
+  assert.match(fit, /var z = zoneImage\(c\)/);
+  assert.match(fit, /RDLib\.affichage\.echelle\(c\.width, c\.height, z\.w, z\.h, dpr\)/, "le calage au pixel part de la zone libre, pas de la fenetre");
   assert.ok(!/innerWidth|innerHeight/.test(fit), "fitCanvas ne lit plus la fenetre directement");
   const hud = html.slice(html.indexOf("function placerHud()"), html.indexOf("window.__rdPlacerHud"));
   assert.match(hud, /z\.bottom - r\.bottom/);
@@ -2360,7 +2371,6 @@ test("console-i18n-parity : memes cles en francais et en anglais, memes {paramet
   for (const x of ["balanced", "best", "low"]) assert.ok(`opt.qualite.${x}` in fr, `opt.qualite.${x}`);
   for (const x of ["auto", "h265", "vp9", "logiciel"]) assert.ok(`opt.codec.${x}` in fr, `opt.codec.${x}`);
   for (const x of ["auto", "clair", "sombre"]) assert.ok(`theme.${x}` in fr, `theme.${x}`);
-  for (const x of ["auto", "fr", "en"]) assert.ok(`langue.${x}` in fr, `langue.${x}`);
   for (const x of ["video", "audio", "clavier", "souris", "affichage"]) assert.ok(`sec.${x}` in fr, `sec.${x}`);
   for (const x of ["invalide", "doublon", "plein"]) assert.ok(`rac.${x}` in fr, `rac.${x}`);
   assert.equal(i18n.t("cle.inexistante"), "cle.inexistante", "une cle absente rend la cle, jamais d'exception");
@@ -2487,4 +2497,1031 @@ test("build-web-real-sources : les vraies sources s'assemblent et la sortie se p
     assert.doesNotThrow(() => new vm.Script(b.sortie(), { filename: "rd-console.js" }));
     for (const f of SRC_JS) assert.ok(b.sortie().includes(f), `${f} enveloppe dans la sortie`);
   } finally { fs.rmSync(b.tmp, { recursive: true, force: true }); }
+});
+
+// ====================================================================
+// Codecs : la logique pure (RDLib.codec), puis le vrai cablage.
+// ====================================================================
+test("codec meilleur : h265 > h264 > av1 > vp9, hors codecs qui ont echoue", () => {
+  const { codec } = chargerLib();
+  assert.deepEqual(plat(codec.ORDRE), ["h265", "h264", "av1", "vp9"]);
+  assert.equal(codec.meilleur({ h265: true, h264: true, av1: true, vp9: true }, {}), "h265");
+  assert.equal(codec.meilleur({ h265: true, h264: true, vp9: true }, { h265: true }), "h264");
+  assert.equal(codec.meilleur({ h265: false, av1: true, vp9: true }, {}), "av1");
+  assert.equal(codec.meilleur({ vp9: true }, { vp9: true }), null);
+  assert.equal(codec.meilleur({}, {}), null);
+  assert.equal(codec.meilleur(undefined, undefined), null);
+});
+
+test("codec capacites : auto annonce tout ce qui est decodable, force n'annonce que lui, VP9 toujours", () => {
+  const { codec } = chargerLib();
+  const caps = { h265: true, h264: true, av1: false, vp9: true };
+  assert.deepEqual(plat(codec.capacites("h265", false, caps, {})),
+    { ability_h265: 1, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 3 });
+  assert.deepEqual(plat(codec.capacites("h264", false, caps, { h265: true })),
+    { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 }, "un codec qui a echoue n'est plus annonce");
+  assert.deepEqual(plat(codec.capacites("h264", true, caps, {})),
+    { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 }, "force : lui seul, sinon le pair en choisirait un autre");
+  assert.deepEqual(plat(codec.capacites("av1", true, {}, {})),
+    { ability_h265: 0, ability_h264: 0, ability_av1: 1, ability_vp9: 1, prefer: 5 });
+  // Logiciel, ou un nom inconnu : la declaration d'avant, VP9 seul.
+  assert.deepEqual(plat(codec.capacites(null, false, caps, {})), { ability_h265: 0, ability_vp9: 1, prefer: 1 });
+  assert.deepEqual(plat(codec.capacites("divx", true, caps, {})), { ability_h265: 0, ability_vp9: 1, prefer: 1 });
+  // Les valeurs de « prefer » sont celles de SupportedDecoding.PreferCodec (message.proto).
+  assert.deepEqual(plat(codec.PREFER), { vp9: 1, h264: 2, h265: 3, av1: 5 });
+});
+
+test("codec flux : le champ reellement present dans le VideoFrame", () => {
+  const { codec } = chargerLib();
+  const lot = { frames: [] };
+  assert.equal(codec.flux({ h264s: lot }).nom, "h264");
+  assert.equal(codec.flux({ av1s: lot }).lot, lot);
+  assert.equal(codec.flux({ vp9s: lot }).nom, "vp9");
+  assert.equal(codec.flux({ vp8s: lot }), null, "VP8 n'est jamais annonce : pas de chemin pour lui");
+  assert.equal(codec.flux({}), null);
+  assert.equal(codec.flux(null), null);
+});
+
+test("prefs : h264 et av1 sont des codecs memorisables", () => {
+  const { prefs } = chargerLib();
+  const p = prefs.create(stock());
+  p.set({ codec: "h264" }); assert.equal(p.get().codec, "h264");
+  p.set({ codec: "av1" });  assert.equal(p.get().codec, "av1");
+  p.set({ codec: "vp8" });  assert.equal(p.get().codec, "av1", "une valeur hors liste est ignoree");
+});
+
+// Une session dont la connexion est instrumentee par patchConn (veilleur 800 ms).
+async function montageVideo({ caps = {}, codec = null, ...reste } = {}) {
+  const m = await montageSortant(reste);
+  // Une connexion NEUVE, comme le bundle en cree une par session : elle est
+  // instrumentee a l'affectation de window.curConn.
+  const { __rdPatchedWs, __rdOrigHandle, __rdOrigDraw, ...base } = m.w.curConn;
+  const c = { ...base, _ws: { ...base._ws } };
+  m.logiciel = []; m.acks = { n: 0 }; m.cles = { n: 0 }; m.decodes = [];
+  c.handleVideoFrame = function (vf) { m.logiciel.push(vf); };
+  c.draw = () => {}; c.msgbox = () => {};
+  c.sendVideoReceived = () => { m.acks.n++; };
+  c.refresh = () => { m.cles.n++; };
+  m.w.EncodedVideoChunk = class { constructor(o) { this.o = o; } };
+  m.w.VideoDecoder = class { constructor(o) { this.o = o; this.state = "configured"; }
+    configure(cfg) { m.config = cfg; } decode(ch) { m.decodes.push(ch.o.type); } reset() {} close() { this.state = "closed"; }
+    get decodeQueueSize() { return 0; } };
+  m.w.RD.caps = caps; m.w.RD.codec = codec; m.w.RD.rates = {};
+  m.w.curConn = c;
+  m.trame = (champ, cle = true) => c.handleVideoFrame({ [champ]: { frames: [{ key: cle, pts: 0, data: new Uint8Array(8) }] } });
+  m.decl = () => m.options().filter((o) => o.supported_decoding).map((o) => plat(o.supported_decoding));
+  return m;
+}
+
+test("codec : le decodeur SUIT le flux recu — un pair sans H265 qui emet du VP9 n'est plus un ecran noir", async () => {
+  const m = await montageVideo({ caps: { h265: true, vp9: true }, codec: "h265" });
+  m.trame("vp9s");
+  assert.equal(m.w.RD.codec, "vp9", "le decodeur WebCodecs est passe en VP9");
+  assert.equal(m.config.codec, "vp09.00.50.08");
+  assert.deepEqual(m.decodes, ["key"], "la trame qui annonce le changement est decodee, pas jetee");
+  assert.equal(m.logiciel.length, 0, "rien n'est parti au decodeur logiciel, dont le canvas est masque");
+  assert.equal(m.acks.n, 1, "et la trame est acquittee");
+  // Le pair passe ensuite en H264 (il a lu notre declaration) : on suit encore.
+  m.w.RD.caps.h264 = true;
+  m.trame("h264s");
+  assert.equal(m.w.RD.codec, "h264");
+  assert.equal(m.config.codec, "avc1.640033");
+  assert.equal(m.acks.n, 2);
+});
+
+test("codec : un flux que WebCodecs ne decode pas ici est tolere au demarrage, puis la session passe en logiciel ET le dit au pair", async () => {
+  const m = await montageVideo({ caps: { h264: true }, codec: "h264" });
+  for (let i = 0; i < 30; i++) m.trame("vp9s");
+  assert.equal(m.w.RD.codec, "h264", "les premieres trames sont toujours du VP9 : on ne conclut pas");
+  assert.equal(m.logiciel.length, 30, "elles vont au decodeur d'origine, qui les acquitte");
+  assert.equal(m.decl().length, 0);
+  m.trame("vp9s");
+  assert.equal(m.w.RD.codec, null, "au-dela, WebCodecs est abandonne pour la session");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_vp9: 1, prefer: 1 }, "le pair n'emettra plus que du VP9");
+  // Une trame du bon codec remet le compteur a zero.
+  const n = await montageVideo({ caps: { h264: true }, codec: "h264" });
+  for (let i = 0; i < 20; i++) n.trame("vp9s");
+  n.trame("h264s");
+  for (let i = 0; i < 20; i++) n.trame("vp9s");
+  assert.equal(n.w.RD.codec, "h264");
+});
+
+test("codec : le repli descend l'echelle (h265 -> h264 -> logiciel) au lieu de tomber droit en logiciel", async () => {
+  const m = await montageVideo({ caps: { h265: true, h264: true }, codec: "h265" });
+  m.w.__rdFallback("erreurs de decodage repetees");
+  assert.equal(m.w.RD.codec, "h264");
+  assert.equal(m.w.RD.rates.h265, true, "H265 n'est plus propose sur cette page");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 });
+  assert.equal(m.w.curConn.handleVideoFrame === m.w.curConn.__rdOrigHandle, false, "le chemin WebCodecs reste en place");
+  m.w.__rdFallback("erreurs de decodage repetees");
+  assert.equal(m.w.RD.codec, null, "plus rien a essayer : logiciel");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_vp9: 1, prefer: 1 });
+  // La session suivante ne retente pas ce qui a echoue.
+  m.peerInfo();
+  assert.equal(m.w.RD.codec, null);
+});
+
+test("codec : en automatique, chaque session repart du meilleur codec encore valable", async () => {
+  const m = await montageVideo({ caps: { h264: true, vp9: true }, codec: null, prete: false });
+  m.peerInfo();
+  assert.equal(m.w.RD.codec, "h264");
+  assert.deepEqual(m.decl().at(-1), { ability_h265: 0, ability_h264: 1, ability_av1: 0, ability_vp9: 1, prefer: 2 });
+});
+
+test("codec : une erreur du decodeur redemande une image-cle (le decodeur suivant ne peut repartir que d'elle)", async () => {
+  const m = await montageVideo({ caps: { h265: true }, codec: "h265" });
+  m.trame("h265s");
+  const avant = m.cles.n;
+  m.w.RD.dec.o.error(new Error("boom"));
+  assert.equal(m.w.RD.wantKey, true);
+  assert.equal(m.cles.n, avant + 1);
+});
+
+// ====================================================================
+// Actions sur le poste distant, ecrans, retours du pair, 2FA.
+// ====================================================================
+// La modale de la page (bloc fichiers), telle que le DOM fictif la garde : la
+// derniere boite construite.
+function boite(m) {
+  const modal = m.doc.body.children.find((c) => c.id === "rdmodal");
+  const b = modal && modal.children.at(-1);
+  if (!b) return null;
+  const btns = b.children.find((c) => c.className === "btns").children;
+  const champ = b.children.find((c) => c.tag === "input") || null;
+  return { titre: b.children[0].textContent, champ,
+           ok: (v) => { if (champ && v !== undefined) champ.value = v; btns.at(-1).onclick(); },
+           annuler: () => btns[0].onclick() };
+}
+const menuActions = (m) => m.bar.children.find((c) => c.className === "rdactions");
+const menuEcrans = (m) => m.bar.children.find((c) => c.className === "rdecrans");
+const choisir = (sel, v) => { sel.value = v; sel.onchange(); };
+
+test("actions : Ctrl+Alt+Suppr et verrouillage passent par le bundle, et le selecteur revient a son libelle", async () => {
+  const m = await montageSortant();
+  const act = menuActions(m);
+  assert.ok(act, "le menu est un enfant direct de la barre");
+  assert.equal(act.children[0].textContent, "Actions");
+  const avant = m.player.focuses;
+  choisir(act, "cad");
+  choisir(act, "lock");
+  assert.deepEqual(m.touches.filter(([n]) => n === "ctrl_alt_del" || n === "lock_screen").map(([n]) => n), ["ctrl_alt_del", "lock_screen"]);
+  assert.equal(act.value, "");
+  assert.ok(m.player.focuses >= avant + 2, "le canvas reprend le clavier apres chaque action");
+});
+
+test("actions : une option basculee est cochee d'apres l'etat du bundle, pas d'apres le clic", async () => {
+  const m = await montageSortant();
+  const etat = {};
+  m.w.curConn.getOption = (k) => etat[k];
+  const act = menuActions(m);
+  const libelle = (v) => act.children.find((o) => o.value === v).textContent;
+  choisir(act, "opt:disable-audio");
+  assert.deepEqual(m.touches.at(-1), ["toggle_option", "disable-audio"]);
+  assert.equal(libelle("opt:disable-audio"), "Couper le son distant", "le bundle n'a rien retenu : pas de coche");
+  etat["disable-audio"] = true;
+  m.w.__rdActions();
+  assert.equal(libelle("opt:disable-audio"), "✓ Couper le son distant");
+  assert.equal(act.children.length, 9, "la liste est reconstruite, pas empilee");
+});
+
+test("actions : bloquer la saisie — deux ordres distincts, et l'etat vient de la reponse du pair", async () => {
+  const m = await montageSortant();
+  const act = menuActions(m), c = m.w.curConn;
+  const libelle = () => act.children.find((o) => o.value === "opt:block-input").textContent;
+  choisir(act, "opt:block-input");
+  assert.deepEqual(m.touches.at(-1), ["toggle_option", "block-input"]);
+  assert.equal(libelle(), "Bloquer la saisie locale", "pas de coche tant que le pair n'a pas confirme");
+  m.w.__rdPairFiltrer(c, { misc: { back_notification: { block_input_state: 2 } } });
+  assert.equal(libelle(), "✓ Bloquer la saisie locale");
+  choisir(act, "opt:block-input");
+  assert.deepEqual(m.touches.at(-1), ["toggle_option", "unblock-input"]);
+  // Un refus se voit, et ne coche rien.
+  const n = await montageSortant();
+  n.w.__rdPairFiltrer(n.w.curConn, { misc: { back_notification: { block_input_state: 3, details: "No permission" } } });
+  assert.ok(n.toasts().some((t) => t.erreur && /refusé de bloquer/.test(t.texte) && /No permission/.test(t.texte)), JSON.stringify(n.toasts()));
+  // Une nouvelle session repart debloquee.
+  m.peerInfo();
+  assert.equal(libelle(), "Bloquer la saisie locale");
+});
+
+test("actions : un mode confidentialite refuse est DECOCHE dans le bundle, sinon il serait redemande a chaque session", async () => {
+  const m = await montageSortant();
+  const poses = [];
+  m.w.curConn.setOption = (k, v) => poses.push([k, v]);
+  const msg = { misc: { back_notification: { privacy_mode_state: 3 } } };
+  assert.equal(m.w.__rdPairFiltrer(m.w.curConn, msg), msg, "le message continue vers le bundle");
+  assert.deepEqual(poses, [["privacy-mode", false]]);
+  assert.ok(m.toasts().some((t) => t.erreur && /ne propose pas le mode confidentialité/.test(t.texte)));
+  m.w.__rdPairFiltrer(m.w.curConn, { misc: { back_notification: { privacy_mode_state: 4 } } });
+  assert.deepEqual(poses.at(-1), ["privacy-mode", true]);
+});
+
+test("actions : redemarrer demande confirmation ; un refus n'envoie rien", async () => {
+  const m = await montageSortant();
+  const act = menuActions(m);
+  // Le bundle REMPLACE window.confirm par sa validation de mot de passe : la
+  // page ne doit jamais s'en servir. Si elle le faisait, ce test le verrait.
+  let natif = 0;
+  m.w.confirm = () => { natif++; return true; };
+  choisir(act, "restart");
+  assert.equal(boite(m).titre, "Redémarrer le poste distant ?");
+  boite(m).annuler(); await m.vider();
+  assert.ok(!m.envoyes.some((x) => x.misc && x.misc.restart_remote_device));
+  choisir(act, "restart");
+  boite(m).ok(); await m.vider();
+  assert.ok(m.envoyes.some((x) => x.misc && x.misc.restart_remote_device === true));
+  assert.equal(natif, 0, "window.confirm n'est jamais appele");
+});
+
+test("retour du pair : table des etats, valeurs inconnues sans effet", () => {
+  const { pair } = chargerLib();
+  assert.deepEqual(plat(pair.retour({ block_input_state: 4 })), { option: "block-input", actif: false, ok: true, texte: "Saisie locale débloquée sur le poste distant.", details: "" });
+  assert.equal(pair.retour({ block_input_state: 3, details: " No permission " }).details, "No permission", "les details accompagnent un echec, a part du texte traduisible");
+  assert.equal(pair.retour({ privacy_mode_state: 9 }).actif, false);
+  assert.equal(pair.retour({ privacy_mode_state: 10 }).actif, true, "l'arret a echoue : le mode est toujours actif");
+  for (const v of [{ block_input_state: 0 }, { privacy_mode_state: 0 }, { privacy_mode_state: 99 }, { block_input_state: "__proto__" }, {}, null, "x"]) {
+    assert.equal(pair.retour(v).option, null, JSON.stringify(v));
+  }
+  assert.equal(pair.retour({ block_input_state: 2, details: "bruit" }).details, "", "les details n'accompagnent qu'un echec");
+});
+
+test("ecrans : le selecteur n'apparait qu'avec plusieurs ecrans, et suit la reponse du pair", async () => {
+  const m = await montageSortant({ prete: false });
+  const ecr = menuEcrans(m);
+  const info = (displays, current_display = 0) => m.w.onGlobalEvent(JSON.stringify({ name: "peer_info",
+    displays: JSON.stringify(displays), current_display: JSON.stringify(current_display) }));
+  info([{ width: 2560, height: 1440 }]);
+  assert.equal(ecr.style.display, "none", "un seul ecran : rien a choisir");
+  info([{ width: 2560, height: 1440 }, { width: 1920, height: 1080 }], 1);
+  assert.equal(ecr.style.display, "");
+  assert.deepEqual(ecr.children.map((o) => o.textContent), ["Écran 1 (2560×1440)", "Écran 2 (1920×1080)"]);
+  assert.equal(ecr.value, "1", "l'ecran affiche est celui que le pair annonce");
+  assert.equal(m.w.RD.W, 1920);
+  choisir(ecr, "0");
+  assert.deepEqual(m.touches.at(-1), ["switch_display", 0], "un NOMBRE : le bundle l'encode en int32");
+  assert.equal(m.w.RD.display, 1, "rien ne change avant la reponse du pair");
+  m.w.onGlobalEvent(JSON.stringify({ name: "switch_display", display: "0", width: "2560", height: "1440" }));
+  assert.equal(m.w.RD.display, 0);
+  assert.equal(ecr.value, "0");
+  // Rechoisir l'ecran deja affiche n'envoie rien.
+  const n = m.touches.length;
+  choisir(ecr, "0");
+  assert.equal(m.touches.length, n);
+});
+
+test("2fa : le code est demande dans la modale, envoye en auth_2fa, et l'erreur n'atteint pas le bundle", async () => {
+  const m = await montageSortant({ prete: false });
+  const c = m.w.curConn;
+  let natif = 0;
+  m.w.prompt = () => { natif++; return "000000"; };
+  let p = m.w.__rdPairFiltrer(c, { login_response: { error: "2FA Required" } });
+  await m.vider();
+  assert.equal(boite(m).titre, "Vérification en deux étapes");
+  boite(m).ok("123 456");
+  assert.deepEqual(plat(await p), {}, "un message vide : le bundle n'affiche pas « Login Error »");
+  assert.deepEqual(plat(m.envoyes.at(-1)), { auth_2fa: { code: "123456" } }, "envoye avant peer_info, donc sans passer par rdSend");
+  // Code refuse par le pair : on redemande, avec un autre titre.
+  p = m.w.__rdPairFiltrer(c, { login_response: { error: "Wrong 2FA Code" } });
+  await m.vider();
+  assert.equal(boite(m).titre, "Code refusé");
+  boite(m).ok("654321");
+  await p;
+  assert.equal(m.envoyes.at(-1).auth_2fa.code, "654321");
+  // Saisie invalide : redemandee sans rien envoyer ; annulation : l'erreur passe au bundle.
+  const avant = m.envoyes.length;
+  const msg = { login_response: { error: "2FA Required" } };
+  p = m.w.__rdPairFiltrer(c, msg);
+  await m.vider();
+  boite(m).ok("abc"); await m.vider();
+  assert.equal(boite(m).titre, "Code refusé", "une saisie qui n'est pas un code est redemandee");
+  boite(m).annuler();
+  assert.equal(await p, msg);
+  assert.equal(m.envoyes.length, avant);
+  assert.equal(natif, 0, "pas de prompt() natif : il gelerait la page");
+  // Les autres erreurs, et une connexion reussie, ne sont pas touchees.
+  for (const autre of [{ login_response: { error: "Wrong Password" } }, { login_response: { peer_info: {} } }, { video_frame: {} }, null]) {
+    assert.equal(m.w.__rdPairFiltrer(c, autre), autre);
+  }
+});
+
+test("2fa : code2fa n'accepte que six chiffres", () => {
+  const { pair } = chargerLib();
+  assert.equal(pair.code2fa(" 123 456 "), "123456");
+  for (const v of ["12345", "1234567", "12a456", "", null, 123456]) assert.equal(pair.code2fa(v), null, String(v));
+  assert.equal(pair.demande2fa("2FA Required"), "demande");
+  assert.equal(pair.demande2fa("Wrong 2FA Code"), "faux");
+  assert.equal(pair.demande2fa("Wrong Password"), null);
+});
+
+test("barre : elle passe a la ligne au lieu de deborder d'une fenetre etroite", () => {
+  assert.match(html, /#rdbar\{[^}]*flex-wrap:wrap;[^}]*max-width:100vw/);
+});
+
+// ====================================================================
+// Entrees : molette, tactile, souris, latence.
+// ====================================================================
+test("molette : une souris fait un cran par cran, un trackpad cumule ses pixels", () => {
+  const { molette } = chargerLib();
+  const m = molette.creer(100);
+  assert.deepEqual(plat(m.pousser(0, 100, 0)), { x: 0, y: -1 }, "vers le bas : cran negatif, comme avant");
+  assert.deepEqual(plat(m.pousser(0, -120, 0)), { x: 0, y: 1 });
+  assert.deepEqual(plat(m.pousser(0, 3, 1)), { x: 0, y: -1 }, "Firefox compte en lignes : 3 lignes = un cran");
+  // Un trackpad : soixante evenements de 4 px ne font pas soixante crans.
+  const t = molette.creer(100);
+  let crans = 0;
+  for (let i = 0; i < 60; i++) crans += t.pousser(0, 4, 0).y;
+  assert.equal(crans, -2);
+  // Un demi-tour jette le reste accumule dans l'autre sens.
+  const d = molette.creer(100);
+  d.pousser(0, 90, 0);
+  assert.deepEqual(plat(d.pousser(0, -20, 0)), { x: 0, y: 0 });
+  assert.deepEqual(plat(d.pousser(0, -80, 0)), { x: 0, y: 1 });
+  // Borne, et pas de -0 qui passerait pour un envoi.
+  assert.equal(molette.creer(100).pousser(0, 1e6, 0).y, -10);
+  assert.ok(Object.is(molette.creer(100).pousser(0, 0, 0).y, 0));
+  assert.deepEqual(plat(molette.creer(100).pousser("x", undefined, 0)), { x: 0, y: 0 });
+});
+
+test("tactile : toucher = clic, glisser = bouton tenu, appui long = clic droit, deux doigts = molette", () => {
+  const { tactile } = chargerLib();
+  const noms = (a) => plat(a).map((x) => x.a);
+  // Toucher bref.
+  let t = tactile.creer();
+  assert.deepEqual(noms(t.down(1, 50, 50)), ["move"]);
+  assert.deepEqual(noms(t.move(1, 53, 52)), [], "sous le seuil : ce n'est pas un glisser");
+  assert.deepEqual(plat(t.up(1)), [{ a: "down", x: 50, y: 50 }, { a: "up", x: 50, y: 50 }]);
+  assert.equal(t.etat(), "repos");
+  // Glisser : le bouton descend au point de DEPART, et remonte au point d'arrivee.
+  t = tactile.creer();
+  t.down(1, 10, 10);
+  assert.deepEqual(plat(t.move(1, 40, 10)), [{ a: "down", x: 10, y: 10 }, { a: "move", x: 40, y: 10 }]);
+  assert.deepEqual(noms(t.move(1, 80, 30)), ["move"]);
+  assert.deepEqual(plat(t.up(1)), [{ a: "up", x: 80, y: 30 }]);
+  // Appui long : clic droit, puis le lever du doigt ne clique pas une seconde fois.
+  t = tactile.creer();
+  t.down(1, 5, 5);
+  assert.deepEqual(plat(t.long()), [{ a: "clic-droit", x: 5, y: 5 }]);
+  assert.deepEqual(plat(t.up(1)), []);
+  // Un appui long n'a plus lieu une fois le glisser commence.
+  t = tactile.creer(); t.down(1, 0, 0); t.move(1, 50, 0);
+  assert.deepEqual(plat(t.long()), []);
+  // Deux doigts : molette dans le sens naturel, et aucun clic au lever.
+  t = tactile.creer();
+  t.down(1, 100, 100); t.down(2, 200, 100);
+  assert.deepEqual(plat(t.move(1, 100, 60)), [{ a: "wheel", dx: 0, dy: 20 }], "les doigts montent : le contenu aussi, donc defilement vers le bas");
+  assert.deepEqual(plat(t.up(1)), []);
+  assert.deepEqual(plat(t.move(2, 300, 300)), [], "le doigt restant ne pilote plus rien");
+  assert.deepEqual(plat(t.up(2)), []);
+  assert.equal(t.etat(), "repos");
+  // Un second doigt pendant un glisser relache d'abord le bouton.
+  t = tactile.creer(); t.down(1, 0, 0); t.move(1, 50, 0);
+  assert.deepEqual(noms(t.down(2, 90, 0)), ["up"]);
+  // Annulation par le navigateur : ce qui est tenu est relache.
+  t = tactile.creer(); t.down(1, 0, 0); t.move(1, 50, 0);
+  assert.deepEqual(noms(t.cancel()), ["up"]);
+  assert.deepEqual(plat(t.up(1)), [], "un lever qui arrive apres l'annulation est ignore");
+});
+
+test("souris : un bouton enfonce est relache quand la fenetre perd le focus ; les coordonnees restent dans l'image", async () => {
+  const bac0 = await montageSortant();
+  const c = bac0.player;
+  c.width = 800; c.height = 600;
+  c.getBoundingClientRect = () => ({ left: 100, top: 50, width: 400, height: 300 });
+  const ev = (x, y, button = 0) => ({ clientX: x, clientY: y, button, preventDefault() {}, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false });
+  c.ecouteurs.mousedown.forEach((f) => f(ev(300, 200)));
+  assert.deepEqual(bac0.touches.at(-1), ["send_mouse", { type: "down", buttons: "left", x: 400, y: 300, alt: "false", ctrl: "false", shift: "false", command: "false" }]);
+  // Hors de l'image (la capture du pointeur y ramene les evenements) : borne.
+  c.ecouteurs.mousemove.forEach((f) => f(ev(9999, -50)));
+  assert.deepEqual([bac0.touches.at(-1)[1].x, bac0.touches.at(-1)[1].y], [799, 0]);
+  // La page pose son ecouteur « blur » sur window : on le retrouve par un second montage espion.
+  const m = await montageSortantAvecBlur();
+  m.player.width = 800; m.player.height = 600;
+  m.player.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+  m.player.ecouteurs.mousedown.forEach((f) => f(ev(10, 20, 2)));
+  const avant = m.touches.length;
+  m.blur.forEach((f) => f());
+  assert.deepEqual(m.touches.slice(avant), [["send_mouse", { type: "up", buttons: "right", x: 10, y: 20, alt: "false", ctrl: "false", shift: "false", command: "false" }]]);
+  m.blur.forEach((f) => f());
+  assert.equal(m.touches.length, avant + 1, "rien a relacher la seconde fois");
+});
+async function montageSortantAvecBlur() {
+  const m = await montageSortant();
+  // Recabler un canvas neuf en capturant ce que la page ecoute sur window.
+  const blur = [];
+  m.w.addEventListener = (t, f) => { if (t === "blur") blur.push(f); };
+  const neuf = elementRecord("canvas");
+  neuf.id = "player"; neuf.ecouteurs = {}; neuf.parent = elementRecord("div");
+  neuf.addEventListener = (t, f) => { (neuf.ecouteurs[t] ||= []).push(f); };
+  m.reg.player = neuf;
+  m.bac.minuteurs.filter((t) => t.ms === 400 && !t.once).forEach((t) => t.f());
+  return { ...m, player: neuf, blur };
+}
+
+test("tactile (cablage) : un toucher sur le canvas devient un clic gauche, sans modificateur", async () => {
+  const m = await montageSortant();
+  const c = m.player;
+  c.width = 800; c.height = 600;
+  c.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+  c.setPointerCapture = () => {};
+  const p = (x, y) => ({ pointerType: "touch", pointerId: 7, clientX: x, clientY: y });
+  const avant = m.touches.length;
+  c.ecouteurs.pointerdown.forEach((f) => f(p(120, 80)));
+  c.ecouteurs.pointerup.forEach((f) => f(p(120, 80)));
+  assert.deepEqual(m.touches.slice(avant).map(([n, a]) => [n, a.type, a.buttons, a.x, a.y]),
+    [["send_mouse", "", "", 120, 80], ["send_mouse", "down", "left", 120, 80], ["send_mouse", "up", "left", 120, 80]]);
+  // Une souris ne passe PAS par la machine tactile (elle a ses propres evenements).
+  const n = m.touches.length;
+  c.ecouteurs.pointerdown.forEach((f) => f({ pointerType: "mouse", pointerId: 1, clientX: 5, clientY: 5 }));
+  assert.equal(m.touches.length, n);
+  assert.equal(c.style.touchAction, "none");
+});
+
+test("latence : lue dans le message test_delay, plus dans la console", async () => {
+  const m = await montageSortant();
+  const msg = { test_delay: { last_delay: 42, target_bitrate: 5000 } };
+  assert.equal(m.w.__rdPairFiltrer(m.w.curConn, msg), msg, "le message continue vers le bundle, qui y repond");
+  assert.deepEqual(plat(m.w.RD.stats.delay), [42]);
+  assert.equal(m.w.RD.stats.bitrate, 5000);
+  assert.ok(!/S\.delay\.push\(a\.last_delay\)/.test(html), "la console n'est plus une source de mesure");
+});
+
+test("accroches : connect() est protege a l'affectation, et une liaison neuve est instrumentee sans minuteur", async () => {
+  const m = await montageSortant({ prete: true });
+  m.w.connect = () => 7;
+  assert.equal(m.w.connect(), 7);
+  assert.equal(m.w.RD.ready, false, "protege sans attendre le minuteur de 300 ms");
+  const c = { ...m.w.curConn, handleVideoFrame() {}, draw() {} };
+  m.w.curConn = c;
+  const brut = async () => null;
+  c._ws = { _websocket: { readyState: 1 }, sendMessage() {}, next: brut };
+  assert.notEqual(c._ws.next, brut, "next() de la liaison neuve est enveloppe des son affectation");
+});
+
+test("memorisation : le mot de passe du pair n'est garde que si l'utilisateur le veut", async () => {
+  const veilleur = (m) => m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());
+  const m = await montageSortant();
+  let etat = false; const poses = [];
+  m.w.curConn.getRemember = () => etat;
+  m.w.curConn.setRemember = (v) => { etat = v; poses.push(v); };
+  veilleur(m);
+  assert.deepEqual(poses, [true], "par defaut, comme avant");
+  const n = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, remember: false }) } });
+  let e2 = true; const p2 = [];
+  n.w.curConn.getRemember = () => e2;
+  n.w.curConn.setRemember = (v) => { e2 = v; p2.push(v); };
+  veilleur(n);
+  assert.deepEqual(p2, [false], "decoche : le bundle efface le mot de passe a la prochaine connexion reussie");
+});
+
+test("titre : l'onglet porte le nom du poste pendant la session", async () => {
+  const m = await montageSortant({ prete: false });
+  m.w.curConn._peerInfo.hostname = "mac-mini\u0007";
+  m.peerInfo();
+  assert.equal(m.doc.title, "mac-mini — RustDesk");
+  const n = await montageSortant({ prete: false });
+  n.peerInfo();
+  assert.equal(n.doc.title, "123 456 789 — RustDesk", "sans nom de poste : l'ID");
+});
+
+// ====================================================================
+// Securite du deploiement : en-tetes, injection HTML du bundle, manifeste.
+// ====================================================================
+test("nginx : chaque bloc qui declare un add_header repete les en-tetes de securite (nginx n'herite pas)", () => {
+  const conf = lire(path.join(RACINE, "nginx.conf.template"));
+  const exiges = ["X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy", "Permissions-Policy", "Content-Security-Policy"];
+  const blocsLoc = [...conf.matchAll(/^[ \t]*location[^{\n]*\{([^}]*)\}/gm)].map((m) => m[0]);
+  const avec = blocsLoc.filter((b) => /add_header/.test(b));
+  assert.equal(avec.length, 5, "les quatre blocs qui posent le cookie de session (page, bundle, console, repli) et l'API de la flotte");
+  for (const b of avec) for (const h of exiges) assert.ok(b.includes("add_header " + h), h + " manque dans : " + b.split("\n")[0]);
+  const niveauServeur = conf.replace(/^[ \t]*location[^{\n]*\{[^}]*\}/gm, "");
+  for (const h of exiges) assert.ok(niveauServeur.includes("add_header " + h), h + " manque au niveau server");
+  const csp = /add_header Content-Security-Policy "([^"]+)"/.exec(conf)[1];
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /object-src 'none'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.ok(!/https?:|\*/.test(csp.replace(/wss?:\/\/\$host/g, "")), "aucun hote tiers, aucun joker : " + csp);
+});
+
+avecVendor("patch 6 : le texte venu du pair est echappe avant innerHTML", () => {
+  const b = lire(BUNDLE);
+  assert.ok(!/font-weight: bold;">'\+t\+"<\/div>"/.test(b), "une concatenation brute de t subsiste");
+  assert.equal((b.match(/font-weight: bold;">'\+String\(t\)\.replace\(/g) || []).length, 2);
+  // L'expression injectee, evaluee telle quelle.
+  const ech = /String\(t\)\.replace\(\/\[[^\]]+\]\/g,x=>"&#"\+x\.charCodeAt\(0\)\+";"\)/.exec(b)[0];
+  const f = new Function("t", "return " + ech);
+  assert.equal(f('<img src=x onerror="alert(1)">'), "&#60;img src=x onerror=&#34;alert(1)&#34;&#62;");
+  assert.equal(f("Wrong Password"), "Wrong Password");
+});
+
+test("manifeste : la page est installable, et rien n'y pointe hors du deploiement", () => {
+  const m = JSON.parse(lire(path.join(RACINE, "web", "manifest.json")));
+  assert.equal(m.display, "standalone");
+  assert.equal(m.start_url, ".");
+  for (const i of m.icons) {
+    assert.ok(!/^(?:https?:)?\/\//.test(i.src));
+    assert.ok(fs.existsSync(path.join(RACINE, "web", i.src)), i.src + " absent de web/");
+  }
+  assert.ok(m.icons.some((i) => i.sizes === "192x192") && m.icons.some((i) => i.sizes === "512x512"));
+  // Derriere l'authentification Basic, le manifeste n'est servi qu'avec les identifiants.
+  assert.match(html, /<link rel="manifest" href="manifest\.json" crossorigin="use-credentials">/);
+  const extraction = lire(path.join(RACINE, "scripts", "extract-assets.sh"));
+  for (const f of ["manifest.json", "icon-192.png", "icon-512.png"]) assert.ok(extraction.includes(f), f + " n'est pas copie dans html/");
+  // setup.sh saute l'extraction quand html/ existe : une MISE A JOUR ne passe que par patch-assets.sh.
+  const correctifs = lire(path.join(RACINE, "scripts", "patch-assets.sh"));
+  for (const f of ["manifest.json", "icon-192.png", "icon-512.png"]) assert.ok(correctifs.includes(f), f + " n'est pas copie lors d'une mise a jour");
+});
+
+// ====================================================================
+// Langue : le francais est la cle, l'anglais la traduction.
+// ====================================================================
+test("i18n : francais par defaut, anglais sur demande, substitution des arguments", () => {
+  const { i18n } = chargerLib();
+  const fr = i18n.creer("fr"), en = i18n.creer("en");
+  assert.equal(fr("Quitter"), "Quitter");
+  assert.equal(en("Quitter"), "Quit");
+  assert.equal(en("Écran {0}", 2), "Display 2");
+  assert.equal(fr("reconnexion {0}/6 dans {1} s", 3, 4), "reconnexion 3/6 dans 4 s");
+  assert.equal(en("un texte que personne n'a traduit"), "un texte que personne n'a traduit", "absent du dictionnaire : le francais, jamais du vide");
+  assert.equal(en("toString"), "toString", "une cle heritee d'Object n'est pas une traduction");
+  assert.equal(en("Écran {0}"), "Display ", "un argument manquant ne s'affiche pas « undefined »");
+  // Le choix memorise, sinon le navigateur ; francais si la langue est inconnue.
+  assert.equal(i18n.langue("en", "fr-FR"), "en");
+  assert.equal(i18n.langue(undefined, "fr-CH"), "fr");
+  assert.equal(i18n.langue(undefined, "de-DE"), "en");
+  assert.equal(i18n.langue("xx", undefined), "fr");
+});
+
+test("i18n : chaque texte de l'interface a sa traduction, avec les memes emplacements", () => {
+  const lib = chargerLib(), EN = lib.i18n.EN;
+  // Les cles ecrites en dur dans la page : T("…").
+  const cles = new Set([...html.matchAll(/(?<![\w.])T\("((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse('"' + m[1] + '"')));
+  assert.ok(cles.size > 100, "le releve a trouve " + cles.size + " cles : l'expression ne voit plus les appels");
+  // Celles qui passent par une table avant d'atteindre T().
+  for (const v of Object.values(plat(lib.messages))) cles.add(v);
+  for (const v of Object.values(plat(lib.i18n.STATUTS))) cles.add(v);
+  for (const etat of [2, 3, 4, 5]) cles.add(lib.pair.retour({ block_input_state: etat }).texte);
+  for (const etat of [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) cles.add(lib.pair.retour({ privacy_mode_state: etat }).texte);
+  for (const m of html.matchAll(/\["(?:disable-audio|disable-clipboard|lock-after-session-end|privacy-mode|block-input)","([^"]+)"\]/g)) cles.add(m[1]);
+  for (const m of html.matchAll(/(?:echec|finirJob\(j,)\s*\(?"([^"]+)"\)/g)) cles.add(m[1]);
+  const manquantes = [...cles].filter((k) => !Object.prototype.hasOwnProperty.call(EN, k));
+  assert.deepEqual(manquantes, [], "textes sans traduction anglaise");
+  const emplacements = (t) => (t.match(/\{\d\}/g) || []).sort().join("");
+  for (const [k, v] of Object.entries(plat(EN))) {
+    assert.ok(typeof v === "string" && v.trim(), "traduction vide : " + k);
+    assert.equal(emplacements(v), emplacements(k), "emplacements differents : " + k);
+  }
+  // Les libelles alignes de la telemetrie gardent leur largeur.
+  for (const k of ["aller-retour  p50/p95/p99   ", "décodage      p50/p95/p99   "]) assert.equal(EN[k].length, k.length, k);
+});
+
+test("i18n : la barre et les retours suivent la langue memorisee", async () => {
+  const m = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, lang: "en" }) } });
+  assert.equal(m.w.__rdLangue, "en");
+  assert.equal(m.bar.children.find((c) => c.className === "quit").textContent, "Quit");
+  assert.equal(menuActions(m).children[0].textContent, "Actions");
+  assert.equal(menuActions(m).children.find((o) => o.value === "opt:privacy-mode").textContent, "Privacy mode");
+  m.w.__rdPairFiltrer(m.w.curConn, { misc: { back_notification: { privacy_mode_state: 3, details: "x" } } });
+  assert.ok(m.toasts().some((t) => t.texte === "The remote machine does not offer privacy mode. (x)"), JSON.stringify(m.toasts()));
+  // Sans preference ni langue de navigateur connue : francais.
+  const fr = await montageSortant();
+  assert.equal(fr.w.__rdLangue, "fr");
+  assert.equal(fr.bar.children.find((c) => c.className === "quit").textContent, "Quitter");
+});
+
+// ====================================================================
+// Assemblage de la page, et ce que l'historique garde.
+// ====================================================================
+test("assemblage : chaque source de web/src/ est incluse, aucune directive ne reste dans la page", () => {
+  assert.ok(!/@inclure/.test(html), "une directive d'inclusion n'a pas ete resolue");
+  const src = path.join(RACINE, "web", "src");
+  const squelette = lire(path.join(src, "page.html"));
+  for (const f of fs.readdirSync(src).filter((n) => /\.(js|css)$/.test(n))) {
+    assert.ok(squelette.includes("@inclure " + f), f + " n'est inclus nulle part");
+    assert.ok(html.includes(lire(path.join(src, f)).trimEnd()), f + " n'est pas dans la page assemblee");
+  }
+  // Le gabarit est un produit : il ne doit pas revenir dans le depot.
+  assert.match(lire(path.join(RACINE, ".gitignore")), /^web\/index\.html\.template$/m);
+  execFileSync("python3", [path.join(RACINE, "scripts", "build-page.py"), "--verifier"], { stdio: "pipe" });
+});
+
+test("historique : le nom du poste accompagne l'ID, nettoye et borne ; rien d'autre n'est ecrit", () => {
+  const { recent } = chargerLib();
+  const s = stock();
+  const r = recent.create(s, { now: horloge() });
+  r.add("111111111", "mac-mini");
+  r.add("222222222", "  <b>x</b>\u0000" + "a".repeat(80));
+  r.add("111111111");                                   // reconnexion sans nom : l'ancien est garde
+  const l = plat(r.list());
+  assert.equal(l[0].id, "111111111"); assert.equal(l[0].n, "mac-mini");
+  assert.equal(l[1].n.length, 40, "borne a 40 caracteres");
+  assert.ok(!/\u0000/.test(l[1].n));
+  for (const e of JSON.parse(s.m.get("rd-recent")).ids) assert.ok(Object.keys(e).every((k) => ["id", "t", "n"].includes(k)), JSON.stringify(e));
+  r.add("333333333", { toString() { return "piege"; } });
+  assert.equal(plat(r.list())[0].n, undefined, "un nom qui n'est pas une chaine est ignore");
+});
+
+// ====================================================================
+// Clavier : traduction des raccourcis entre PC et Mac.
+// ====================================================================
+const touche = (nom, mods = "") => ({ nom, ctrl: mods.includes("C"), alt: mods.includes("A"), shift: mods.includes("S"), meta: mods.includes("M") });
+const ecrit = (r) => [r.ctrl && "Ctrl", r.alt && "Alt", r.shift && "Maj", r.meta && "Cmd", r.nom].filter(Boolean).join("+");
+
+test("clavier mode : PC devant Mac, Mac devant PC, rien entre semblables ou inconnus", () => {
+  const { clavier } = chargerLib();
+  assert.equal(clavier.mode("Win32", "Mac OS"), "pc-mac");
+  assert.equal(clavier.mode("Linux x86_64", "Mac OS"), "pc-mac");
+  assert.equal(clavier.mode("MacIntel", "Windows"), "mac-pc");
+  assert.equal(clavier.mode("macOS", "Linux"), "mac-pc");
+  assert.equal(clavier.mode("Win32", "Windows"), "direct");
+  assert.equal(clavier.mode("MacIntel", "Mac OS"), "direct");
+  assert.equal(clavier.mode("Win32", ""), "direct", "plateforme du pair inconnue : on ne devine pas");
+  assert.equal(clavier.mode(undefined, "Mac OS"), "direct");
+});
+
+test("clavier pc-mac : chaque raccourci PC donne le raccourci Mac de MEME EFFET", () => {
+  const { clavier } = chargerLib();
+  const t = (nom, mods) => ecrit(clavier.traduire("pc-mac", touche(nom, mods)));
+  // Le cas general : Ctrl devient Cmd.
+  assert.equal(t("c", "C"), "Cmd+c");
+  assert.equal(t("z", "CS"), "Maj+Cmd+z");
+  assert.equal(t("s", "CA"), "Alt+Cmd+s");
+  // Deplacement et effacement par mot : Option, pas Cmd (qui irait en bout de ligne).
+  assert.equal(t("LeftArrow", "C"), "Alt+LeftArrow");
+  assert.equal(t("RightArrow", "CS"), "Alt+Maj+RightArrow");
+  assert.equal(t("Backspace", "C"), "Alt+Backspace");
+  assert.equal(t("Delete", "C"), "Alt+Delete");
+  // Debut / Fin : sur Mac ces touches ne deplacent pas le curseur.
+  assert.equal(t("Home", ""), "Cmd+LeftArrow");
+  assert.equal(t("End", "S"), "Maj+Cmd+RightArrow");
+  assert.equal(t("Home", "C"), "Cmd+UpArrow");
+  assert.equal(t("End", "CS"), "Maj+Cmd+DownArrow");
+  // Ceux qui gardent Control : Cmd+Tab ouvrirait le selecteur d'applications, Cmd+Espace Spotlight.
+  assert.equal(t("Tab", "C"), "Ctrl+Tab");
+  assert.equal(t("Tab", "CS"), "Ctrl+Maj+Tab");
+  assert.equal(t("Space", "C"), "Ctrl+Space");
+  // Les raccourcis propres a Windows.
+  assert.equal(t("y", "C"), "Maj+Cmd+z");
+  assert.equal(t("F4", "A"), "Cmd+q");
+  assert.equal(t("F4", "C"), "Cmd+w");
+  assert.equal(t("Tab", "A"), "Cmd+Tab");
+  assert.equal(t("LeftArrow", "A"), "Cmd+[");
+  assert.equal(t("Insert", "C"), "Cmd+c");
+  assert.equal(t("Delete", "S"), "Cmd+x");
+  assert.equal(t("Escape", "CS"), "Alt+Cmd+Escape");
+  // La touche Windows devient Control ; avec Ctrl en plus, rien ne bouge.
+  assert.equal(t("e", "M"), "Ctrl+e");
+  assert.equal(t("x", "CM"), "Ctrl+Cmd+x");
+  // Sans modificateur, et les touches qui n'ont pas d'equivalent : intactes.
+  for (const n of ["Return", "Escape", "Tab", "LeftArrow", "Delete", "Backspace", "F5", "PageDown"]) assert.equal(t(n, ""), n);
+  assert.equal(t("LeftArrow", "S"), "Maj+LeftArrow");
+  assert.equal(t("e", "A"), "Alt+e");
+  // Hors mode de traduction : tel quel, et l'entree n'est jamais modifiee.
+  const entree = touche("c", "C");
+  assert.equal(ecrit(clavier.traduire("direct", entree)), "Ctrl+c");
+  clavier.traduire("pc-mac", entree);
+  assert.deepEqual(entree, touche("c", "C"));
+});
+
+test("clavier mac-pc : l'inverse, pour un Mac devant un PC", () => {
+  const { clavier } = chargerLib();
+  const t = (nom, mods) => ecrit(clavier.traduire("mac-pc", touche(nom, mods)));
+  assert.equal(t("c", "M"), "Ctrl+c");
+  assert.equal(t("LeftArrow", "M"), "Home");
+  assert.equal(t("DownArrow", "MS"), "Ctrl+Maj+End");
+  assert.equal(t("LeftArrow", "A"), "Ctrl+LeftArrow");
+  assert.equal(t("Backspace", "A"), "Ctrl+Backspace");
+  assert.equal(t("z", "MS"), "Ctrl+y");
+  assert.equal(t("q", "M"), "Alt+F4");
+  assert.equal(t("Tab", "C"), "Ctrl+Tab");
+  assert.equal(t("a", ""), "a");
+  // Aller puis retour : les raccourcis d'edition courants retombent sur eux-memes.
+  for (const [n, m] of [["c", "C"], ["v", "C"], ["LeftArrow", "C"], ["Backspace", "C"], ["Home", ""], ["End", "S"], ["Home", "C"], ["y", "C"], ["F4", "A"], ["Tab", "C"]]) {
+    const aller = clavier.traduire("pc-mac", touche(n, m));
+    assert.equal(ecrit(clavier.traduire("mac-pc", aller)), ecrit(touche(n, m)), n + " " + m);
+  }
+});
+
+test("clavier estTexte : AltGr produit un caractere, pas un raccourci", () => {
+  const { clavier } = chargerLib();
+  const f = (key, o = {}) => clavier.estTexte({ key, ctrl: false, alt: false, meta: false, altGraph: false, ...o }, false);
+  assert.equal(f("a"), true);
+  assert.equal(f("É"), true);
+  // Windows presente AltGr comme Ctrl+Alt : « @ », « # », « € », « { » d'un clavier francais ou suisse.
+  for (const c of ["@", "#", "€", "{", "\\", "|", "~"]) assert.equal(f(c, { ctrl: true, alt: true }), true, c);
+  assert.equal(f("@", { ctrl: true, alt: true, altGraph: true }), true);
+  assert.equal(f("e", { alt: false, ctrl: false, altGraph: true }), true, "AltGr signale par le navigateur");
+  // Un vrai raccourci reste un raccourci.
+  assert.equal(f("c", { ctrl: true }), false);
+  assert.equal(f("s", { ctrl: true, alt: true }), false, "Ctrl+Alt+lettre");
+  assert.equal(f("e", { alt: true }), false, "Alt+lettre sur PC : un accelerateur de menu");
+  assert.equal(f("v", { meta: true }), false);
+  assert.equal(f("Enter"), false);
+  // Sur un Mac local, Option compose un caractere.
+  assert.equal(clavier.estTexte({ key: "@", alt: true }, true), true);
+  assert.equal(clavier.estTexte({ key: "e", alt: true }, true), false);
+  assert.equal(clavier.estTexte(null, false), false);
+});
+
+test("clavier souris et collage : Ctrl+clic devient Cmd+clic ; le collage rejoue le bon modificateur", () => {
+  const { clavier, clip } = chargerLib();
+  assert.deepEqual(plat(clavier.souris("pc-mac", { ctrl: true })), { nom: "", ctrl: false, alt: false, shift: false, meta: true });
+  assert.equal(clavier.souris("pc-mac", { ctrl: true, meta: true }).ctrl, true, "les deux : intact");
+  assert.equal(clavier.souris("direct", { ctrl: true }).ctrl, true);
+  assert.equal(clavier.souris("mac-pc", { meta: true, shift: true }).ctrl, true);
+  assert.deepEqual(plat(clavier.collerAvec(true, false, "Mac OS")), { ctrl: false, meta: true });
+  assert.deepEqual(plat(clavier.collerAvec(true, false, "Windows")), { ctrl: true, meta: false });
+  assert.deepEqual(plat(clavier.collerAvec(true, true, "Windows")), { ctrl: true, meta: false }, "Mac devant PC : Ctrl+V");
+  assert.deepEqual(plat(clavier.collerAvec(false, false, "Mac OS")), { ctrl: true, meta: false }, "brut : la touche du clavier local");
+  assert.deepEqual(plat(clavier.collerAvec(false, true, "Mac OS")), { ctrl: false, meta: true });
+  // Maj+Inser est un collage : il ne doit pas AUSSI partir comme une touche.
+  assert.equal(clip.isPasteChord({ key: "Insert", shiftKey: true }), true);
+  assert.equal(clip.isPasteChord({ key: "Insert", shiftKey: true, ctrlKey: true }), false);
+  assert.equal(clip.isPasteChord({ key: "Insert" }), false);
+  assert.equal(clip.signature("abc"), clip.signature("abc"));
+  assert.notEqual(clip.signature("abc"), clip.signature("abd"));
+  assert.notEqual(clip.signature(""), clip.signature(" "));
+  assert.equal(clip.signature(undefined), clip.signature(""));
+});
+
+test("clavier (cablage) : AltGr part en texte, Maj+Inser n'est pas transmis, un pair Windows n'est pas traduit", async () => {
+  const m = await montageSortant();
+  const frapper = (o) => m.player.ecouteurs.keydown.forEach((f) => f({ preventDefault() {}, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...o }));
+  const avant = m.touches.length;
+  frapper({ key: "@", ctrlKey: true, altKey: true });
+  frapper({ key: "Insert", shiftKey: true });
+  frapper({ key: "ArrowLeft", ctrlKey: true });
+  assert.deepEqual(m.touches.slice(avant), [["input_string", "@"],
+    ["input_key", { name: "LeftArrow", down: "true", press: "false", alt: "true", ctrl: "false", shift: "false", command: "false" }]]);
+  const w = await montageSortant({ plateforme: "Windows" });
+  const n = w.touches.length;
+  w.player.ecouteurs.keydown.forEach((f) => f({ preventDefault() {}, key: "c", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }));
+  assert.deepEqual(w.touches.slice(n), [["input_key", { name: "c", down: "true", press: "false", alt: "false", ctrl: "true", shift: "false", command: "false" }]]);
+});
+
+// ====================================================================
+// Presse-papier : depot automatique, synchronisation sortante.
+// ====================================================================
+// Le navigateur refuse d'ecrire du texte (pas de geste recent) : le montage ne
+// refusait que write(), celui des images.
+const refuserTexte = (m) => { m.w.navigator.clipboard.writeText = async () => { const e = new Error("refus"); e.name = "NotAllowedError"; throw e; }; };
+
+test("presse-papier auto : un texte recu est depose sans bouton ni retour, et un refus rend la main au bouton", async () => {
+  const m = await montageEntrant();
+  m.bac.document.hasFocus = () => true;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("bonjour") }] } });
+  await m.vider();
+  assert.deepEqual(m.ecrits, [{ texte: "bonjour" }]);
+  assert.deepEqual(plat(boutons(m.barre)), [], "aucun bouton");
+  assert.deepEqual(m.toasts(), [], "aucun retour : un presse-papier qui marche ne s'annonce pas");
+  // Refus du navigateur : pas d'erreur affichee, le bouton apparait.
+  const r = await montageEntrant({ ecriture: "refuse" });
+  refuserTexte(r);
+  r.bac.document.hasFocus = () => true;
+  r.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("plus tard") }] } });
+  await r.vider();
+  assert.deepEqual(plat(boutons(r.barre)), ["Texte reçu ⇩"]);
+  assert.deepEqual(r.toasts(), []);
+  // Au geste suivant, le depot est repris — le navigateur accepte cette fois.
+  r.w.navigator.clipboard.writeText = async (t) => { r.ecrits.push({ texte: t }); };
+  r.w.__rdPpGeste(); await r.vider();
+  assert.deepEqual(r.ecrits, [{ texte: "plus tard" }]);
+  assert.deepEqual(plat(boutons(r.barre)), []);
+});
+
+test("presse-papier auto : apres une perte de focus, le contenu en attente n'est PAS depose d'office", async () => {
+  const m = await montageEntrant({ ecriture: "refuse" });
+  refuserTexte(m);
+  m.bac.document.hasFocus = () => true;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("ancien") }] } });
+  await m.vider();
+  m.w.__rdPpBlur();                         // l'utilisateur est parti : il a pu copier autre chose ailleurs
+  m.w.navigator.clipboard.writeText = async (t) => { m.ecrits.push({ texte: t }); };
+  m.w.__rdPpGeste(); await m.vider();
+  assert.deepEqual(m.ecrits, [], "ecraser un contenu plus recent avec un plus ancien serait une faute");
+  assert.deepEqual(plat(boutons(m.barre)), ["Texte reçu ⇩"], "le bouton reste, pour qui le veut");
+  // Sans le focus a l'arrivee : pas de tentative du tout.
+  const n = await montageEntrant();
+  n.bac.document.hasFocus = () => false;
+  n.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("x") }] } });
+  await n.vider();
+  assert.deepEqual(n.ecrits, []);
+  assert.deepEqual(plat(boutons(n.barre)), ["Texte reçu ⇩"]);
+});
+
+test("presse-papier sortant : la synchronisation envoie sans coller, ne renvoie pas deux fois, et Ctrl+V devient immediat", async () => {
+  const m = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, clip: "auto" }) } });
+  let local = "copié ici";
+  const item = () => ({ types: ["text/plain"], getType: async () => new Blob([local], { type: "text/plain" }) });
+  m.w.navigator.clipboard = { read: async () => [item()], writeText: async () => {} };
+  m.w.navigator.permissions = { query: async () => ({ state: "granted" }) };
+  m.doc.hasFocus = () => true;
+  assert.equal(await m.w.__rdClipSync("test"), true);
+  assert.equal(new TextDecoder().decode(m.envoyes.at(-1).clipboard.content), "copié ici");
+  assert.equal(m.rejeux().length, 0, "synchroniser n'est pas coller");
+  const n = m.envoyes.length;
+  assert.equal(await m.w.__rdClipSync("test"), false, "rien de neuf : rien ne part");
+  assert.equal(m.envoyes.length, n);
+  // Ctrl+V du meme contenu : aucun envoi, la frappe est rejouee tout de suite.
+  const ev = { preventDefault() {}, clipboardData: { items: [], files: [], getData: (t) => (t === "text/plain" ? "copié ici" : "") } };
+  const repere = m.bac.minuteurs.length;
+  (m.ecouteurs.paste || []).forEach((f) => f(ev));
+  assert.equal(m.envoyes.length, n, "le contenu est deja sur le poste distant");
+  const rejeu = m.bac.minuteurs.slice(repere).filter((t) => t.once);
+  assert.deepEqual(rejeu.map((t) => t.ms), [30], "plus d'attente de 150 ms");
+  rejeu[0].f();
+  assert.deepEqual(m.touches.at(-1), ["input_key", { name: "v", down: "false", press: "false", alt: "false", shift: "false", ctrl: "false", command: "true" }]);
+  // Un contenu different repart.
+  local = "autre chose";
+  assert.equal(await m.w.__rdClipSync("test"), true);
+  // Sans accord : jamais de lecture.
+  const s = await montageSortant();
+  let lectures = 0;
+  s.w.navigator.clipboard = { read: async () => { lectures++; return []; } };
+  s.w.navigator.permissions = { query: async () => ({ state: "granted" }) };
+  s.doc.hasFocus = () => true;
+  assert.equal(await s.w.__rdClipSync("test"), false);
+  assert.equal(lectures, 0);
+});
+
+test("clavier (cablage) : le relachement rejoue ce qui est parti, meme si Ctrl a ete lache avant la lettre", async () => {
+  const m = await montageSortant();
+  const ev = (o) => ({ preventDefault() {}, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...o });
+  const bas = (o) => m.player.ecouteurs.keydown.forEach((f) => f(ev(o)));
+  const haut = (o) => m.player.ecouteurs.keyup.forEach((f) => f(ev(o)));
+  const avant = m.touches.length;
+  bas({ key: "c", code: "KeyC", ctrlKey: true });
+  haut({ key: "c", code: "KeyC" });                      // Ctrl deja relache : sans cela, « c » passait pour du texte
+  const cmd = { alt: "false", ctrl: "false", shift: "false", command: "true" };
+  assert.deepEqual(m.touches.slice(avant), [["input_key", { name: "c", down: "true", press: "false", ...cmd }],
+                                            ["input_key", { name: "c", down: "false", press: "false", ...cmd }]]);
+  // Une lettre tapee n'envoie rien au relachement, comme avant.
+  const n = m.touches.length;
+  bas({ key: "a", code: "KeyA" }); haut({ key: "a", code: "KeyA" });
+  assert.deepEqual(m.touches.slice(n), [["input_string", "a"]]);
+  // Un second relachement de la meme touche ne renvoie rien.
+  const k = m.touches.length;
+  haut({ key: "c", code: "KeyC" });
+  assert.equal(m.touches.length, k);
+});
+
+// ====================================================================
+// Onglet cache : la liaison ne depend plus des minuteurs.
+// ====================================================================
+function horlogeLiaison() {
+  const h = { t: 0, ticks: [], reveil: null };
+  h.o = (delai = 12000) => ({ delai, maintenant: () => h.t,
+    chaque: (f) => { h.ticks.push(f); return () => { h.ticks = h.ticks.filter((x) => x !== f); }; },
+    poser: (f) => { h.reveil = f; } });
+  h.avancer = (ms) => { h.t += ms; h.ticks.slice().forEach((f) => f()); };
+  return h;
+}
+const issue = (p) => { const r = { etat: "attente" }; p.then((v) => { r.etat = "ok"; r.v = v; }, (e) => { r.etat = "rejet"; r.v = e; }); return r; };
+const souffle = () => new Promise((r) => setImmediate(r));
+
+test("liaison : un message reveille l'attente A SON ARRIVEE, sans qu'aucun minuteur ne tourne", async () => {
+  const { liaison } = chargerLib();
+  const h = horlogeLiaison(), ws = { _buf: [], _status: "open" };
+  const r = issue(liaison.attendre(ws, h.o()));
+  await souffle();
+  assert.equal(r.etat, "attente");
+  ws._buf.push("m1"); h.reveil();                       // l'evenement « message » du WebSocket
+  await souffle();
+  assert.deepEqual(r, { etat: "ok", v: "m1" }, "rendu sans avancer l'horloge : un onglet cache, aux minuteurs ralentis, lit quand meme");
+  assert.equal(h.ticks.length, 0, "le minuteur de filet est arrete");
+  assert.equal(h.reveil, null);
+  // Un message deja la est rendu tout de suite ; les suivants restent dans l'ordre.
+  ws._buf.push("m2", "m3");
+  assert.equal(await liaison.attendre(ws, h.o()), "m2");
+  assert.deepEqual(ws._buf, ["m3"]);
+});
+
+test("liaison : fermeture et vrai silence sont signales ; un minuteur en retard n'est PAS un silence", async () => {
+  const { liaison } = chargerLib();
+  // Fermeture pendant l'attente : rejet avec l'etat, comme le bundle.
+  let h = horlogeLiaison(), ws = { _buf: [], _status: "open" };
+  let r = issue(liaison.attendre(ws, h.o()));
+  ws._status = "ferme"; h.reveil(); await souffle();
+  assert.deepEqual(r, { etat: "rejet", v: "ferme" });
+  // Deja fermee : rejet immediat.
+  await assert.rejects(liaison.attendre({ _buf: [], _status: "" }, h.o()));
+  // Un vrai silence de 12 s, minuteur regulier : « Timeout ».
+  h = horlogeLiaison(); ws = { _buf: [], _status: "open" };
+  r = issue(liaison.attendre(ws, h.o()));
+  for (let i = 0; i < 47; i++) h.avancer(250);
+  await souffle();
+  assert.equal(r.etat, "attente", "11,75 s : pas encore");
+  for (let i = 0; i < 3; i++) h.avancer(250);
+  await souffle();
+  assert.deepEqual(r, { etat: "rejet", v: "Timeout" });
+  // La page a dormi une minute (onglet cache, minuteurs a un par minute) : le
+  // minuteur se reveille tard. Ce n'est pas la liaison qui s'est tue.
+  h = horlogeLiaison(); ws = { _buf: [], _status: "open" };
+  r = issue(liaison.attendre(ws, h.o()));
+  h.avancer(60000); await souffle();
+  assert.equal(r.etat, "attente", "l'ancien code declarait « Timeout » ici et fermait une session vivante");
+  ws._buf.push("apres"); h.reveil(); await souffle();
+  assert.deepEqual(r, { etat: "ok", v: "apres" });
+});
+
+test("liaison (cablage) : la classe de liaison du bundle est remplacee une fois, pour toutes ses instances", async () => {
+  const m = await montageSortant();
+  class Liaison {
+    constructor() { this._buf = []; this._status = "open"; this.ecoutes = {};
+      this._websocket = { readyState: 1, addEventListener: (t, f) => { (this.ecoutes[t] ||= []).push(f); } }; }
+    next() { return new Promise(() => {}); }             // l'attente par minuteur du bundle : ne rend jamais ici
+    sendMessage() {}
+  }
+  const video = new Liaison();
+  m.w.curConn = { ...m.w.curConn, handleVideoFrame() {}, draw() {}, _ws: video };
+  const fichiers = new Liaison();                        // une AUTRE instance, jamais passee a la page
+  const r = issue(fichiers.next());
+  await souffle();
+  assert.deepEqual(Object.keys(fichiers.ecoutes).sort(), ["close", "error", "message"]);
+  fichiers._buf.push({ test_delay: {} });
+  fichiers.ecoutes.message.forEach((f) => f());
+  await souffle();
+  assert.equal(r.etat, "ok", "la connexion « fichiers » en profite sans etre instrumentee");
+  // La liaison video garde son filtrage (presse-papier, retours du pair) par-dessus.
+  const v = issue(m.w.curConn._ws.next());
+  video._buf.push({ test_delay: { last_delay: 7 } });
+  video.ecoutes.message.forEach((f) => f());
+  await souffle(); await souffle();
+  assert.equal(v.etat, "ok");
+  assert.deepEqual(plat(m.w.RD.stats.delay), [7]);
+});
+
+test("onglet cache : les trames sont acquittees sans etre decodees ; au retour, image-cle et cadence d'avant", async () => {
+  const m = await montageVideo({ caps: { h265: true }, codec: "h265", init: { "rd-prefs": JSON.stringify({ v: 1, fps: 60 }) } });
+  m.trame("h265s");
+  assert.equal(m.decodes.length, 1);
+  m.doc.visibilityState = "hidden";
+  m.w.__rdVisibilite();
+  assert.deepEqual(plat(m.options().at(-1)), { custom_fps: 5 }, "personne ne regarde : 5 images par seconde suffisent");
+  const acks = m.acks.n;
+  for (let i = 0; i < 10; i++) m.trame("h265s", false);
+  assert.equal(m.decodes.length, 1, "rien n'est decode onglet cache");
+  assert.equal(m.acks.n, acks + 10, "mais chaque trame est acquittee : sans cela le flux se fige");
+  const cles = m.cles.n;
+  m.doc.visibilityState = "visible";
+  m.w.__rdVisibilite();
+  assert.deepEqual(plat(m.options().at(-1)), { custom_fps: 60 }, "le plafond choisi par l'utilisateur revient");
+  assert.equal(m.cles.n, cles + 1, "une image-cle est demandee");
+  m.trame("h265s", false);
+  assert.equal(m.decodes.length, 1, "un delta sans sa cle n'est pas decode");
+  m.trame("h265s", true);
+  assert.equal(m.decodes.length, 2);
+  // Sans preference : 30, la valeur par defaut du poste distant.
+  const n = await montageVideo({ caps: { h265: true }, codec: "h265" });
+  n.doc.visibilityState = "hidden"; n.w.__rdVisibilite();
+  n.doc.visibilityState = "visible"; n.w.__rdVisibilite();
+  assert.deepEqual(plat(n.options().at(-1)), { custom_fps: 30 });
+  // Un retour sans passage par « cache » n'envoie rien.
+  const k = n.options().length;
+  n.w.__rdVisibilite();
+  assert.equal(n.options().length, k);
+});
+
+// ====================================================================
+// Image : couleurs, nettete.
+// ====================================================================
+test("couleur : le decodeur est configure en BT.601, la matrice que RustDesk utilise sans le dire", async () => {
+  const { codec } = chargerLib();
+  assert.deepEqual(plat(codec.COULEUR), { primaries: "bt709", transfer: "bt709", matrix: "smpte170m", fullRange: false });
+  const m = await montageVideo({ caps: { h265: true }, codec: "h265" });
+  m.trame("h265s");
+  assert.deepEqual(plat(m.config.colorSpace), plat(codec.COULEUR));
+});
+
+test("affichage : cale au pixel physique pres quand l'ecart est minime, proportions gardees sinon", () => {
+  const { affichage } = chargerLib();
+  const e = (...a) => plat(affichage.echelle(...a));
+  // 1920x1080 dans une fenetre a peine plus grande : un pour un, aucun reechantillonnage.
+  assert.deepEqual(e(1920, 1080, 1936, 1100, 1), { w: 1920, h: 1080, net: true });
+  // Ecran a 125 % : 1920 pixels distants = 1536 pixels CSS = 1920 pixels physiques.
+  assert.deepEqual(e(1920, 1080, 1540, 900, 1.25), { w: 1536, h: 864, net: true });
+  // Ecran Retina (x2) devant un 1280x720 : chaque pixel distant en couvre exactement quatre.
+  assert.deepEqual(e(1280, 720, 1300, 740, 2), { w: 1280, h: 720, net: true });
+  // Fenetre plus petite que l'image : on reduit, en gardant les proportions.
+  assert.deepEqual(e(1920, 1080, 1200, 800, 1), { w: 1200, h: 675, net: false });
+  // Trop loin d'un rapport entier (x1,5) : pas de bande noire de 30 %.
+  assert.deepEqual(e(1280, 720, 1920, 1080, 1), { w: 1920, h: 1080, net: false });
+  // L'image calee ne depasse jamais la fenetre.
+  for (const [lw, lh, vw, vh, d] of [[1920, 1080, 1921, 1081, 1], [2560, 1440, 2100, 1200, 1.25], [1366, 768, 1400, 800, 1.5]]) {
+    const r = affichage.echelle(lw, lh, vw, vh, d);
+    assert.ok(r.w <= vw + 1e-6 && r.h <= vh + 1e-6, JSON.stringify([lw, lh, vw, vh, d, r]));
+    assert.ok(Math.abs(r.w / r.h - lw / lh) < 0.01);
+  }
+  assert.deepEqual(e(0, 0, 100, 100, 1), { w: 0, h: 0, net: false });
+});
+
+test("ajuster : la resolution distante est choisie en pixels PHYSIQUES de la fenetre", async () => {
+  const m = await montageSortant();
+  m.w.RD.res = [{ width: 1280, height: 720 }, { width: 1920, height: 1080 }, { width: 2560, height: 1440 }];
+  m.w.innerWidth = 1280; m.w.innerHeight = 720;
+  const ajuster = m.bar.children[1];
+  ajuster.onclick();
+  assert.deepEqual(plat(m.envoyes.at(-1).misc.change_resolution), { width: 1280, height: 720 });
+  m.w.devicePixelRatio = 1.5;                            // ecran a 150 % : la fenetre a 1920 pixels reels
+  ajuster.onclick();
+  assert.deepEqual(plat(m.envoyes.at(-1).misc.change_resolution), { width: 1920, height: 1080 });
 });
