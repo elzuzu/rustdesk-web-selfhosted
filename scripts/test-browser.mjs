@@ -371,6 +371,76 @@ await test("codec-probe-all : les quatre codecs sont sondes, et la declaration n
   }
 });
 
+await test("restart-uses-page-modal : la confirmation passe par la modale, pas par le window.confirm que le bundle a remplace", async (p) => {
+  await sessionSimulee(p);
+  await p.selectOption("#rdbar select.rdactions", "restart");
+  await p.waitForSelector("#rdmodal.ouvert .boite");
+  assert.match(await p.textContent("#rdmodal .boite b"), /Redémarrer le poste distant/);
+  await p.click("#rdmodal .boite button:not(.ok)");                       // Annuler
+  assert.equal(await p.evaluate(() => window.__envoyes.filter((m) => m.misc && m.misc.restart_remote_device).length), 0);
+  await p.selectOption("#rdbar select.rdactions", "restart");
+  await p.click("#rdmodal .boite button.ok");
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.misc && m.misc.restart_remote_device === true));
+}, OUVERTE);
+
+enTete("Entrees — vraie molette, vrai ecran tactile, vrai plein ecran");
+
+const taillerCanvas = (p) => p.evaluate(() => { const c = window.__rdActive(); c.width = 1200; c.height = 800; window.__rdFit(); window.__touches.length = 0; });
+
+await test("wheel-accumulates : un trackpad (petits deltas) ne fait pas un cran par evenement", async (p) => {
+  await sessionSimulee(p); await taillerCanvas(p);
+  await p.mouse.move(600, 400);
+  for (let i = 0; i < 30; i++) await p.mouse.wheel(0, 5);                   // 150 px en tout
+  await p.mouse.wheel(0, 100);                                              // un cran de souris
+  await p.waitForTimeout(100);
+  const crans = await p.evaluate(() => window.__touches.filter((t) => t[0] === "send_mouse").map((t) => JSON.parse(t[1])).filter((a) => a.type === "wheel").map((a) => a.y));
+  assert.deepEqual(crans, [-1, -1], JSON.stringify(crans));
+});
+
+await test("mouse-release-outside : un glisser termine hors de l'image relache quand meme le bouton", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(() => { const c = window.__rdActive(); c.width = 600; c.height = 400; c.style.width = "600px"; c.style.height = "400px"; window.__touches.length = 0; });
+  const r = await p.evaluate(() => { const b = window.__rdActive().getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; });
+  await p.mouse.move(r.x + 50, r.y + 50);
+  await p.mouse.down();
+  await p.mouse.move(r.x + r.w + 150, r.y + 50, { steps: 4 });              // hors du canvas
+  await p.mouse.up();
+  const t = await p.evaluate(() => window.__touches.filter((x) => x[0] === "send_mouse").map((x) => JSON.parse(x[1])));
+  const types = t.map((a) => a.type).filter(Boolean);
+  assert.deepEqual(types, ["down", "up"], JSON.stringify(types));
+  assert.ok(t.every((a) => a.x >= 0 && a.x <= 599), "coordonnees bornees a l'image : " + JSON.stringify(t.map((a) => a.x)));
+});
+
+await test("touch-tap-is-left-click : un toucher reel donne UN clic gauche (pas de double via les evenements souris)", async (p) => {
+  await sessionSimulee(p); await taillerCanvas(p);
+  await p.touchscreen.tap(300, 300);
+  await p.waitForTimeout(400);
+  const t = await p.evaluate(() => window.__touches.filter((x) => x[0] === "send_mouse").map((x) => JSON.parse(x[1])).map((a) => a.type + ":" + a.buttons));
+  assert.deepEqual(t, [":", "down:left", "up:left"], JSON.stringify(t));
+  assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector("#rdbar .rdclavier")).display !== "none"), true, "ecran tactile : le bouton Clavier est propose");
+}, { ...OUVERTE, contexte: { hasTouch: true, isMobile: true, viewport: { width: 1200, height: 800 } } });
+
+await test("soft-keyboard-field : ce qui est tape dans le champ du clavier virtuel part au poste distant", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(() => { window.__touches.length = 0; });
+  await p.click("#rdbar .rdclavier");
+  assert.equal(await p.evaluate(() => document.activeElement.id), "rdsaisie", "le bouton donne le focus au champ, pas au canvas");
+  await p.keyboard.type("é");
+  await p.keyboard.press("Backspace");
+  const t = await p.evaluate(() => window.__touches.map((x) => x[0] === "input_string" ? "texte:" + x[1] : x[0] + ":" + JSON.parse(x[1]).name));
+  assert.deepEqual(t, ["texte:é", "input_key:Backspace"], JSON.stringify(t));
+}, { ...OUVERTE, contexte: { hasTouch: true, isMobile: true, viewport: { width: 1200, height: 800 } } });
+
+await test("fullscreen-button : le bouton bascule le plein ecran et son libelle", async (p) => {
+  await sessionSimulee(p);
+  assert.equal(await p.textContent("#rdbar .rdplein"), "Plein écran");
+  await p.click("#rdbar .rdplein");
+  await p.waitForFunction(() => !!document.fullscreenElement && document.querySelector("#rdbar .rdplein").textContent === "Fenêtre", null, { timeout: 5000 });
+  await p.evaluate(() => document.exitFullscreen());
+  // Le libelle suit l'evenement fullscreenchange, qui arrive apres le changement d'etat.
+  await p.waitForFunction(() => !document.fullscreenElement && document.querySelector("#rdbar .rdplein").textContent === "Plein écran", null, { timeout: 5000 });
+}, OUVERTE);
+
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
 
 await test("chips-under-id : sous le champ Id du VRAI formulaire, entre Id et Connect", async (p) => {

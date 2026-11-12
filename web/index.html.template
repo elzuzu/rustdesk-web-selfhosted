@@ -107,6 +107,10 @@
   /* Un <select> prend la largeur de sa plus longue option : le menu Actions
      n'a pas a faire la taille de « Suspendre le presse-papier ». */
   #rdbar select.rdactions{max-width:6.5rem}
+  /* Le champ du clavier virtuel : present, focalisable, invisible. 16 px de
+     police, sinon iOS zoome sur la page quand il prend le focus. */
+  #rdsaisie{position:fixed;left:0;bottom:0;width:1px;height:1px;padding:0;border:0;
+         opacity:0;font-size:16px;resize:none;z-index:-1}
   #rdbar button{padding:.2rem .6rem;font-size:.8rem;border-radius:5px;border:0;
          background:#2a2f38;color:#e6e8ec;cursor:pointer;margin:0}
   #rdbar button:hover{background:#3a4150}
@@ -691,20 +695,15 @@ window.rdCoalesce = function(on){
   return window.RD.coalesce;
 };
 
-// hbbs journalise l'objet TestDelay brut ; c'est la seule source de last_delay
-// accessible depuis la page, le traitement etant enferme dans le bundle.
+// Le bundle journalise l'objet TestDelay brut a chaque sonde, une fois par
+// seconde : ces lignes noyaient la console. On les absorbe, sans rien en lire —
+// la mesure est prise dans le message lui-meme (pairFiltrer).
 (function(){
   var orig = console.log;
   console.log = function(){
     try{
       var a = arguments[0];
-      if (a && typeof a === "object" && typeof a.last_delay === "number"){
-        var S = window.RD.stats;
-        S.delay.push(a.last_delay);
-        if (S.delay.length > 300) S.delay.shift();
-        if (typeof a.target_bitrate === "number") S.bitrate = a.target_bitrate;
-        return;                       // absorbe : ces lignes noyaient la console
-      }
+      if (a && typeof a === "object" && typeof a.last_delay === "number") return;
     }catch(_){}
     return orig.apply(console, arguments);
   };
@@ -852,6 +851,13 @@ window.onGlobalEvent = function(payload){
   function fmtId(s){
     var d = normId(s);
     return d ? d.replace(/(\d{3})(?=\d)/g, "$1 ") : "";
+  }
+
+  // Un nom de poste venu du pair : du texte libre, donc borne et nettoye
+  // (caracteres de controle retires) avant d'aller dans un titre ou une pastille.
+  function nomPoste(s){
+    if (typeof s !== "string") return "";
+    return s.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 40);
   }
 
   // ---------------------------------------------------------------- presse-papier
@@ -1126,7 +1132,9 @@ window.onGlobalEvent = function(payload){
     quality: ["balanced", "best", "low"],
     fps:     [10, 15, 30, 60],
     codec:   ["auto", "h265", "h264", "av1", "vp9", "logiciel"],
-    bar:     ["ouverte", "repliee"]
+    bar:     ["ouverte", "repliee"],
+    remember:[true, false],
+    lang:    ["fr", "en"]
   };
   function prefsFiltrees(src){
     var r = {};
@@ -1149,7 +1157,7 @@ window.onGlobalEvent = function(payload){
     }
     return {
       get: get,
-      // patch : { quality, fps, codec, bar, hint } ; null retire une valeur.
+      // patch : { quality, fps, codec, bar, hint, remember, lang } ; null retire une valeur.
       // Rend vrai si l'ecriture a tenu (relue).
       set: function(patch){
         var cur = get(), p = patch || {};
@@ -1161,7 +1169,7 @@ window.onGlobalEvent = function(payload){
           if (Object.prototype.hasOwnProperty.call(f, k)) cur[k] = f[k];
         });
         var texte = JSON.stringify({ v: 1, quality: cur.quality, fps: cur.fps, codec: cur.codec,
-                                     bar: cur.bar, hint: cur.hint });
+                                     bar: cur.bar, hint: cur.hint, remember: cur.remember, lang: cur.lang });
         var ok = ecrire(storage, key, texte);
         mem = ok ? null : cur;
         return ok;
@@ -1308,6 +1316,110 @@ window.onGlobalEvent = function(payload){
     return null;
   }
 
+  // ---------------------------------------------------------------- molette
+  // Le pair compte en CRANS. Un evenement « wheel » n'en est pas un : une
+  // souris en emet un par cran (100 ou 120 px, ou 3 lignes), un trackpad une
+  // soixantaine par seconde de quelques pixels chacun. Envoyer un cran par
+  // evenement faisait defiler un trackpad dix fois trop vite. On cumule donc
+  // les pixels et l'on n'emet un cran que tous les « pas » pixels.
+  function creerMolette(pas){
+    pas = pas > 0 ? pas : 100;
+    var ax = 0, ay = 0;
+    function axe(acc, d){
+      if (!d) return [acc, 0];
+      if (acc !== 0 && (acc > 0) !== (d > 0)) acc = 0;   // demi-tour : le reste ne compte plus
+      acc += d;
+      var n = acc > 0 ? Math.floor(acc / pas) : -Math.floor(-acc / pas);
+      return [acc - n * pas, n];
+    }
+    function borne(n){ return n ? Math.max(-10, Math.min(10, -n)) : 0; }
+    return {
+      // mode : WheelEvent.deltaMode — 0 pixels, 1 lignes, 2 pages.
+      // Rend { x, y } en crans, dans le sens du protocole : defiler vers le
+      // bas (delta positif) est un cran NEGATIF.
+      pousser: function(dx, dy, mode){
+        var k = mode === 1 ? 40 : mode === 2 ? 800 : 1;
+        var rx = axe(ax, (Number(dx) || 0) * k), ry = axe(ay, (Number(dy) || 0) * k);
+        ax = rx[0]; ay = ry[0];
+        return { x: borne(rx[1]), y: borne(ry[1]) };
+      },
+      raz: function(){ ax = 0; ay = 0; }
+    };
+  }
+
+  // ---------------------------------------------------------------- tactile
+  // Un doigt pilote la souris du poste distant, sans intermediaire :
+  //   toucher bref            clic gauche a l'endroit touche
+  //   toucher puis glisser    glisser-deposer (bouton gauche tenu)
+  //   appui long immobile     clic droit
+  //   deux doigts qui glissent  molette, dans le sens « naturel » (le contenu
+  //                             suit les doigts)
+  // La machine ne connait ni le DOM ni l'horloge : elle recoit des positions
+  // et rend des actions { a: "move"|"down"|"up"|"clic-droit"|"wheel", … } en
+  // coordonnees de fenetre. Le cablage arme le minuteur de l'appui long et
+  // appelle long().
+  function creerTactile(opts){
+    var seuil = (opts && opts.glisse) || 10;
+    var pts = {}, n = 0, etat = "repos", depart = null, centre0 = null;
+    function centre(){
+      var x = 0, y = 0, k = 0;
+      for (var id in pts){ x += pts[id].x; y += pts[id].y; k++; }
+      return k ? { x: x / k, y: y / k } : null;
+    }
+    return {
+      etat: function(){ return etat; },
+      down: function(id, x, y){
+        if (pts[id]) return [];
+        pts[id] = { x: x, y: y }; n++;
+        if (n === 1){ etat = "un"; depart = { x: x, y: y }; return [{ a: "move", x: x, y: y }]; }
+        if (n === 2){
+          var out = etat === "glisse" ? [{ a: "up", x: depart.x, y: depart.y }] : [];
+          etat = "deux"; centre0 = centre();
+          return out;
+        }
+        return [];
+      },
+      move: function(id, x, y){
+        if (!pts[id]) return [];
+        pts[id] = { x: x, y: y };
+        if (etat === "un"){
+          if (Math.abs(x - depart.x) <= seuil && Math.abs(y - depart.y) <= seuil) return [];
+          etat = "glisse";
+          var d = depart; depart = { x: x, y: y };
+          return [{ a: "down", x: d.x, y: d.y }, { a: "move", x: x, y: y }];
+        }
+        if (etat === "glisse"){ depart = { x: x, y: y }; return [{ a: "move", x: x, y: y }]; }
+        if (etat === "deux"){
+          var c = centre(), dx = c.x - centre0.x, dy = c.y - centre0.y;
+          centre0 = c;
+          return (dx || dy) ? [{ a: "wheel", dx: -dx, dy: -dy }] : [];
+        }
+        return [];
+      },
+      up: function(id){
+        if (!pts[id]) return [];
+        var p = pts[id]; delete pts[id]; n--;
+        var avant = etat;
+        etat = n === 0 ? "repos" : (avant === "deux" || avant === "fin") ? "fin" : avant;
+        if (avant === "un")     return [{ a: "down", x: depart.x, y: depart.y }, { a: "up", x: depart.x, y: depart.y }];
+        if (avant === "glisse") return [{ a: "up", x: p.x, y: p.y }];
+        return [];
+      },
+      // L'appui long : seulement si le doigt n'a ni bouge ni ete rejoint.
+      long: function(){
+        if (etat !== "un") return [];
+        etat = "long";
+        return [{ a: "clic-droit", x: depart.x, y: depart.y }];
+      },
+      // Le navigateur reprend le geste (pointercancel) : on relache ce qui est tenu.
+      cancel: function(){
+        var out = etat === "glisse" ? [{ a: "up", x: depart.x, y: depart.y }] : [];
+        pts = {}; n = 0; etat = "repos";
+        return out;
+      }
+    };
+  }
+
   // ------------------------------------------------------ retours du pair
   // BackNotification : la reponse du pair a « bloquer la saisie » et au mode
   // confidentialite. Le bundle la decode et n'en fait rien : l'option semblait
@@ -1362,7 +1474,9 @@ window.onGlobalEvent = function(payload){
     codec: { ORDRE: CODEC_ORDRE, PREFER: CODEC_PREFER, CHAINES: CODEC_CHAINES,
              meilleur: codecMeilleur, capacites: codecCapacites, flux: codecFlux },
     pair:  { retour: retourPair, demande2fa: demande2fa, code2fa: code2fa },
-    isPeerId: isPeerId, normId: normId, fmtId: fmtId,
+    molette: { creer: creerMolette },
+    tactile: { creer: creerTactile },
+    isPeerId: isPeerId, normId: normId, fmtId: fmtId, nomPoste: nomPoste,
     messages: messages,
     clip: {
       FMT: FMT, LIM: LIM, ERR: ERR, ClipError: ClipError,
@@ -1417,9 +1531,12 @@ window.onGlobalEvent = function(payload){
     return m;
   }
   function merge(a,b){ for(var k in b) a[k]=b[k]; return a; }
+  // Bornee a l'image : avec la capture du pointeur, un glisser continue hors du
+  // canvas, et le pair ne doit pas recevoir de coordonnees hors de son ecran.
   function pos(c,e){ var r=c.getBoundingClientRect();
-    return {x:Math.round((e.clientX-r.left)*(c.width/r.width)),
-            y:Math.round((e.clientY-r.top)*(c.height/r.height))}; }
+    function b(v,max){ return Math.max(0, Math.min(Math.max(0,(max|0)-1), Math.round(v)||0)); }
+    return {x:b((e.clientX-r.left)*(c.width/r.width), c.width),
+            y:b((e.clientY-r.top)*(c.height/r.height), c.height)}; }
   function btn(e){ return e.button===2?"right":e.button===1?"wheel":"left"; }
 
   // Envoi direct d'un message protobuf via la connexion courante.
@@ -1952,22 +2069,49 @@ window.onGlobalEvent = function(payload){
       }
       return m;
     }
+    // La latence mesuree par le pair : lue ICI, dans le message, et non plus
+    // dans ce que le bundle en ecrit sur la console.
+    var td = m.test_delay;
+    if (td && typeof td.last_delay === "number"){
+      var S = RD.stats;
+      S.delay.push(td.last_delay);
+      if (S.delay.length > 300) S.delay.shift();
+      if (typeof td.target_bitrate === "number") S.bitrate = td.target_bitrate;
+      return m;
+    }
     var lr = m.login_response, cas = lr && RDLib.pair.demande2fa(lr.error);
     if (!cas) return m;
-    var saisi = null;
-    try{
-      saisi = window.prompt(cas === "faux"
-        ? "Code refusé. Code de vérification à 6 chiffres du poste distant :"
-        : "Le poste distant demande un code de vérification (2FA) à 6 chiffres :", "");
-    }catch(_){}
-    if (saisi === null) return m;                 // annule : l'erreur du bundle s'affiche
-    var code = RDLib.pair.code2fa(saisi);
-    if (!code){ lr.error = "Wrong 2FA Code"; return pairFiltrer(c, m); }
-    // PAS rdSend : RD.ready est faux tant que peer_info n'est pas arrive. Le
-    // canal est pourtant etabli — ce login_response vient d'y passer.
-    c._ws.sendMessage({ auth_2fa: { code: code } });
-    console.log("[2fa] code envoye");
-    return {};
+    return demander2fa(c, m, cas);              // une promesse : next() l'attend
+  }
+  // Une question posee dans la modale de la page. Rend une promesse : la
+  // saisie (ou true sans champ), null si l'utilisateur annule.
+  function demander(o){
+    return new Promise(function(res){
+      if (!window.__rdModale){ res(null); return; }
+      var q = { titre: o.titre, corps: o.corps, okTexte: o.okTexte, danger: o.danger,
+                onOk: function(v){ res(o.champ !== undefined ? String(v == null ? "" : v) : true); },
+                onAnnule: function(){ res(null); } };
+      if (o.champ !== undefined) q.champ = o.champ;
+      window.__rdModale(q);
+    });
+  }
+  async function demander2fa(c, m, cas){
+    for (;;){
+      var saisi = await demander({
+        titre: cas === "faux" ? "Code refusé" : "Vérification en deux étapes",
+        corps: "Code à 6 chiffres de l'application d'authentification du poste distant.",
+        champ: "", okTexte: "Valider" });
+      if (saisi === null) return m;               // annule : l'erreur du bundle s'affiche
+      var code = RDLib.pair.code2fa(saisi);
+      if (code){
+        // PAS rdSend : RD.ready est faux tant que peer_info n'est pas arrive. Le
+        // canal est pourtant etabli — ce login_response vient d'y passer.
+        c._ws.sendMessage({ auth_2fa: { code: code } });
+        console.log("[2fa] code envoye");
+        return {};
+      }
+      cas = "faux";
+    }
   }
   window.__rdPairFiltrer = pairFiltrer;
 
@@ -2092,7 +2236,7 @@ window.onGlobalEvent = function(payload){
       var suivant = c._ws.next.bind(c._ws);
       c._ws.next = async function(){
         var m = await suivant();
-        try { m = pairFiltrer(c, m); }
+        try { m = await pairFiltrer(c, m); }
         catch(e){ console.warn("[pair] entrant :", e); }
         try { return ppFiltrer(m); }
         catch(e){ console.warn("[presse-papier] entrant :", e); return m; }
@@ -2125,14 +2269,80 @@ window.onGlobalEvent = function(payload){
         RD.stats.moves++;
       }
     });
+    // Un bouton enfonce doit TOUJOURS etre relache cote distant. Le relachement
+    // n'etait ecoute que sur le canvas : un glisser termine hors de l'image, ou
+    // une fenetre qui perd le focus en plein glisser, laissait le bouton tenu.
+    // La capture du pointeur ramene mousemove et mouseup au canvas ou que soit
+    // la souris ; la perte de focus relache ce qui reste.
+    var enfonces = {}, derniere = {x:0,y:0};
+    function relacherTout(){
+      for (var b in enfonces){
+        send("send_mouse",{type:"up",buttons:b,x:derniere.x,y:derniere.y,
+                           alt:"false",ctrl:"false",shift:"false",command:"false"});
+      }
+      enfonces = {};
+    }
+    window.addEventListener("blur", relacherTout);
     c.addEventListener("mousedown",function(e){ e.preventDefault(); c.focus(); var p=pos(c,e);
+      enfonces[btn(e)] = 1; derniere = p;
       send("send_mouse",merge({type:"down",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
     c.addEventListener("mouseup",function(e){ e.preventDefault(); var p=pos(c,e);
+      delete enfonces[btn(e)]; derniere = p;
       send("send_mouse",merge({type:"up",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
+    var molette = RDLib.molette.creer(100);
     c.addEventListener("wheel",function(e){ e.preventDefault();
-      send("send_mouse",merge({type:"wheel",buttons:"",
-        x:e.deltaX>0?-1:e.deltaX<0?1:0, y:e.deltaY>0?-1:e.deltaY<0?1:0},mods(e)));
+      var w = molette.pousser(e.deltaX, e.deltaY, e.deltaMode);
+      if (w.x || w.y) send("send_mouse",merge({type:"wheel",buttons:"",x:w.x,y:w.y},mods(e)));
     },{passive:false});
+
+    // --- Tactile. touch-action:none retire le defilement et le zoom de la page
+    // sur l'image ; preventDefault sur touchstart retire les evenements souris
+    // de compatibilite, qui doubleraient chaque geste.
+    c.style.touchAction = "none";
+    var tact = RDLib.tactile.creer(), tactMol = RDLib.molette.creer(30), longT = null;
+    var SANS = {alt:"false",ctrl:"false",shift:"false",command:"false"};
+    function jouer(acts){
+      acts.forEach(function(a){
+        if (a.a === "wheel"){
+          var w = tactMol.pousser(a.dx, a.dy, 0);
+          if (w.x || w.y) send("send_mouse",merge({type:"wheel",buttons:"",x:w.x,y:w.y},SANS));
+          return;
+        }
+        var p = pos(c,{clientX:a.x,clientY:a.y}); derniere = p;
+        if (a.a === "move") send("send_mouse",merge({type:"",buttons:"",x:p.x,y:p.y},SANS));
+        else if (a.a === "down"){ enfonces.left = 1; send("send_mouse",merge({type:"down",buttons:"left",x:p.x,y:p.y},SANS)); }
+        else if (a.a === "up"){ delete enfonces.left; send("send_mouse",merge({type:"up",buttons:"left",x:p.x,y:p.y},SANS)); }
+        else if (a.a === "clic-droit"){
+          send("send_mouse",merge({type:"down",buttons:"right",x:p.x,y:p.y},SANS));
+          send("send_mouse",merge({type:"up",buttons:"right",x:p.x,y:p.y},SANS));
+        }
+      });
+    }
+    function finLong(){ if (longT){ clearTimeout(longT); longT = null; } }
+    c.addEventListener("touchstart",function(e){ e.preventDefault(); c.focus(); },{passive:false});
+    c.addEventListener("pointerdown",function(e){
+      if (e.pointerType !== "touch"){
+        try{ c.setPointerCapture(e.pointerId); }catch(_){}
+        return;
+      }
+      try{ c.setPointerCapture(e.pointerId); }catch(_){}
+      finLong();
+      jouer(tact.down(e.pointerId, e.clientX, e.clientY));
+      if (tact.etat() === "un") longT = setTimeout(function(){ longT = null; jouer(tact.long()); }, 600);
+    });
+    c.addEventListener("pointermove",function(e){
+      if (e.pointerType !== "touch") return;
+      jouer(tact.move(e.pointerId, e.clientX, e.clientY));
+      if (tact.etat() !== "un") finLong();
+    });
+    c.addEventListener("pointerup",function(e){
+      if (e.pointerType !== "touch") return;
+      finLong(); jouer(tact.up(e.pointerId));
+    });
+    c.addEventListener("pointercancel",function(e){
+      if (e.pointerType !== "touch") return;
+      finLong(); tactMol.raz(); jouer(tact.cancel());
+    });
 
     function key(e,down){
       var k=e.key;
@@ -2399,6 +2609,10 @@ window.onGlobalEvent = function(payload){
     // Une session reussie : cet ID rejoint la liste de l'ecran de connexion.
     try{
       var idSession = window.curConn && window.curConn._id;
+      // L'onglet porte le nom du poste : avec plusieurs sessions ouvertes, on
+      // ne les distinguait pas.
+      var nomPoste = RDLib.nomPoste(window.curConn && window.curConn._peerInfo && window.curConn._peerInfo.hostname);
+      document.title = (nomPoste || RDLib.fmtId(String(idSession || "")) || "Session") + " — RustDesk";
       if (idSession){ recents.add(idSession); rendreRecents(); }
     }catch(e){ console.warn("[historique]", e); }
     // La barre est repliee par defaut : on dit UNE fois ou elle est passee.
@@ -2737,10 +2951,12 @@ window.onGlobalEvent = function(payload){
         if (v === "cad"){ window.setByName("ctrl_alt_del"); console.log("[action] Ctrl+Alt+Suppr"); }
         else if (v === "lock"){ window.setByName("lock_screen"); console.log("[action] verrouillage"); }
         else if (v === "restart"){
-          if (window.confirm("Redémarrer le poste distant ? La session sera coupée.")){
+          demander({ titre: "Redémarrer le poste distant ?", corps: "La session sera coupée.",
+                     okTexte: "Redémarrer", danger: true }).then(function(ok){
+            if (!ok) return;
             if (rdSend({misc:{restart_remote_device:true}})) notifier("Redémarrage demandé au poste distant.");
             else notifier(RDLib.messages.NOSEND, "erreur");
-          }
+          });
         }
         else if (v.indexOf("opt:") === 0){
           var nom=v.slice(4);
@@ -2756,8 +2972,73 @@ window.onGlobalEvent = function(payload){
     };
     window.__rdActions();
 
+    // Clavier virtuel : un telephone n'en montre un que si un champ de saisie
+    // a le focus, et un canvas n'en est pas un. Ce champ invisible le fait
+    // sortir ; ce qui y est tape part au poste distant. Il garde toujours UN
+    // caractere : sans cela, « effacer » sur un champ vide n'emet aucun evenement.
+    var saisie=document.createElement("textarea"); saisie.id="rdsaisie";
+    saisie.setAttribute("aria-label","Saisie pour le poste distant");
+    ["autocomplete","autocorrect","autocapitalize"].forEach(function(a){ saisie.setAttribute(a,"off"); });
+    saisie.setAttribute("spellcheck","false");
+    saisie.value=" ";
+    saisie.addEventListener("input",function(ev){
+      var type=String((ev && ev.inputType) || ""), texte=(ev && typeof ev.data === "string") ? ev.data : "";
+      try{
+        if (type.indexOf("delete") === 0) send("input_key",{name:"Backspace",down:"true",press:"true",alt:"false",ctrl:"false",shift:"false",command:"false"});
+        else if (type === "insertLineBreak" || type === "insertParagraph") send("input_key",{name:"Return",down:"true",press:"true",alt:"false",ctrl:"false",shift:"false",command:"false"});
+        else {
+          if (!texte && saisie.value.length > 1) texte = saisie.value.slice(1);
+          if (texte) window.setByName("input_string", texte);
+        }
+      }catch(e){ console.warn("[clavier]", e); }
+      saisie.value=" ";
+    });
+    document.body.appendChild(saisie);
+    var clav=document.createElement("button"); clav.className="rdclavier"; clav.textContent="Clavier";
+    clav.title="Afficher le clavier de l'appareil";
+    var tactile=false;
+    try{ tactile = !!(window.matchMedia && window.matchMedia("(pointer:coarse)").matches); }catch(_){}
+    clav.style.display = tactile ? "" : "none";
+    clav.addEventListener("click",function(ev){
+      // Apres le gestionnaire de la barre, qui rend le focus au canvas.
+      ev.stopPropagation();
+      try{ saisie.focus(); }catch(_){}
+    });
+
+    // Plein ecran. Avec l'API Keyboard Lock (Chromium), les raccourcis que le
+    // navigateur ou le systeme gardent pour eux — Echap, Alt+Tab, Cmd+W, Ctrl+T —
+    // partent au poste distant. Echap ne sort alors du plein ecran que maintenu.
+    var plein=document.createElement("button"); plein.className="rdplein";
+    function enPlein(){ return !!document.fullscreenElement; }
+    function majPlein(){
+      plein.textContent = enPlein() ? "Fenêtre" : "Plein écran";
+      plein.title = enPlein() ? "Quitter le plein écran" : "Plein écran : les raccourcis clavier partent au poste distant";
+      plein.setAttribute("aria-pressed", enPlein() ? "true" : "false");
+    }
+    plein.style.display = (document.documentElement && document.documentElement.requestFullscreen) ? "" : "none";
+    plein.onclick=function(){
+      try{
+        var pr = enPlein() ? document.exitFullscreen() : document.documentElement.requestFullscreen({navigationUI:"hide"});
+        if (pr && pr.catch) pr.catch(function(e){ notifier("Plein écran refusé par le navigateur (" + ((e && e.name) || "erreur") + ").", "erreur"); });
+      }catch(e){ console.warn("[plein ecran]", e); }
+    };
+    document.addEventListener("fullscreenchange",function(){
+      majPlein();
+      var kb = navigator.keyboard;
+      try{
+        if (enPlein()){
+          if (kb && kb.lock) kb.lock().then(function(){
+            console.log("[plein ecran] clavier capture");
+            notifier("Plein écran : les raccourcis partent au poste distant. Maintenir Échap pour sortir.");
+          }).catch(function(e){ console.warn("[plein ecran] clavier non capture :", e && e.name); });
+        } else if (kb && kb.unlock) kb.unlock();
+      }catch(e){ console.warn("[plein ecran]", e); }
+      fitCanvas();
+    });
+    majPlein();
+
     var quit=document.createElement("button"); quit.textContent="Quitter"; quit.className="quit";
-    [sel,fit,qual,fps,cod,swp,ecr,act,quit].forEach(function(x){ bar.appendChild(x); });
+    [sel,fit,qual,fps,cod,swp,ecr,act,clav,plein,quit].forEach(function(x){ bar.appendChild(x); });
 
     // La poignee replie / deplie la barre. Repliee, elle ne laisse a l'ecran
     // qu'un bouton de 28 px : le reste du coin haut-droit redevient cliquable
@@ -2890,15 +3171,20 @@ window.onGlobalEvent = function(payload){
         console.log("[ecran distant] "+c.width+"x"+c.height);
         fitCanvas();
       }
-      // Memoriser le mot de passe du pair : ui.js ne l'active jamais.
-      try{ if(window.curConn && !window.curConn.getRemember()) window.curConn.setRemember(true); }catch(_){}
+      // Memoriser le mot de passe du pair : ui.js ne l'active jamais. C'est un
+      // choix de l'utilisateur (case de l'ecran de connexion), plus une
+      // obligation : le bundle garde ce mot de passe en clair dans le navigateur.
+      try{
+        var veut = prefs.get().remember !== false, k0 = window.curConn;
+        if (k0 && !!k0.getRemember() !== veut) k0.setRemember(veut);
+      }catch(_){}
       // Reappliquer les substitutions : curConn est remplace a chaque
       // connexion, et reconnect() reutilise l'instance avec un _ws neuf.
       try{ patchConn(window.curConn); }catch(_){}
       var enSession = sessionVivante();
       if (enSession) veilleActiver(); else veilleLiberer();
       // Transition « en session » -> « plus en session » : tenter une reprise.
-      if (window.__rdEtait && !enSession) repriseplanifier();
+      if (window.__rdEtait && !enSession){ repriseplanifier(); try{ document.title = "RustDesk"; }catch(_){} }
       if (enSession){ repriseAnnuler(); repriseInfo(""); }
       window.__rdEtait = enSession;
       var vu = enSession ? "block" : "none";
@@ -2967,8 +3253,7 @@ window.onGlobalEvent = function(payload){
   // reaffirme donc juste avant que le bundle ne les lise. Seul l'ID reste libre.
   (function protegerConnect(){
     var mien = null;
-    setInterval(function(){
-      var orig = window.connect;
+    function proteger(orig){
       if (typeof orig !== "function" || orig === mien) return;  // deja protege
       mien = function(){
         var h = document.getElementById("host"), k = document.getElementById("key");
@@ -2995,9 +3280,47 @@ window.onGlobalEvent = function(payload){
         reprise.voulue = false;
         return orig.apply(this, arguments);
       };
-      window.connect = mien;
       console.log("[formulaire] connexion protegee : hote et cle reaffirmes a chaque essai");
-    }, 300);
+    }
+    // Le bundle pose window.connect a son chargement, plus tard que ce bloc.
+    // On s'accroche a l'AFFECTATION : la protection est en place avant le
+    // premier clic, sans attendre un minuteur. Si la propriete ne se laisse pas
+    // redefinir, le minuteur d'origine reprend le role.
+    var autre = window.connect;
+    try{
+      Object.defineProperty(window, "connect", { configurable: true, enumerable: true,
+        get: function(){ return mien || autre; },
+        set: function(f){ if (typeof f === "function"){ if (f !== mien) proteger(f); } else { mien = null; autre = f; } } });
+      if (typeof autre === "function") proteger(autre);
+    }catch(e){
+      setInterval(function(){
+        var o = window.connect;
+        if (typeof o === "function" && o !== mien){ proteger(o); window.connect = mien; }
+      }, 300);
+    }
+  })();
+
+  // curConn est remplace a chaque connexion, et sa liaison (_ws) n'est creee
+  // qu'ensuite, dans start(). Le veilleur (800 ms) reinstrumentait apres coup :
+  // les premiers messages passaient donc par la connexion d'origine. On
+  // s'accroche aux deux affectations ; le veilleur reste comme filet.
+  (function accrocherConn(){
+    function suivreWs(c){
+      if (!c || typeof c !== "object" || c.__rdWsSuivi) return;
+      try{
+        var ws = c._ws;
+        Object.defineProperty(c, "__rdWsSuivi", { value: true });
+        Object.defineProperty(c, "_ws", { configurable: true, enumerable: true,
+          get: function(){ return ws; },
+          set: function(v){ ws = v; try{ patchConn(c); }catch(_){} } });
+      }catch(_){}
+    }
+    var conn = window.curConn;
+    try{
+      Object.defineProperty(window, "curConn", { configurable: true, enumerable: true,
+        get: function(){ return conn; },
+        set: function(v){ conn = v; suivreWs(v); try{ patchConn(v); }catch(_){} } });
+    }catch(_){}
   })();
 
   // ---------------------------------------------------------- amorcage
@@ -3791,7 +4114,8 @@ window.onGlobalEvent = function(payload){
     }
     var btns = document.createElement("div"); btns.className = "btns";
     var no = document.createElement("button"); no.textContent = "Annuler";
-    no.onclick = fermerModale; btns.appendChild(no);
+    no.onclick = function(){ fermerModale(); if (o.onAnnule) o.onAnnule(); };
+    btns.appendChild(no);
     if (o.autreTexte){
       var au = document.createElement("button"); au.textContent = o.autreTexte;
       au.onclick = function(){ fermerModale(); if (o.onAutre) o.onAutre(); };
@@ -3810,6 +4134,9 @@ window.onGlobalEvent = function(payload){
     }
   }
   function fermerModale(){ if (modal) modal.classList.remove("ouvert"); rendreMain(); }
+  // Le bloc de session s'en sert aussi (redemarrage, code 2FA) : le bundle a
+  // REMPLACE window.confirm par sa propre fonction, et prompt() gelerait la page.
+  window.__rdModale = modale;
 
   function demanderDossier(){
     var dest = FT.cwd;

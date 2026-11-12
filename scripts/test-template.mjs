@@ -226,7 +226,7 @@ test("bar-children-direct : le greffon fichiers et le presse-papier visent les e
   // controles a plat.
   assert.match(html, /var q = bar\.querySelector\("button\.quit"\);\s*\n\s*if \(q\) bar\.insertBefore\(b, q\)/);
   assert.match(html, /bar\.insertBefore\(b, bar\.firstChild\)/);
-  assert.match(html, /\[sel,fit,qual,fps,cod,swp,ecr,act,quit\]\.forEach\(function\(x\)\{ bar\.appendChild\(x\); \}\)/);
+  assert.match(html, /\[sel,fit,qual,fps,cod,swp,ecr,act,clav,plein,quit\]\.forEach\(function\(x\)\{ bar\.appendChild\(x\); \}\)/);
 });
 
 test("hud-sibling-rule : la regle #rdbar:hover ~ #rdhud reste valable", () => {
@@ -1944,8 +1944,9 @@ test("audit B20 : un collage d'image n'ouvre PAS en plus le televersement de fic
 test("audit C23 : le vrai next() de la liaison passe par ppFiltrer (le crochet est bien installe)", async () => {
   const m = await montageSortant();
   const msg = { clipboard: { format: 22, compress: false, content: Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), width: 1, height: 1 } };
-  m.w.curConn._ws.next = async () => msg;
-  m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());       // le veilleur appelle patchConn
+  // Comme le bundle dans start() : une liaison NEUVE est affectee a la connexion.
+  // L'accroche sur _ws l'instrumente a l'affectation, sans attendre le veilleur.
+  m.w.curConn._ws = { ...m.w.curConn._ws, next: async () => msg };
   const recu = await m.w.curConn._ws.next();
   assert.equal(recu.clipboard, undefined, "l'image est retiree du message avant le bundle");
   assert.ok(m.bar.children.some((c) => c.className === "rdppbtn"), "et son bouton est apparu : le message a bien traverse ppFiltrer");
@@ -2115,7 +2116,10 @@ test("prefs : h264 et av1 sont des codecs memorisables", () => {
 // Une session dont la connexion est instrumentee par patchConn (veilleur 800 ms).
 async function montageVideo({ caps = {}, codec = null, ...reste } = {}) {
   const m = await montageSortant(reste);
-  const c = m.w.curConn;
+  // Une connexion NEUVE, comme le bundle en cree une par session : elle est
+  // instrumentee a l'affectation de window.curConn.
+  const { __rdPatchedWs, __rdOrigHandle, __rdOrigDraw, ...base } = m.w.curConn;
+  const c = { ...base, _ws: { ...base._ws } };
   m.logiciel = []; m.acks = { n: 0 }; m.cles = { n: 0 }; m.decodes = [];
   c.handleVideoFrame = function (vf) { m.logiciel.push(vf); };
   c.draw = () => {}; c.msgbox = () => {};
@@ -2126,7 +2130,7 @@ async function montageVideo({ caps = {}, codec = null, ...reste } = {}) {
     configure(cfg) { m.config = cfg; } decode(ch) { m.decodes.push(ch.o.type); } reset() {} close() { this.state = "closed"; }
     get decodeQueueSize() { return 0; } };
   m.w.RD.caps = caps; m.w.RD.codec = codec; m.w.RD.rates = {};
-  m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());      // patchConn
+  m.w.curConn = c;
   m.trame = (champ, cle = true) => c.handleVideoFrame({ [champ]: { frames: [{ key: cle, pts: 0, data: new Uint8Array(8) }] } });
   m.decl = () => m.options().filter((o) => o.supported_decoding).map((o) => plat(o.supported_decoding));
   return m;
@@ -2199,6 +2203,18 @@ test("codec : une erreur du decodeur redemande une image-cle (le decodeur suivan
 // ====================================================================
 // Actions sur le poste distant, ecrans, retours du pair, 2FA.
 // ====================================================================
+// La modale de la page (bloc fichiers), telle que le DOM fictif la garde : la
+// derniere boite construite.
+function boite(m) {
+  const modal = m.doc.body.children.find((c) => c.id === "rdmodal");
+  const b = modal && modal.children.at(-1);
+  if (!b) return null;
+  const btns = b.children.find((c) => c.className === "btns").children;
+  const champ = b.children.find((c) => c.tag === "input") || null;
+  return { titre: b.children[0].textContent, champ,
+           ok: (v) => { if (champ && v !== undefined) champ.value = v; btns.at(-1).onclick(); },
+           annuler: () => btns[0].onclick() };
+}
 const menuActions = (m) => m.bar.children.find((c) => c.className === "rdactions");
 const menuEcrans = (m) => m.bar.children.find((c) => c.className === "rdecrans");
 const choisir = (sel, v) => { sel.value = v; sel.onchange(); };
@@ -2266,12 +2282,18 @@ test("actions : un mode confidentialite refuse est DECOCHE dans le bundle, sinon
 test("actions : redemarrer demande confirmation ; un refus n'envoie rien", async () => {
   const m = await montageSortant();
   const act = menuActions(m);
-  m.w.confirm = () => false;
+  // Le bundle REMPLACE window.confirm par sa validation de mot de passe : la
+  // page ne doit jamais s'en servir. Si elle le faisait, ce test le verrait.
+  let natif = 0;
+  m.w.confirm = () => { natif++; return true; };
   choisir(act, "restart");
+  assert.equal(boite(m).titre, "Redémarrer le poste distant ?");
+  boite(m).annuler(); await m.vider();
   assert.ok(!m.envoyes.some((x) => x.misc && x.misc.restart_remote_device));
-  m.w.confirm = () => true;
   choisir(act, "restart");
+  boite(m).ok(); await m.vider();
   assert.ok(m.envoyes.some((x) => x.misc && x.misc.restart_remote_device === true));
+  assert.equal(natif, 0, "window.confirm n'est jamais appele");
 });
 
 test("retour du pair : table des etats, valeurs inconnues sans effet", () => {
@@ -2309,25 +2331,35 @@ test("ecrans : le selecteur n'apparait qu'avec plusieurs ecrans, et suit la repo
   assert.equal(m.touches.length, n);
 });
 
-test("2fa : le code est demande, envoye en auth_2fa, et l'erreur n'atteint pas le bundle", async () => {
+test("2fa : le code est demande dans la modale, envoye en auth_2fa, et l'erreur n'atteint pas le bundle", async () => {
   const m = await montageSortant({ prete: false });
-  const c = m.w.curConn, demandes = [];
-  let reponses = ["123 456"];
-  m.w.prompt = (q) => { demandes.push(q); return reponses.shift() ?? null; };
-  const r = m.w.__rdPairFiltrer(c, { login_response: { error: "2FA Required" } });
-  assert.deepEqual(plat(r), {}, "un message vide : le bundle n'affiche pas « Login Error »");
+  const c = m.w.curConn;
+  let natif = 0;
+  m.w.prompt = () => { natif++; return "000000"; };
+  let p = m.w.__rdPairFiltrer(c, { login_response: { error: "2FA Required" } });
+  await m.vider();
+  assert.equal(boite(m).titre, "Vérification en deux étapes");
+  boite(m).ok("123 456");
+  assert.deepEqual(plat(await p), {}, "un message vide : le bundle n'affiche pas « Login Error »");
   assert.deepEqual(plat(m.envoyes.at(-1)), { auth_2fa: { code: "123456" } }, "envoye avant peer_info, donc sans passer par rdSend");
-  // Code refuse par le pair : on redemande, avec un autre libelle.
-  reponses = ["654321"];
-  m.w.__rdPairFiltrer(c, { login_response: { error: "Wrong 2FA Code" } });
-  assert.match(demandes.at(-1), /Code refusé/);
+  // Code refuse par le pair : on redemande, avec un autre titre.
+  p = m.w.__rdPairFiltrer(c, { login_response: { error: "Wrong 2FA Code" } });
+  await m.vider();
+  assert.equal(boite(m).titre, "Code refusé");
+  boite(m).ok("654321");
+  await p;
   assert.equal(m.envoyes.at(-1).auth_2fa.code, "654321");
   // Saisie invalide : redemandee sans rien envoyer ; annulation : l'erreur passe au bundle.
   const avant = m.envoyes.length;
-  reponses = ["abc"];
   const msg = { login_response: { error: "2FA Required" } };
-  assert.equal(m.w.__rdPairFiltrer(c, msg), msg);
+  p = m.w.__rdPairFiltrer(c, msg);
+  await m.vider();
+  boite(m).ok("abc"); await m.vider();
+  assert.equal(boite(m).titre, "Code refusé", "une saisie qui n'est pas un code est redemandee");
+  boite(m).annuler();
+  assert.equal(await p, msg);
   assert.equal(m.envoyes.length, avant);
+  assert.equal(natif, 0, "pas de prompt() natif : il gelerait la page");
   // Les autres erreurs, et une connexion reussie, ne sont pas touchees.
   for (const autre of [{ login_response: { error: "Wrong Password" } }, { login_response: { peer_info: {} } }, { video_frame: {} }, null]) {
     assert.equal(m.w.__rdPairFiltrer(c, autre), autre);
@@ -2345,4 +2377,170 @@ test("2fa : code2fa n'accepte que six chiffres", () => {
 
 test("barre : elle passe a la ligne au lieu de deborder d'une fenetre etroite", () => {
   assert.match(html, /#rdbar\{[^}]*flex-wrap:wrap;[^}]*max-width:100vw/);
+});
+
+// ====================================================================
+// Entrees : molette, tactile, souris, latence.
+// ====================================================================
+test("molette : une souris fait un cran par cran, un trackpad cumule ses pixels", () => {
+  const { molette } = chargerLib();
+  const m = molette.creer(100);
+  assert.deepEqual(plat(m.pousser(0, 100, 0)), { x: 0, y: -1 }, "vers le bas : cran negatif, comme avant");
+  assert.deepEqual(plat(m.pousser(0, -120, 0)), { x: 0, y: 1 });
+  assert.deepEqual(plat(m.pousser(0, 3, 1)), { x: 0, y: -1 }, "Firefox compte en lignes : 3 lignes = un cran");
+  // Un trackpad : soixante evenements de 4 px ne font pas soixante crans.
+  const t = molette.creer(100);
+  let crans = 0;
+  for (let i = 0; i < 60; i++) crans += t.pousser(0, 4, 0).y;
+  assert.equal(crans, -2);
+  // Un demi-tour jette le reste accumule dans l'autre sens.
+  const d = molette.creer(100);
+  d.pousser(0, 90, 0);
+  assert.deepEqual(plat(d.pousser(0, -20, 0)), { x: 0, y: 0 });
+  assert.deepEqual(plat(d.pousser(0, -80, 0)), { x: 0, y: 1 });
+  // Borne, et pas de -0 qui passerait pour un envoi.
+  assert.equal(molette.creer(100).pousser(0, 1e6, 0).y, -10);
+  assert.ok(Object.is(molette.creer(100).pousser(0, 0, 0).y, 0));
+  assert.deepEqual(plat(molette.creer(100).pousser("x", undefined, 0)), { x: 0, y: 0 });
+});
+
+test("tactile : toucher = clic, glisser = bouton tenu, appui long = clic droit, deux doigts = molette", () => {
+  const { tactile } = chargerLib();
+  const noms = (a) => plat(a).map((x) => x.a);
+  // Toucher bref.
+  let t = tactile.creer();
+  assert.deepEqual(noms(t.down(1, 50, 50)), ["move"]);
+  assert.deepEqual(noms(t.move(1, 53, 52)), [], "sous le seuil : ce n'est pas un glisser");
+  assert.deepEqual(plat(t.up(1)), [{ a: "down", x: 50, y: 50 }, { a: "up", x: 50, y: 50 }]);
+  assert.equal(t.etat(), "repos");
+  // Glisser : le bouton descend au point de DEPART, et remonte au point d'arrivee.
+  t = tactile.creer();
+  t.down(1, 10, 10);
+  assert.deepEqual(plat(t.move(1, 40, 10)), [{ a: "down", x: 10, y: 10 }, { a: "move", x: 40, y: 10 }]);
+  assert.deepEqual(noms(t.move(1, 80, 30)), ["move"]);
+  assert.deepEqual(plat(t.up(1)), [{ a: "up", x: 80, y: 30 }]);
+  // Appui long : clic droit, puis le lever du doigt ne clique pas une seconde fois.
+  t = tactile.creer();
+  t.down(1, 5, 5);
+  assert.deepEqual(plat(t.long()), [{ a: "clic-droit", x: 5, y: 5 }]);
+  assert.deepEqual(plat(t.up(1)), []);
+  // Un appui long n'a plus lieu une fois le glisser commence.
+  t = tactile.creer(); t.down(1, 0, 0); t.move(1, 50, 0);
+  assert.deepEqual(plat(t.long()), []);
+  // Deux doigts : molette dans le sens naturel, et aucun clic au lever.
+  t = tactile.creer();
+  t.down(1, 100, 100); t.down(2, 200, 100);
+  assert.deepEqual(plat(t.move(1, 100, 60)), [{ a: "wheel", dx: 0, dy: 20 }], "les doigts montent : le contenu aussi, donc defilement vers le bas");
+  assert.deepEqual(plat(t.up(1)), []);
+  assert.deepEqual(plat(t.move(2, 300, 300)), [], "le doigt restant ne pilote plus rien");
+  assert.deepEqual(plat(t.up(2)), []);
+  assert.equal(t.etat(), "repos");
+  // Un second doigt pendant un glisser relache d'abord le bouton.
+  t = tactile.creer(); t.down(1, 0, 0); t.move(1, 50, 0);
+  assert.deepEqual(noms(t.down(2, 90, 0)), ["up"]);
+  // Annulation par le navigateur : ce qui est tenu est relache.
+  t = tactile.creer(); t.down(1, 0, 0); t.move(1, 50, 0);
+  assert.deepEqual(noms(t.cancel()), ["up"]);
+  assert.deepEqual(plat(t.up(1)), [], "un lever qui arrive apres l'annulation est ignore");
+});
+
+test("souris : un bouton enfonce est relache quand la fenetre perd le focus ; les coordonnees restent dans l'image", async () => {
+  const bac0 = await montageSortant();
+  const c = bac0.player;
+  c.width = 800; c.height = 600;
+  c.getBoundingClientRect = () => ({ left: 100, top: 50, width: 400, height: 300 });
+  const ev = (x, y, button = 0) => ({ clientX: x, clientY: y, button, preventDefault() {}, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false });
+  c.ecouteurs.mousedown.forEach((f) => f(ev(300, 200)));
+  assert.deepEqual(bac0.touches.at(-1), ["send_mouse", { type: "down", buttons: "left", x: 400, y: 300, alt: "false", ctrl: "false", shift: "false", command: "false" }]);
+  // Hors de l'image (la capture du pointeur y ramene les evenements) : borne.
+  c.ecouteurs.mousemove.forEach((f) => f(ev(9999, -50)));
+  assert.deepEqual([bac0.touches.at(-1)[1].x, bac0.touches.at(-1)[1].y], [799, 0]);
+  // La page pose son ecouteur « blur » sur window : on le retrouve par un second montage espion.
+  const m = await montageSortantAvecBlur();
+  m.player.width = 800; m.player.height = 600;
+  m.player.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+  m.player.ecouteurs.mousedown.forEach((f) => f(ev(10, 20, 2)));
+  const avant = m.touches.length;
+  m.blur.forEach((f) => f());
+  assert.deepEqual(m.touches.slice(avant), [["send_mouse", { type: "up", buttons: "right", x: 10, y: 20, alt: "false", ctrl: "false", shift: "false", command: "false" }]]);
+  m.blur.forEach((f) => f());
+  assert.equal(m.touches.length, avant + 1, "rien a relacher la seconde fois");
+});
+async function montageSortantAvecBlur() {
+  const m = await montageSortant();
+  // Recabler un canvas neuf en capturant ce que la page ecoute sur window.
+  const blur = [];
+  m.w.addEventListener = (t, f) => { if (t === "blur") blur.push(f); };
+  const neuf = elementRecord("canvas");
+  neuf.id = "player"; neuf.ecouteurs = {}; neuf.parent = elementRecord("div");
+  neuf.addEventListener = (t, f) => { (neuf.ecouteurs[t] ||= []).push(f); };
+  m.reg.player = neuf;
+  m.bac.minuteurs.filter((t) => t.ms === 400 && !t.once).forEach((t) => t.f());
+  return { ...m, player: neuf, blur };
+}
+
+test("tactile (cablage) : un toucher sur le canvas devient un clic gauche, sans modificateur", async () => {
+  const m = await montageSortant();
+  const c = m.player;
+  c.width = 800; c.height = 600;
+  c.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+  c.setPointerCapture = () => {};
+  const p = (x, y) => ({ pointerType: "touch", pointerId: 7, clientX: x, clientY: y });
+  const avant = m.touches.length;
+  c.ecouteurs.pointerdown.forEach((f) => f(p(120, 80)));
+  c.ecouteurs.pointerup.forEach((f) => f(p(120, 80)));
+  assert.deepEqual(m.touches.slice(avant).map(([n, a]) => [n, a.type, a.buttons, a.x, a.y]),
+    [["send_mouse", "", "", 120, 80], ["send_mouse", "down", "left", 120, 80], ["send_mouse", "up", "left", 120, 80]]);
+  // Une souris ne passe PAS par la machine tactile (elle a ses propres evenements).
+  const n = m.touches.length;
+  c.ecouteurs.pointerdown.forEach((f) => f({ pointerType: "mouse", pointerId: 1, clientX: 5, clientY: 5 }));
+  assert.equal(m.touches.length, n);
+  assert.equal(c.style.touchAction, "none");
+});
+
+test("latence : lue dans le message test_delay, plus dans la console", async () => {
+  const m = await montageSortant();
+  const msg = { test_delay: { last_delay: 42, target_bitrate: 5000 } };
+  assert.equal(m.w.__rdPairFiltrer(m.w.curConn, msg), msg, "le message continue vers le bundle, qui y repond");
+  assert.deepEqual(plat(m.w.RD.stats.delay), [42]);
+  assert.equal(m.w.RD.stats.bitrate, 5000);
+  assert.ok(!/S\.delay\.push\(a\.last_delay\)/.test(html), "la console n'est plus une source de mesure");
+});
+
+test("accroches : connect() est protege a l'affectation, et une liaison neuve est instrumentee sans minuteur", async () => {
+  const m = await montageSortant({ prete: true });
+  m.w.connect = () => 7;
+  assert.equal(m.w.connect(), 7);
+  assert.equal(m.w.RD.ready, false, "protege sans attendre le minuteur de 300 ms");
+  const c = { ...m.w.curConn, handleVideoFrame() {}, draw() {} };
+  m.w.curConn = c;
+  const brut = async () => null;
+  c._ws = { _websocket: { readyState: 1 }, sendMessage() {}, next: brut };
+  assert.notEqual(c._ws.next, brut, "next() de la liaison neuve est enveloppe des son affectation");
+});
+
+test("memorisation : le mot de passe du pair n'est garde que si l'utilisateur le veut", async () => {
+  const veilleur = (m) => m.bac.minuteurs.filter((t) => t.ms === 800 && !t.once).forEach((t) => t.f());
+  const m = await montageSortant();
+  let etat = false; const poses = [];
+  m.w.curConn.getRemember = () => etat;
+  m.w.curConn.setRemember = (v) => { etat = v; poses.push(v); };
+  veilleur(m);
+  assert.deepEqual(poses, [true], "par defaut, comme avant");
+  const n = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, remember: false }) } });
+  let e2 = true; const p2 = [];
+  n.w.curConn.getRemember = () => e2;
+  n.w.curConn.setRemember = (v) => { e2 = v; p2.push(v); };
+  veilleur(n);
+  assert.deepEqual(p2, [false], "decoche : le bundle efface le mot de passe a la prochaine connexion reussie");
+});
+
+test("titre : l'onglet porte le nom du poste pendant la session", async () => {
+  const m = await montageSortant({ prete: false });
+  m.w.curConn._peerInfo.hostname = "mac-mini\u0007";
+  m.peerInfo();
+  assert.equal(m.doc.title, "mac-mini — RustDesk");
+  const n = await montageSortant({ prete: false });
+  n.peerInfo();
+  assert.equal(n.doc.title, "123 456 789 — RustDesk", "sans nom de poste : l'ID");
 });
