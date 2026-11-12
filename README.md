@@ -32,9 +32,9 @@ that was missing**: the original client wires up display and nothing else.
 | Wheel, trackpad | pixels are accumulated into notches, so a trackpad no longer scrolls ten times too fast |
 | Touch | one finger drives the mouse (tap, drag, long press = right click), two fingers scroll; a button brings up the device keyboard |
 | Full screen | with keyboard capture on Chromium: Esc, Alt+Tab, Cmd+W go to the remote machine |
-| Keyboard | text, accents, non-US layouts, dead keys, control keys |
-| `Ctrl` → `Cmd` | toggleable, for macOS or for a remote terminal |
-| Clipboard | text both ways; **images and rich text** too, on Chromium |
+| Keyboard | text, accents, non-US layouts, dead keys, AltGr characters, control keys |
+| PC ↔ Mac shortcuts | translated to the combination with the same effect (copy, word and line moves, Home/End, Alt+F4…), or sent raw for a remote terminal |
+| Clipboard | text, **images and rich text** both ways; a remote copy lands in the local clipboard by itself, and the local one can follow automatically (opt-in, Chromium) |
 | Files | remote panel: browse, upload, download, create, rename, delete |
 | Resolution | menu of the modes the remote display actually supports, plus "fit to window" |
 | Displays | a selector to switch between the remote machine's monitors, shown when it has more than one |
@@ -211,21 +211,37 @@ clipboard instead of the file uploader. This direction needs no permission — t
 The keys that trigger a paste are recognised by their letter, or — under a
 non-Latin layout such as Cyrillic — by the physical key.
 
-**Remote → browser.** A green button per kind — "Image reçue ⇩", "Texte reçu ⇩" —
-appears next to the settings bar's handle, without expanding it. Click it: writing
-to the system clipboard requires, depending on the browser, a recent user
-activation (Safari strictly), so posting automatically on arrival is not
-reliable — Guacamole exposes a dedicated area for the same reason. Decoding and
-conversion to PNG happen in a separate task, never on the message loop (which also
-acknowledges every video frame), and the result is handed to the clipboard as a
-promise, so the click is honoured whether or not the conversion has finished. One
-slot per kind: a text arriving after an image no longer erases it. This direction
-is only **tested on Chromium**. Firefox (from version 127) and Safari expose the
-same `ClipboardItem` API and may accept it — Safari requires the user activation,
-which is one more reason for the click — but that is untested here, and the code
-falls back to waiting for the image when a browser refuses a promise value. KasmVNC,
-the only comparable project to have done this, limits its rich clipboard to
-Chromium.
+**Remote → browser.** Copying on the remote machine is enough: what arrives is
+written to the local clipboard **at once, with no button and no notice**. That is
+possible because a remote copy is almost always triggered by a gesture *in this
+page* — `Ctrl+C`, a click on a menu — which opens the browser's permission to
+write for a few seconds, and the content comes back in well under one.
+
+When the browser refuses — the page does not have the focus, or the browser is
+stricter — the green button of before ("Image reçue ⇩", "Texte reçu ⇩") appears
+next to the settings handle, and the write is retried by itself at your next
+click or key press in the page. It is **not** retried if the page lost the focus
+in between: you may have copied something else elsewhere, and overwriting it with
+older content would be a fault. Plain text from older peers takes the same path;
+the bundle used to post it through `execCommand("copy")` outside any gesture,
+which browsers silently refuse.
+
+Decoding and conversion to PNG happen in a separate task, never on the message
+loop (which also acknowledges every video frame). One slot per kind: a text
+arriving after an image does not erase it. Automatic writing is **tested on
+Chromium**; Firefox should accept it within its own activation window, Safari is
+stricter and will mostly show the button.
+
+**Automatic clipboard (browser → remote, opt-in).** `Ctrl+V` has always worked:
+the `paste` event carries the content. But "Paste" from a menu of the remote
+machine, or a middle click, produces no such event, so the remote clipboard did
+not hold what you had just copied locally. **Actions → Automatic clipboard**
+fixes that: once you accept the browser's permission prompt, the local clipboard
+is read every time you come back to the page and sent if it changed — what the
+native client does. `Ctrl+V` then pastes immediately, since the content is
+already there. It is off by default because it sends whatever you copied,
+passwords included, to the remote machine as soon as the page regains focus.
+Chromium only: Firefox and Safari ask again at every read.
 
 An image arriving over the legacy `clipboard` message is intercepted before the
 bundle, whose branch decodes the payload as text unconditionally — without that,
@@ -378,6 +394,51 @@ web/src/40-fichiers.js     the file panel
 which is **not versioned**: `setup.sh`, `verify.sh`, CI and both test benches
 rebuild it before using it. The served page is still one file of inline blocks —
 only the sources are split.
+
+## Keyboard: a PC in front of a Mac
+
+RustDesk sends modifiers one for one, so `Ctrl+C` reaches the Mac as `Control+C`,
+where copy is `Cmd+C`. Swapping Ctrl and Cmd fixes the letters and breaks the rest:
+`Ctrl+←` (previous word on a PC) became `Cmd+←` (start of line), `Ctrl+Tab` opened
+the application switcher, and Home/End did not move the caret. Shortcuts are now
+**translated** to the combination that has the same effect on the other side:
+
+| On the PC keyboard | Sent to the Mac | Effect |
+|---|---|---|
+| `Ctrl` + letter | `Cmd` + letter | copy, paste, save, find, select all… |
+| `Ctrl+←/→/↑/↓`, `Ctrl+Backspace`, `Ctrl+Del` | `Option` + same | move or erase word by word |
+| `Home` / `End` | `Cmd+←` / `Cmd+→` | start / end of line |
+| `Ctrl+Home` / `Ctrl+End` | `Cmd+↑` / `Cmd+↓` | start / end of document |
+| `Ctrl+Y` | `Cmd+Shift+Z` | redo |
+| `Ctrl+Tab`, `Ctrl+Space` | unchanged | next tab, completion |
+| `Alt+F4` / `Ctrl+F4` | `Cmd+Q` / `Cmd+W` | quit / close the tab |
+| `Alt+Tab` | `Cmd+Tab` | switch application |
+| `Alt+←` / `Alt+→` | `Cmd+[` / `Cmd+]` | back / forward |
+| `Ctrl+Insert`, `Shift+Del`, `Shift+Insert` | copy, cut, paste | the other PC clipboard keys |
+| `Ctrl+Shift+Esc` | `Cmd+Option+Esc` | force quit |
+| Windows key | `Control` | |
+| `Ctrl` + click | `Cmd` + click | multiple selection (a `Ctrl` click is a right click on a Mac) |
+
+`Shift` is always kept, so every selection variant follows. The direction is chosen
+from the two platforms: a Mac keyboard in front of a Windows or Linux machine gets
+the reverse table, and nothing is translated between two machines of the same
+family — the toolbar button (**PC→Mac**, **Mac→PC**) only appears when there is
+something to translate. Click it for **raw** mode, where every key goes through
+untouched: that is what a remote terminal needs (`Ctrl+C` = SIGINT).
+
+Three more fixes on the same path:
+
+- **AltGr.** Windows reports AltGr as `Ctrl+Alt`, so `@`, `#`, `€`, `{` on a
+  French or Swiss keyboard were sent as shortcuts and never typed. They are text.
+- **Key release.** Letting go of `Ctrl` before the letter is common; the letter's
+  release then arrived without `Ctrl`, was taken for text, and nothing was sent —
+  the Mac kept `Cmd+C` held. The release now replays exactly what was pressed.
+- `Alt+Tab`, `Alt+F4`, `Ctrl+W` and `Ctrl+T` only reach the page in **full
+  screen** on Chromium; otherwise the local system keeps them.
+
+What stays different: the application switcher cannot be held open (each `Alt+Tab`
+is one complete `Cmd+Tab`), and `F2`, `Del` on a file or `PrintScreen` have no
+single Mac equivalent and are sent as they are.
 
 ## Input: touch, wheel, full screen
 

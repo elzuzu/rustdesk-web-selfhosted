@@ -31,17 +31,32 @@
   // RustDesk transmet les modificateurs UN POUR UN : Ctrl+C arrive en Control+C
   // sur le Mac, ou copier est Cmd+C. Seul le Terminal y reagit, parce que
   // Control+C y est le vrai raccourci (SIGINT) — d'ou l'impression trompeuse
-  // que "ca marche par endroits". On permute donc ici, cote navigateur.
+  // que "ca marche par endroits". Les raccourcis sont donc TRADUITS ici, cote
+  // navigateur, selon les deux plateformes (RDLib.clavier) : clavier PC devant
+  // un Mac, clavier Mac devant un PC, ou rien si les deux sont de la meme famille.
   // Desactivable : dans un terminal distant, Control doit rester Control.
-  var swapCtrlCmd = localStorage.getItem("rd-swap-ctrl") !== "0";
-  function applySwap(m){
-    // N'inverse que si exactement l'un des deux est enfonce : Ctrl+Cmd+X
-    // reste tel quel, et une combinaison sans ni l'un ni l'autre est intacte.
-    if (swapCtrlCmd && (m.ctrl === "true") !== (m.command === "true")){
-      var t = m.ctrl; m.ctrl = m.command; m.command = t;
-    }
-    return m;
+  // (La cle de stockage garde son nom d'origine : c'etait une simple permutation.)
+  var clavierTraduit = localStorage.getItem("rd-swap-ctrl") !== "0";
+  var PLATEFORME_LOCALE = (function(){
+    try{
+      var n = window.navigator || {};
+      return (n.userAgentData && n.userAgentData.platform) || n.platform || n.userAgent || "";
+    }catch(_){ return ""; }
+  })();
+  var LOCAL_MAC = RDLib.clavier.famille(PLATEFORME_LOCALE) === "mac";
+  function plateformeDistante(){
+    try{ var c = window.curConn; return (c && c._peerInfo && c._peerInfo.platform) || ""; }
+    catch(_){ return ""; }
   }
+  // Lu a chaque frappe : la plateforme du pair n'est connue qu'a peer_info, et
+  // change d'une session a l'autre.
+  function modeClavier(){
+    return clavierTraduit ? RDLib.clavier.mode(PLATEFORME_LOCALE, plateformeDistante()) : "direct";
+  }
+  function versPont(r){ return {alt:String(r.alt),ctrl:String(r.ctrl),shift:String(r.shift),command:String(r.meta)}; }
+  function etat(e){ return {ctrl:!!e.ctrlKey,alt:!!e.altKey,shift:!!e.shiftKey,meta:!!e.metaKey}; }
+  // Les modificateurs d'un evenement souris, traduits (Ctrl+clic -> Cmd+clic).
+  function modsSouris(e){ return versPont(RDLib.clavier.souris(modeClavier(), etat(e))); }
   function merge(a,b){ for(var k in b) a[k]=b[k]; return a; }
   // Bornee a l'image : avec la capture du pointeur, un glisser continue hors du
   // canvas, et le pair ne doit pas recevoir de coordonnees hors de son ecran.
@@ -446,8 +461,59 @@
     });
     if (sel.image) ppRangerImage(sel.image);
     if (sel.html || sel.text) ppRangerTexte(sel);
-    if (sel.image || sel.html || sel.text) ppBouton();
+    if (sel.image || sel.html || sel.text) ppAuto();
   }
+
+  // ------------------------------------------------ depot AUTOMATIQUE
+  // Copier sur le poste distant doit suffire : ce qui en arrive est ecrit tout
+  // de suite dans le presse-papier local, sans bouton. C'est possible parce
+  // que la copie distante est presque toujours declenchee par un geste DANS
+  // cette page (Ctrl+C, un clic sur un menu) : le navigateur accorde alors
+  // l'ecriture pendant quelques secondes, et le contenu revient en moins d'une.
+  //
+  // Quand il refuse — page sans le focus, navigateur plus strict — le bouton
+  // d'avant reprend son role, et le depot est retente au prochain geste. Sauf
+  // si la page a perdu le focus entre-temps : l'utilisateur a pu copier autre
+  // chose ailleurs, et l'ecraser avec un contenu plus ancien serait une faute.
+  var clipSync = { actif: false, dernier: null };
+  function ppFocus(){
+    try{ return typeof document.hasFocus === "function" && document.hasFocus()
+              && document.visibilityState === "visible"; }
+    catch(_){ return false; }
+  }
+  function ppAuto(){
+    if (!ppFocus() || !window.navigator.clipboard){ ppBouton(); return; }
+    ppSlots.kinds().forEach(function(kind){
+      var slot = ppSlots.get(kind);
+      if (!slot || slot.essai) return;
+      slot.essai = true;
+      ppDeposer(kind, { auto: true }).then(function(ok){
+        slot.essai = false;
+        if (ok || ppSlots.get(kind) !== slot) return;
+        slot.reessayer = ppFocus();
+        ppBouton();
+      });
+    });
+  }
+  // Au prochain geste dans la page : le navigateur vient de rouvrir le droit d'ecrire.
+  function ppGeste(){
+    ppSlots.kinds().forEach(function(kind){
+      var slot = ppSlots.get(kind);
+      if (!slot || !slot.reessayer || slot.essai) return;
+      slot.reessayer = false; slot.essai = true;
+      ppDeposer(kind, { auto: true }).then(function(ok){ slot.essai = false; if (!ok) ppBouton(); });
+    });
+  }
+  function ppOublierReprises(){
+    ppSlots.kinds().forEach(function(kind){ var s = ppSlots.get(kind); if (s) s.reessayer = false; });
+  }
+  try{
+    // Sur window, en capture : aucun ecouteur clavier n'est pose sur document
+    // (le canvas transmet ses touches au poste distant, et rien ne doit les doubler).
+    ["keydown", "pointerdown"].forEach(function(t){ window.addEventListener(t, ppGeste, true); });
+    window.addEventListener("blur", ppOublierReprises);
+  }catch(_){}
+  window.__rdPpGeste = ppGeste; window.__rdPpBlur = ppOublierReprises;
 
   // Synchrone, et volontairement : rien ici ne doit retarder msgLoop.
   function ppFiltrer(m){
@@ -463,7 +529,17 @@
       delete m.clipboard;             // sinon : TextDecoder sur du PNG
       ppRetenir([cb]);
     }
-    return m;                         // texte simple : le bundle sait faire
+    // Texte simple (pairs anterieurs a 1.3.0, ou client annonce comme tel). Le
+    // bundle le posait par execCommand("copy"), hors de tout geste : presque
+    // toujours refuse, et sans rien dire. La page s'en charge, comme du reste —
+    // sauf sans API de presse-papier (page servie en http), ou il garde la main.
+    var cl = window.navigator && window.navigator.clipboard;
+    if (m.clipboard && cl && typeof cl.writeText === "function"){
+      var ct = m.clipboard;
+      delete m.clipboard;
+      ppRetenir([ct]);
+    }
+    return m;
   }
 
   // Ecrire dans le presse-papier du systeme exige, selon les navigateurs, une
@@ -525,33 +601,64 @@
     }
   }
 
-  async function ppDeposer(kind){
+  // opts.auto : depot spontane, a l'arrivee du contenu. Il reussit en silence
+  // — un presse-papier qui marche ne s'annonce pas — et un refus du navigateur
+  // n'est pas une erreur a montrer : le bouton prend le relais. Rend vrai s'il
+  // n'y a plus rien a tenter (contenu depose, ou inutilisable).
+  async function ppDeposer(kind, opts){
+    var auto = !!(opts && opts.auto);
     var slot = ppSlots.get(kind);
-    if (!slot) return;
+    if (!slot) return false;
     slot.clique = true;
     // Pendant l'attente, un contenu plus recent a pu prendre l'emplacement : ce
     // qu'on vient d'ecrire est l'ANCIEN, le nouveau et son bouton doivent rester.
     var encoreLe_mien = function(){ return ppSlots.get(kind) === slot; };
     try{
       if (kind === "image") await ppEcrireImage(slot.promesse);
-      else await ppEcrireTexte(await slot.promesse);
-      console.log("[presse-papier] " + kind + " déposé dans le presse-papier local");
+      else {
+        var valeur = await slot.promesse;
+        await ppEcrireTexte(valeur);
+        // Ce texte vient du poste distant : la synchronisation sortante ne
+        // doit pas le lui renvoyer au prochain retour sur la page.
+        clipSync.dernier = RDLib.clip.signature(valeur.texte || "") + "|" + RDLib.clip.signature(valeur.html || "");
+      }
+      console.log("[presse-papier] " + kind + " déposé dans le presse-papier local" + (auto ? " (automatique)" : ""));
       if (encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
-      notifier(kind === "image" ? T("Image déposée dans le presse-papier local.")
-                                : T("Texte déposé dans le presse-papier local."));
+      if (kind === "image") ppNoterImageLocale();
+      if (!auto) notifier(kind === "image" ? T("Image déposée dans le presse-papier local.")
+                                           : T("Texte déposé dans le presse-papier local."));
+      return true;
     }catch(e0){
       // Si la CONVERSION a echoue, c'est elle la vraie cause : write() rejoue son
       // rejet sous un autre nom (NotAllowedError, DataError…) et le message
       // « le navigateur a refuse » serait faux — et definitif, donc trompeur.
       var e = slot.erreur || e0;
+      var defaut = !!(e && e.name === "ClipError");
       console.warn("[presse-papier] depot refuse : " + (e && e.name) + " — " + (e && e.message));
       // Une erreur de conversion est definitive : reessayer ne changerait rien.
-      // Un refus du navigateur, lui, peut passer au clic suivant.
-      if (e && e.name === "ClipError" && encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
-      notifier(messageErreur(e), "erreur");
+      // Un refus du navigateur, lui, peut passer au geste suivant.
+      if (defaut && encoreLe_mien()){ ppSlots.take(kind); ppRetirerBouton(kind); }
+      if (!auto || defaut) notifier(messageErreur(e), "erreur");
+      return defaut;
     }finally{
-      var c = active(); if (c) c.focus();      // le bouton ne doit pas garder le clavier
+      if (!auto){ var c = active(); if (c) c.focus(); }  // le bouton ne doit pas garder le clavier
     }
+  }
+  // Apres le depot d'une image distante : le navigateur la reencode, sa taille
+  // locale n'est donc pas celle recue. On la relit pour que la synchronisation
+  // sortante la reconnaisse et ne la renvoie pas d'ou elle vient.
+  function ppNoterImageLocale(){
+    if (!clipSync.actif) return;
+    try{
+      window.navigator.clipboard.read().then(function(items){
+        for (var i = 0; i < items.length; i++){
+          if (items[i].types.indexOf("image/png") >= 0){
+            items[i].getType("image/png").then(function(b){ clipSync.dernier = "img:" + b.size; });
+            return;
+          }
+        }
+      }).catch(function(){});
+    }catch(_){}
   }
   window.__rdPpFiltrer = ppFiltrer;
 
@@ -775,7 +882,7 @@
       if (!RD.stats.movesT0) RD.stats.movesT0 = Date.now();
       for (var i = 0; i < evs.length; i++){
         var p = pos(c, evs[i]);
-        send("send_mouse", merge({type:"", buttons:"", x:p.x, y:p.y}, mods(evs[i])));
+        send("send_mouse", merge({type:"", buttons:"", x:p.x, y:p.y}, modsSouris(evs[i])));
         RD.stats.moves++;
       }
     });
@@ -795,10 +902,10 @@
     window.addEventListener("blur", relacherTout);
     c.addEventListener("mousedown",function(e){ e.preventDefault(); c.focus(); var p=pos(c,e);
       enfonces[btn(e)] = 1; derniere = p;
-      send("send_mouse",merge({type:"down",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
+      send("send_mouse",merge({type:"down",buttons:btn(e),x:p.x,y:p.y},modsSouris(e))); });
     c.addEventListener("mouseup",function(e){ e.preventDefault(); var p=pos(c,e);
       delete enfonces[btn(e)]; derniere = p;
-      send("send_mouse",merge({type:"up",buttons:btn(e),x:p.x,y:p.y},mods(e))); });
+      send("send_mouse",merge({type:"up",buttons:btn(e),x:p.x,y:p.y},modsSouris(e))); });
     var molette = RDLib.molette.creer(100);
     c.addEventListener("wheel",function(e){ e.preventDefault();
       var w = molette.pousser(e.deltaX, e.deltaY, e.deltaMode);
@@ -854,29 +961,49 @@
       finLong(); tactMol.raz(); jouer(tact.cancel());
     });
 
+    // Ce qui a ete envoye ENFONCE, par touche physique. On relache Ctrl avant C
+    // plus souvent qu'on ne croit : le keyup de C arrive alors sans Ctrl, et
+    // passait pour une lettre — donc rien ne partait, et le poste distant
+    // gardait Cmd+C enfonce. Le relachement rejoue exactement ce qui est parti.
+    var tenues = {};
     function key(e,down){
       var k=e.key;
+      var repere = e.code || k;
+      if(!down && tenues[repere]){
+        var t0 = tenues[repere]; delete tenues[repere];
+        e.preventDefault();
+        send("input_key",merge({name:t0.nom,down:"false",press:"false"},versPont(t0)));
+        return;
+      }
       if(MODK[k]){ e.preventDefault(); return; }
-      var name=CTRL[k];
-      if(name){
-        e.preventDefault();
-        send("input_key",merge({name:name,down:String(down),press:"false"},applySwap(mods(e))));
-        return;
-      }
-      if(k.length!==1) return;
-      // Ctrl/Cmd+V : NE PAS intercepter, sinon le navigateur n'emet pas "paste".
+      // Ctrl/Cmd+V, Maj+Inser : NE PAS intercepter, sinon le navigateur n'emet
+      // pas "paste". Le collage distant est rejoue par le gestionnaire de paste.
       if(RDLib.clip.isPasteChord(e)) return;
-      if(e.ctrlKey||e.altKey||e.metaKey){
-        e.preventDefault();
-        var base=(k>="A"&&k<="Z")?k.toLowerCase():k;
-        send("input_key",merge({name:base,down:String(down),press:"false"},applySwap(mods(e))));
-        return;
+      var name=CTRL[k];
+      if(!name){
+        if(k.length!==1) return;
+        // Du texte : le navigateur a deja resolu la disposition locale (accents,
+        // majuscules, AltGr). On envoie le caractere final tel quel.
+        var ag = !!(e.getModifierState && e.getModifierState("AltGraph"));
+        if (RDLib.clavier.estTexte({key:k,ctrl:e.ctrlKey,alt:e.altKey,meta:e.metaKey,altGraph:ag}, LOCAL_MAC)){
+          e.preventDefault();
+          if(down){ try{ window.setByName("input_string",k); }catch(x){ console.warn("[entree]",x); } }
+          return;
+        }
+        name=(k>="A"&&k<="Z")?k.toLowerCase():k;
       }
-      // Texte simple : le navigateur a deja resolu la disposition (la disposition locale,
-      // accents, majuscules). On envoie le caractere final tel quel.
+      // Une touche de commande, ou un raccourci : traduit pour l'autre plateforme.
       e.preventDefault();
-      if(down){ try{ window.setByName("input_string",k); }catch(x){ console.warn("[entree]",x); } }
+      var s0=etat(e); s0.nom=name;
+      var r=RDLib.clavier.traduire(modeClavier(), s0);
+      if(down) tenues[repere]=r;
+      send("input_key",merge({name:r.nom,down:String(down),press:"false"},versPont(r)));
     }
+    function relacherTouches(){
+      for (var k in tenues) send("input_key",merge({name:tenues[k].nom,down:"false",press:"false"},versPont(tenues[k])));
+      tenues = {};
+    }
+    window.addEventListener("blur", relacherTouches);
     c.addEventListener("keydown",function(e){ key(e,true); });
     c.addEventListener("keyup",function(e){ key(e,false); });
     c.focus();
@@ -1094,6 +1221,8 @@
   function sessionPrete(){
     var p = prefs.get();
     saisieBloquee = false;             // le blocage de saisie ne survit pas a la session
+    if (window.__rdClavier) window.__rdClavier();
+    if (window.__rdClipSync) window.__rdClipSync("debut de session");
     // Le codec d'abord : __rdNegotiate lit RD.forced juste apres.
     if (p.codec) RD.forced = p.codec;
     // La contrainte n'est pas la bande passante (le relais plafonne 30x au-dessus
@@ -1170,13 +1299,12 @@
     // permutation est active, Ctrl+V sinon (terminal distant). Le delai croit
     // avec la taille envoyee : une image doit etre recue et posee par le poste
     // distant avant qu'on lui dise de coller.
-    function rejouerCollage(octets){
-      var ms = RDLib.clip.pasteDelayMs(octets);
+    function rejouerCollage(octets, delai){
+      var ms = RDLib.clip.pasteDelayMs(octets, delai);
       if (ms > 150) console.log("[presse-papier] collage distant dans " + ms + " ms (" + octets + " octets)");
       setTimeout(function(){
-        var m={alt:"false",shift:"false",
-               ctrl: swapCtrlCmd ? "false" : "true",
-               command: swapCtrlCmd ? "true" : "false"};
+        var av=RDLib.clavier.collerAvec(clavierTraduit, LOCAL_MAC, plateformeDistante());
+        var m={alt:"false",shift:"false",ctrl:String(av.ctrl),command:String(av.meta)};
         send("input_key",merge({name:"v",down:"true",press:"false"},m));
         send("input_key",merge({name:"v",down:"false",press:"false"},m));
       }, ms);
@@ -1205,8 +1333,8 @@
     // La limite porte sur ce qui PART — le PNG — et non sur la source : un jpeg
     // de quelques Mio gonfle de plusieurs fois en PNG. Trop gros, on reduit les
     // dimensions (trois fois au plus, en remesurant) plutot que de refuser.
-    async function envoyerImagePressePapier(blob){
-      var C = RDLib.clip, bmp = null;
+    async function envoyerImagePressePapier(blob, o){
+      var C = RDLib.clip, bmp = null, discret = !!(o && o.discret);
       try{
         var v = versionPair();
         if (C.peerSupportsMulti(v) === false)
@@ -1237,12 +1365,12 @@
         console.log("[presse-papier] image " + cur.w + "x" + cur.h + ", "
                   + octets.length + " octets envoyes en PNG — pair en version "
                   + (v || "inconnue") + " (1.3.0 minimum requis)");
-        if (cur.w !== bmp.width || cur.h !== bmp.height)
+        if (!discret && (cur.w !== bmp.width || cur.h !== bmp.height))
           notifier(T("Image réduite de {0}×{1} à {2}×{3} pour tenir dans la limite d'envoi.", bmp.width, bmp.height, cur.w, cur.h));
-        rejouerCollage(octets.length);
+        if (!discret) rejouerCollage(octets.length);
       }catch(e){
         console.warn("[presse-papier] image :", e);
-        notifier(messageErreur(e), "erreur");
+        if (!discret) notifier(messageErreur(e), "erreur");
       }finally{
         if (bmp && bmp.close) bmp.close();
       }
@@ -1291,14 +1419,34 @@
       var t="", h="";
       try{ t=cd.getData("text/plain")||""; }catch(_){}
       try{ h=cd.getData("text/html")||"";  }catch(_){}
+      envoyerTexte(t, h, { rejouer: true });
+    });
+
+    // Le texte du presse-papier local vers celui du poste distant.
+    //   rejouer : rejoue la frappe de collage une fois le contenu parti (Ctrl+V)
+    //   discret : synchronisation spontanee — aucun retour a l'ecran, et rien
+    //             n'est rejoue ; un echec se lit dans la console
+    // Rend vrai si le contenu est (ou etait deja) sur le poste distant.
+    function envoyerTexte(t, h, o){
+      var rejouer = !!(o && o.rejouer), discret = !!(o && o.discret);
+      function dire(texte){ if (!discret) notifier(texte, "erreur"); }
       if(!t && !h){
         console.log("[presse-papier] ignore (contenu non textuel)");
-        notifier(T("Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller."), "erreur");
-        return; }
+        dire(T("Ce contenu du presse-papier n'est ni du texte ni une image : rien à coller."));
+        return false; }
       if(t.length>1048576 || h.length>1048576){
         console.warn("[presse-papier] trop volumineux, ignore");
-        notifier(T("Texte trop volumineux pour le presse-papier distant (limite : 1 Mio)."), "erreur");
-        return; }
+        dire(T("Texte trop volumineux pour le presse-papier distant (limite : 1 Mio)."));
+        return false; }
+
+      // Deja la-bas : la synchronisation l'a envoye au retour sur la page, ou
+      // c'est le poste distant qui vient de nous le donner. Coller n'a plus a
+      // attendre un envoi — c'est ce qui rend Ctrl+V immediat.
+      var sig = RDLib.clip.signature(t) + "|" + RDLib.clip.signature(h);
+      if (sig === clipSync.dernier && RD.ready){
+        if (rejouer) rejouerCollage(0, 30);
+        return true;
+      }
 
       // Texte enrichi : Word et Excel deposent du HTML a cote du texte brut.
       // MultiClipboards est fait pour cela — les deux entrees partent dans le
@@ -1315,23 +1463,96 @@
           console.log("[presse-papier] texte enrichi envoye — "
                     + h.length + " car. de HTML"
                     + (t ? " et " + t.length + " car. de texte brut" : ""));
-          rejouerCollage(hb.length + (tb ? tb.length : 0));
-          return;
+          clipSync.dernier = sig;
+          if (rejouer) rejouerCollage(hb.length + (tb ? tb.length : 0));
+          return true;
         }
       }
 
       if(!t){
         console.log("[presse-papier] ignore (HTML seul, pair trop ancien)");
-        notifier(T("Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu."), "erreur");
-        return; }
+        dire(T("Le poste distant est trop ancien pour du texte enrichi, et aucun texte brut n'accompagne ce contenu."));
+        return false; }
       var bytes=new TextEncoder().encode(t);
       if(rdSend({clipboard:{content:bytes,compress:false}})){
         console.log("[presse-papier] "+bytes.length+" octets envoyes");
-        rejouerCollage(bytes.length);
-      } else {
-        notifier(T(RDLib.messages.NOSEND), "erreur");
+        clipSync.dernier = sig;
+        if (rejouer) rejouerCollage(bytes.length);
+        return true;
       }
-    });
+      dire(T(RDLib.messages.NOSEND));
+      return false;
+    }
+
+    // ------------------------------------------- synchronisation SORTANTE
+    // Coller par Ctrl+V a toujours marche : l'evenement « paste » porte le
+    // contenu. Mais « Coller » dans un menu du poste distant, ou un clic du
+    // milieu, n'en produisent aucun — le presse-papier distant n'avait alors
+    // pas ce qu'on venait de copier ici.
+    //
+    // Avec l'accord de l'utilisateur (menu Actions) et la permission du
+    // navigateur, le presse-papier local est lu a chaque retour sur la page et
+    // envoye s'il a change. C'est ce que fait le client natif. Chromium
+    // seulement : Firefox et Safari redemandent a chaque lecture.
+    clipSync.actif = prefs.get().clip === "auto";
+    function syncPossible(){
+      var n = window.navigator || {};
+      return !!(n.clipboard && typeof n.clipboard.read === "function" && n.permissions && n.permissions.query);
+    }
+    async function syncSortant(raison){
+      if (!clipSync.actif || !syncPossible() || !RD.ready || !sessionVivante() || !ppFocus()) return false;
+      try{
+        var items = await window.navigator.clipboard.read();
+        var png = null, t = "", h = "";
+        for (var i = 0; i < items.length; i++){
+          var ty = items[i].types || [];
+          if (ty.indexOf("image/png") >= 0) png = await items[i].getType("image/png");
+          if (ty.indexOf("text/plain") >= 0) t = await (await items[i].getType("text/plain")).text();
+          if (ty.indexOf("text/html") >= 0)  h = await (await items[i].getType("text/html")).text();
+        }
+        if (png && !t && !h){
+          var sigI = "img:" + png.size;
+          if (sigI === clipSync.dernier) return false;
+          clipSync.dernier = sigI;
+          console.log("[presse-papier] synchronisation (" + raison + ") : image de " + png.size + " octets");
+          await envoyerImagePressePapier(png, { discret: true });
+          return true;
+        }
+        if (!t && !h) return false;
+        if (RDLib.clip.signature(t) + "|" + RDLib.clip.signature(h) === clipSync.dernier) return false;
+        console.log("[presse-papier] synchronisation (" + raison + ")");
+        return envoyerTexte(t, h, { discret: true });
+      }catch(e){
+        // NotAllowedError : la permission a ete retiree, ou la page a perdu le
+        // focus pendant la lecture. Ni l'un ni l'autre ne merite un retour.
+        console.log("[presse-papier] synchronisation impossible (" + raison + ") : " + ((e && e.name) || e));
+        return false;
+      }
+    }
+    window.__rdClipSync = syncSortant;
+    // Activer : la lecture se fait DANS le geste, c'est elle qui fait apparaitre
+    // la demande de permission du navigateur.
+    async function basculerSync(){
+      if (clipSync.actif){
+        clipSync.actif = false; prefs.set({ clip: "manuel" });
+        notifier(T("Presse-papier automatique désactivé : Ctrl+V continue de coller."));
+        return;
+      }
+      try{
+        await window.navigator.clipboard.read();
+        clipSync.actif = true; prefs.set({ clip: "auto" });
+        notifier(T("Presse-papier automatique : ce que tu copies sur cet appareil est envoyé au poste distant dès que tu reviens sur cette page."));
+        syncSortant("activation");
+      }catch(e){
+        notifier(T("Le navigateur a refusé la lecture du presse-papier : la synchronisation automatique reste désactivée."), "erreur");
+      }
+    }
+    try{
+      window.addEventListener("focus", function(){ syncSortant("retour sur la page"); });
+      document.addEventListener("visibilitychange", function(){
+        if (document.visibilityState === "visible") syncSortant("onglet affiche");
+      });
+    }catch(_){}
 
     // --- Barre flottante ---
     var bar=document.createElement("div"); bar.id="rdbar";
@@ -1381,23 +1602,31 @@
       majSelects(p);
     })(prefs.get());
 
-    // Permutation Ctrl/Cmd : indispensable hors terminal, nuisible dedans.
-    var swp=document.createElement("button");
+    // Traduction des raccourcis : indispensable hors terminal, nuisible dedans.
+    // Le bouton n'apparait que s'il y a quelque chose a traduire — un PC devant
+    // un PC, ou un Mac devant un Mac, n'en ont pas besoin.
+    var swp=document.createElement("button"); swp.className="rdclavmode";
     function majSwap(){
-      swp.textContent = swapCtrlCmd ? "Ctrl→Cmd" : T("Ctrl brut");
-      swp.title = swapCtrlCmd
-        ? T("Ctrl est converti en Cmd (copier/coller macOS). Cliquer pour le mode terminal.")
-        : T("Ctrl est transmis tel quel (Ctrl+C = SIGINT). Cliquer pour le mode macOS.");
-      swp.style.background = swapCtrlCmd ? "#1f4d3a" : "#2a2f38";
+      var paire = RDLib.clavier.mode(PLATEFORME_LOCALE, plateformeDistante());
+      swp.style.display = paire === "direct" ? "none" : "";
+      swp.textContent = !clavierTraduit ? T("Clavier brut") : paire === "mac-pc" ? "Mac→PC" : "PC→Mac";
+      swp.title = !clavierTraduit
+        ? T("Les touches sont transmises telles quelles (Ctrl+C = SIGINT dans un terminal). Cliquer pour traduire les raccourcis.")
+        : paire === "mac-pc"
+          ? T("Raccourcis Mac traduits pour le poste distant : Cmd+C devient Ctrl+C, Cmd+← Début, Option+← mot précédent, Cmd+Q ferme. Cliquer pour tout transmettre tel quel.")
+          : T("Raccourcis PC traduits pour macOS : Ctrl+C devient Cmd+C, Ctrl+← mot précédent, Début/Fin bord de ligne, Alt+F4 quitte, Ctrl+clic sélection multiple. Cliquer pour tout transmettre tel quel (terminal).");
+      swp.setAttribute("aria-pressed", clavierTraduit ? "true" : "false");
+      swp.style.background = clavierTraduit ? "#1f4d3a" : "#2a2f38";
     }
     swp.onclick=function(){
-      swapCtrlCmd = !swapCtrlCmd;
-      localStorage.setItem("rd-swap-ctrl", swapCtrlCmd ? "1" : "0");
+      clavierTraduit = !clavierTraduit;
+      localStorage.setItem("rd-swap-ctrl", clavierTraduit ? "1" : "0");
       majSwap();
-      console.log("[clavier] "+(swapCtrlCmd?"Ctrl converti en Cmd":"Ctrl transmis tel quel"));
+      console.log("[clavier] "+(clavierTraduit?"raccourcis traduits ("+modeClavier()+")":"touches transmises telles quelles"));
       var c=active(); if(c) c.focus();
     };
     majSwap();
+    window.__rdClavier = majSwap;        // la plateforme du pair n'est connue qu'a peer_info
 
     // Ecran affiche : n'apparait que si le poste distant en a plusieurs.
     var ecr=document.createElement("select"); ecr.className="rdecrans";
@@ -1449,6 +1678,7 @@
       opt("cad",T("Ctrl+Alt+Suppr"));
       opt("lock",T("Verrouiller la session"));
       BASCULES.forEach(function(b){ opt("opt:"+b[0], (optionActive(b[0]) ? "✓ " : "") + T(b[1])); });
+      if (syncPossible()) opt("sync", (clipSync.actif ? "✓ " : "") + T("Presse-papier automatique"));
       opt("restart",T("Redémarrer le poste…"));
       act.value="";
     };
@@ -1457,6 +1687,7 @@
       try{
         if (v === "cad"){ window.setByName("ctrl_alt_del"); console.log("[action] Ctrl+Alt+Suppr"); }
         else if (v === "lock"){ window.setByName("lock_screen"); console.log("[action] verrouillage"); }
+        else if (v === "sync"){ basculerSync().then(function(){ window.__rdActions(); }); }
         else if (v === "restart"){
           demander({ titre: T("Redémarrer le poste distant ?"), corps: T("La session sera coupée."),
                      okTexte: T("Redémarrer"), danger: true }).then(function(ok){

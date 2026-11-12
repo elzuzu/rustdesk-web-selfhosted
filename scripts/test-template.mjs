@@ -1107,13 +1107,19 @@ avecVendor("inbound : ClipboardItem qui refuse une promesse (TypeError) -> repli
   assert.ok((await m.ecrits[0].obj["image/png"]).size > 0, "un Blob, plus une promesse");
 });
 
-avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ; le texte simple reste", async () => {
+avecVendor("inbound : un message « clipboard » est toujours pris par la page — image comme texte simple", async () => {
   const m = await montageEntrant();
   const img = { clipboard: { format: 22, compress: false, content: Uint8Array.from([1, 2, 3]), width: 1, height: 1 } };
   const r = m.w.__rdPpFiltrer(img);
   assert.equal(r.clipboard, undefined, "sinon le bundle ferait TextDecoder sur du PNG");
+  // Le texte simple aussi : le bundle le posait par execCommand hors de tout geste, sans effet.
   const txt = { clipboard: { format: 0, compress: false, content: utf8("salut") } };
-  assert.equal(m.w.__rdPpFiltrer(txt).clipboard.format, 0, "le texte simple est laisse au bundle");
+  assert.equal(m.w.__rdPpFiltrer(txt).clipboard, undefined);
+  assert.ok(boutons(m.barre).includes("Texte reçu ⇩"), JSON.stringify(boutons(m.barre)));
+  // Sans API de presse-papier (page en http), le bundle garde la main.
+  m.w.navigator.clipboard = undefined;
+  const t2 = { clipboard: { format: 0, compress: false, content: utf8("salut") } };
+  assert.equal(m.w.__rdPpFiltrer(t2).clipboard.format, 0);
 });
 
 
@@ -1123,7 +1129,7 @@ avecVendor("inbound : un message « clipboard » PNG est retire pour le bundle ;
 // chaque echec produit un retour, la limite porte sur ce qui part, le collage
 // distant est retarde selon la taille, et le focus ne se perd plus.
 // ====================================================================
-async function montageSortant({ version = "1.4.2", vivante = true, prete = true, dims = { w: 800, h: 600 },
+async function montageSortant({ version = "1.4.2", plateforme = "Mac OS", vivante = true, prete = true, dims = { w: 800, h: 600 },
                                 init = {}, qualiteBundle, formulaire = false } = {}) {
   const bac = creerBac();
   const w = bac.window, doc = bac.document;
@@ -1176,7 +1182,8 @@ async function montageSortant({ version = "1.4.2", vivante = true, prete = true,
   const depotsFichiers = { n: 0 };
   w.RDFT.accepterDepot = () => { depotsFichiers.n++; };          // espion : un collage d'image ne doit PAS televerser
   w.RD.ready = prete;
-  w.curConn = { _id: "123456789", _peerInfo: { version },
+  // Le clavier du banc est un PC (navigator.userAgent « node »), le pair un Mac par defaut.
+  w.curConn = { _id: "123456789", _peerInfo: { version, platform: plateforme },
                 _ws: { _websocket: { readyState: 1 },
                        sendMessage(m) { envoyes.push(m); journal.push(m.misc && m.misc.option ? "opt:" + Object.keys(m.misc.option).join(",") : "msg"); },
                        next: async () => null },
@@ -2681,4 +2688,248 @@ test("historique : le nom du poste accompagne l'ID, nettoye et borne ; rien d'au
   for (const e of JSON.parse(s.m.get("rd-recent")).ids) assert.ok(Object.keys(e).every((k) => ["id", "t", "n"].includes(k)), JSON.stringify(e));
   r.add("333333333", { toString() { return "piege"; } });
   assert.equal(plat(r.list())[0].n, undefined, "un nom qui n'est pas une chaine est ignore");
+});
+
+// ====================================================================
+// Clavier : traduction des raccourcis entre PC et Mac.
+// ====================================================================
+const touche = (nom, mods = "") => ({ nom, ctrl: mods.includes("C"), alt: mods.includes("A"), shift: mods.includes("S"), meta: mods.includes("M") });
+const ecrit = (r) => [r.ctrl && "Ctrl", r.alt && "Alt", r.shift && "Maj", r.meta && "Cmd", r.nom].filter(Boolean).join("+");
+
+test("clavier mode : PC devant Mac, Mac devant PC, rien entre semblables ou inconnus", () => {
+  const { clavier } = chargerLib();
+  assert.equal(clavier.mode("Win32", "Mac OS"), "pc-mac");
+  assert.equal(clavier.mode("Linux x86_64", "Mac OS"), "pc-mac");
+  assert.equal(clavier.mode("MacIntel", "Windows"), "mac-pc");
+  assert.equal(clavier.mode("macOS", "Linux"), "mac-pc");
+  assert.equal(clavier.mode("Win32", "Windows"), "direct");
+  assert.equal(clavier.mode("MacIntel", "Mac OS"), "direct");
+  assert.equal(clavier.mode("Win32", ""), "direct", "plateforme du pair inconnue : on ne devine pas");
+  assert.equal(clavier.mode(undefined, "Mac OS"), "direct");
+});
+
+test("clavier pc-mac : chaque raccourci PC donne le raccourci Mac de MEME EFFET", () => {
+  const { clavier } = chargerLib();
+  const t = (nom, mods) => ecrit(clavier.traduire("pc-mac", touche(nom, mods)));
+  // Le cas general : Ctrl devient Cmd.
+  assert.equal(t("c", "C"), "Cmd+c");
+  assert.equal(t("z", "CS"), "Maj+Cmd+z");
+  assert.equal(t("s", "CA"), "Alt+Cmd+s");
+  // Deplacement et effacement par mot : Option, pas Cmd (qui irait en bout de ligne).
+  assert.equal(t("LeftArrow", "C"), "Alt+LeftArrow");
+  assert.equal(t("RightArrow", "CS"), "Alt+Maj+RightArrow");
+  assert.equal(t("Backspace", "C"), "Alt+Backspace");
+  assert.equal(t("Delete", "C"), "Alt+Delete");
+  // Debut / Fin : sur Mac ces touches ne deplacent pas le curseur.
+  assert.equal(t("Home", ""), "Cmd+LeftArrow");
+  assert.equal(t("End", "S"), "Maj+Cmd+RightArrow");
+  assert.equal(t("Home", "C"), "Cmd+UpArrow");
+  assert.equal(t("End", "CS"), "Maj+Cmd+DownArrow");
+  // Ceux qui gardent Control : Cmd+Tab ouvrirait le selecteur d'applications, Cmd+Espace Spotlight.
+  assert.equal(t("Tab", "C"), "Ctrl+Tab");
+  assert.equal(t("Tab", "CS"), "Ctrl+Maj+Tab");
+  assert.equal(t("Space", "C"), "Ctrl+Space");
+  // Les raccourcis propres a Windows.
+  assert.equal(t("y", "C"), "Maj+Cmd+z");
+  assert.equal(t("F4", "A"), "Cmd+q");
+  assert.equal(t("F4", "C"), "Cmd+w");
+  assert.equal(t("Tab", "A"), "Cmd+Tab");
+  assert.equal(t("LeftArrow", "A"), "Cmd+[");
+  assert.equal(t("Insert", "C"), "Cmd+c");
+  assert.equal(t("Delete", "S"), "Cmd+x");
+  assert.equal(t("Escape", "CS"), "Alt+Cmd+Escape");
+  // La touche Windows devient Control ; avec Ctrl en plus, rien ne bouge.
+  assert.equal(t("e", "M"), "Ctrl+e");
+  assert.equal(t("x", "CM"), "Ctrl+Cmd+x");
+  // Sans modificateur, et les touches qui n'ont pas d'equivalent : intactes.
+  for (const n of ["Return", "Escape", "Tab", "LeftArrow", "Delete", "Backspace", "F5", "PageDown"]) assert.equal(t(n, ""), n);
+  assert.equal(t("LeftArrow", "S"), "Maj+LeftArrow");
+  assert.equal(t("e", "A"), "Alt+e");
+  // Hors mode de traduction : tel quel, et l'entree n'est jamais modifiee.
+  const entree = touche("c", "C");
+  assert.equal(ecrit(clavier.traduire("direct", entree)), "Ctrl+c");
+  clavier.traduire("pc-mac", entree);
+  assert.deepEqual(entree, touche("c", "C"));
+});
+
+test("clavier mac-pc : l'inverse, pour un Mac devant un PC", () => {
+  const { clavier } = chargerLib();
+  const t = (nom, mods) => ecrit(clavier.traduire("mac-pc", touche(nom, mods)));
+  assert.equal(t("c", "M"), "Ctrl+c");
+  assert.equal(t("LeftArrow", "M"), "Home");
+  assert.equal(t("DownArrow", "MS"), "Ctrl+Maj+End");
+  assert.equal(t("LeftArrow", "A"), "Ctrl+LeftArrow");
+  assert.equal(t("Backspace", "A"), "Ctrl+Backspace");
+  assert.equal(t("z", "MS"), "Ctrl+y");
+  assert.equal(t("q", "M"), "Alt+F4");
+  assert.equal(t("Tab", "C"), "Ctrl+Tab");
+  assert.equal(t("a", ""), "a");
+  // Aller puis retour : les raccourcis d'edition courants retombent sur eux-memes.
+  for (const [n, m] of [["c", "C"], ["v", "C"], ["LeftArrow", "C"], ["Backspace", "C"], ["Home", ""], ["End", "S"], ["Home", "C"], ["y", "C"], ["F4", "A"], ["Tab", "C"]]) {
+    const aller = clavier.traduire("pc-mac", touche(n, m));
+    assert.equal(ecrit(clavier.traduire("mac-pc", aller)), ecrit(touche(n, m)), n + " " + m);
+  }
+});
+
+test("clavier estTexte : AltGr produit un caractere, pas un raccourci", () => {
+  const { clavier } = chargerLib();
+  const f = (key, o = {}) => clavier.estTexte({ key, ctrl: false, alt: false, meta: false, altGraph: false, ...o }, false);
+  assert.equal(f("a"), true);
+  assert.equal(f("É"), true);
+  // Windows presente AltGr comme Ctrl+Alt : « @ », « # », « € », « { » d'un clavier francais ou suisse.
+  for (const c of ["@", "#", "€", "{", "\\", "|", "~"]) assert.equal(f(c, { ctrl: true, alt: true }), true, c);
+  assert.equal(f("@", { ctrl: true, alt: true, altGraph: true }), true);
+  assert.equal(f("e", { alt: false, ctrl: false, altGraph: true }), true, "AltGr signale par le navigateur");
+  // Un vrai raccourci reste un raccourci.
+  assert.equal(f("c", { ctrl: true }), false);
+  assert.equal(f("s", { ctrl: true, alt: true }), false, "Ctrl+Alt+lettre");
+  assert.equal(f("e", { alt: true }), false, "Alt+lettre sur PC : un accelerateur de menu");
+  assert.equal(f("v", { meta: true }), false);
+  assert.equal(f("Enter"), false);
+  // Sur un Mac local, Option compose un caractere.
+  assert.equal(clavier.estTexte({ key: "@", alt: true }, true), true);
+  assert.equal(clavier.estTexte({ key: "e", alt: true }, true), false);
+  assert.equal(clavier.estTexte(null, false), false);
+});
+
+test("clavier souris et collage : Ctrl+clic devient Cmd+clic ; le collage rejoue le bon modificateur", () => {
+  const { clavier, clip } = chargerLib();
+  assert.deepEqual(plat(clavier.souris("pc-mac", { ctrl: true })), { nom: "", ctrl: false, alt: false, shift: false, meta: true });
+  assert.equal(clavier.souris("pc-mac", { ctrl: true, meta: true }).ctrl, true, "les deux : intact");
+  assert.equal(clavier.souris("direct", { ctrl: true }).ctrl, true);
+  assert.equal(clavier.souris("mac-pc", { meta: true, shift: true }).ctrl, true);
+  assert.deepEqual(plat(clavier.collerAvec(true, false, "Mac OS")), { ctrl: false, meta: true });
+  assert.deepEqual(plat(clavier.collerAvec(true, false, "Windows")), { ctrl: true, meta: false });
+  assert.deepEqual(plat(clavier.collerAvec(true, true, "Windows")), { ctrl: true, meta: false }, "Mac devant PC : Ctrl+V");
+  assert.deepEqual(plat(clavier.collerAvec(false, false, "Mac OS")), { ctrl: true, meta: false }, "brut : la touche du clavier local");
+  assert.deepEqual(plat(clavier.collerAvec(false, true, "Mac OS")), { ctrl: false, meta: true });
+  // Maj+Inser est un collage : il ne doit pas AUSSI partir comme une touche.
+  assert.equal(clip.isPasteChord({ key: "Insert", shiftKey: true }), true);
+  assert.equal(clip.isPasteChord({ key: "Insert", shiftKey: true, ctrlKey: true }), false);
+  assert.equal(clip.isPasteChord({ key: "Insert" }), false);
+  assert.equal(clip.signature("abc"), clip.signature("abc"));
+  assert.notEqual(clip.signature("abc"), clip.signature("abd"));
+  assert.notEqual(clip.signature(""), clip.signature(" "));
+  assert.equal(clip.signature(undefined), clip.signature(""));
+});
+
+test("clavier (cablage) : AltGr part en texte, Maj+Inser n'est pas transmis, un pair Windows n'est pas traduit", async () => {
+  const m = await montageSortant();
+  const frapper = (o) => m.player.ecouteurs.keydown.forEach((f) => f({ preventDefault() {}, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...o }));
+  const avant = m.touches.length;
+  frapper({ key: "@", ctrlKey: true, altKey: true });
+  frapper({ key: "Insert", shiftKey: true });
+  frapper({ key: "ArrowLeft", ctrlKey: true });
+  assert.deepEqual(m.touches.slice(avant), [["input_string", "@"],
+    ["input_key", { name: "LeftArrow", down: "true", press: "false", alt: "true", ctrl: "false", shift: "false", command: "false" }]]);
+  const w = await montageSortant({ plateforme: "Windows" });
+  const n = w.touches.length;
+  w.player.ecouteurs.keydown.forEach((f) => f({ preventDefault() {}, key: "c", ctrlKey: true, altKey: false, shiftKey: false, metaKey: false }));
+  assert.deepEqual(w.touches.slice(n), [["input_key", { name: "c", down: "true", press: "false", alt: "false", ctrl: "true", shift: "false", command: "false" }]]);
+});
+
+// ====================================================================
+// Presse-papier : depot automatique, synchronisation sortante.
+// ====================================================================
+// Le navigateur refuse d'ecrire du texte (pas de geste recent) : le montage ne
+// refusait que write(), celui des images.
+const refuserTexte = (m) => { m.w.navigator.clipboard.writeText = async () => { const e = new Error("refus"); e.name = "NotAllowedError"; throw e; }; };
+
+test("presse-papier auto : un texte recu est depose sans bouton ni retour, et un refus rend la main au bouton", async () => {
+  const m = await montageEntrant();
+  m.bac.document.hasFocus = () => true;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("bonjour") }] } });
+  await m.vider();
+  assert.deepEqual(m.ecrits, [{ texte: "bonjour" }]);
+  assert.deepEqual(plat(boutons(m.barre)), [], "aucun bouton");
+  assert.deepEqual(m.toasts(), [], "aucun retour : un presse-papier qui marche ne s'annonce pas");
+  // Refus du navigateur : pas d'erreur affichee, le bouton apparait.
+  const r = await montageEntrant({ ecriture: "refuse" });
+  refuserTexte(r);
+  r.bac.document.hasFocus = () => true;
+  r.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("plus tard") }] } });
+  await r.vider();
+  assert.deepEqual(plat(boutons(r.barre)), ["Texte reçu ⇩"]);
+  assert.deepEqual(r.toasts(), []);
+  // Au geste suivant, le depot est repris — le navigateur accepte cette fois.
+  r.w.navigator.clipboard.writeText = async (t) => { r.ecrits.push({ texte: t }); };
+  r.w.__rdPpGeste(); await r.vider();
+  assert.deepEqual(r.ecrits, [{ texte: "plus tard" }]);
+  assert.deepEqual(plat(boutons(r.barre)), []);
+});
+
+test("presse-papier auto : apres une perte de focus, le contenu en attente n'est PAS depose d'office", async () => {
+  const m = await montageEntrant({ ecriture: "refuse" });
+  refuserTexte(m);
+  m.bac.document.hasFocus = () => true;
+  m.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("ancien") }] } });
+  await m.vider();
+  m.w.__rdPpBlur();                         // l'utilisateur est parti : il a pu copier autre chose ailleurs
+  m.w.navigator.clipboard.writeText = async (t) => { m.ecrits.push({ texte: t }); };
+  m.w.__rdPpGeste(); await m.vider();
+  assert.deepEqual(m.ecrits, [], "ecraser un contenu plus recent avec un plus ancien serait une faute");
+  assert.deepEqual(plat(boutons(m.barre)), ["Texte reçu ⇩"], "le bouton reste, pour qui le veut");
+  // Sans le focus a l'arrivee : pas de tentative du tout.
+  const n = await montageEntrant();
+  n.bac.document.hasFocus = () => false;
+  n.w.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: utf8("x") }] } });
+  await n.vider();
+  assert.deepEqual(n.ecrits, []);
+  assert.deepEqual(plat(boutons(n.barre)), ["Texte reçu ⇩"]);
+});
+
+test("presse-papier sortant : la synchronisation envoie sans coller, ne renvoie pas deux fois, et Ctrl+V devient immediat", async () => {
+  const m = await montageSortant({ init: { "rd-prefs": JSON.stringify({ v: 1, clip: "auto" }) } });
+  let local = "copié ici";
+  const item = () => ({ types: ["text/plain"], getType: async () => new Blob([local], { type: "text/plain" }) });
+  m.w.navigator.clipboard = { read: async () => [item()], writeText: async () => {} };
+  m.w.navigator.permissions = { query: async () => ({ state: "granted" }) };
+  m.doc.hasFocus = () => true;
+  assert.equal(await m.w.__rdClipSync("test"), true);
+  assert.equal(new TextDecoder().decode(m.envoyes.at(-1).clipboard.content), "copié ici");
+  assert.equal(m.rejeux().length, 0, "synchroniser n'est pas coller");
+  const n = m.envoyes.length;
+  assert.equal(await m.w.__rdClipSync("test"), false, "rien de neuf : rien ne part");
+  assert.equal(m.envoyes.length, n);
+  // Ctrl+V du meme contenu : aucun envoi, la frappe est rejouee tout de suite.
+  const ev = { preventDefault() {}, clipboardData: { items: [], files: [], getData: (t) => (t === "text/plain" ? "copié ici" : "") } };
+  const repere = m.bac.minuteurs.length;
+  (m.ecouteurs.paste || []).forEach((f) => f(ev));
+  assert.equal(m.envoyes.length, n, "le contenu est deja sur le poste distant");
+  const rejeu = m.bac.minuteurs.slice(repere).filter((t) => t.once);
+  assert.deepEqual(rejeu.map((t) => t.ms), [30], "plus d'attente de 150 ms");
+  rejeu[0].f();
+  assert.deepEqual(m.touches.at(-1), ["input_key", { name: "v", down: "false", press: "false", alt: "false", shift: "false", ctrl: "false", command: "true" }]);
+  // Un contenu different repart.
+  local = "autre chose";
+  assert.equal(await m.w.__rdClipSync("test"), true);
+  // Sans accord : jamais de lecture.
+  const s = await montageSortant();
+  let lectures = 0;
+  s.w.navigator.clipboard = { read: async () => { lectures++; return []; } };
+  s.w.navigator.permissions = { query: async () => ({ state: "granted" }) };
+  s.doc.hasFocus = () => true;
+  assert.equal(await s.w.__rdClipSync("test"), false);
+  assert.equal(lectures, 0);
+});
+
+test("clavier (cablage) : le relachement rejoue ce qui est parti, meme si Ctrl a ete lache avant la lettre", async () => {
+  const m = await montageSortant();
+  const ev = (o) => ({ preventDefault() {}, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...o });
+  const bas = (o) => m.player.ecouteurs.keydown.forEach((f) => f(ev(o)));
+  const haut = (o) => m.player.ecouteurs.keyup.forEach((f) => f(ev(o)));
+  const avant = m.touches.length;
+  bas({ key: "c", code: "KeyC", ctrlKey: true });
+  haut({ key: "c", code: "KeyC" });                      // Ctrl deja relache : sans cela, « c » passait pour du texte
+  const cmd = { alt: "false", ctrl: "false", shift: "false", command: "true" };
+  assert.deepEqual(m.touches.slice(avant), [["input_key", { name: "c", down: "true", press: "false", ...cmd }],
+                                            ["input_key", { name: "c", down: "false", press: "false", ...cmd }]]);
+  // Une lettre tapee n'envoie rien au relachement, comme avant.
+  const n = m.touches.length;
+  bas({ key: "a", code: "KeyA" }); haut({ key: "a", code: "KeyA" });
+  assert.deepEqual(m.touches.slice(n), [["input_string", "a"]]);
+  // Un second relachement de la meme touche ne renvoie rien.
+  const k = m.touches.length;
+  haut({ key: "c", code: "KeyC" });
+  assert.equal(m.touches.length, k);
 });

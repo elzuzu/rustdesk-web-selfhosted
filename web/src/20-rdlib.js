@@ -280,7 +280,12 @@
   // ponctuation ou un chiffre sur cette touche n'est pas un collage : l'avaler
   // ferait disparaitre le raccourci de la session distante.
   function isPasteChord(e){
-    if (!e || !(e.ctrlKey || e.metaKey) || e.altKey) return false;
+    if (!e) return false;
+    // Maj+Inser : l'autre « coller » des claviers PC. Le navigateur emet
+    // « paste » pour lui aussi ; transmis en plus au poste distant, il collerait
+    // deux fois.
+    if (e.key === "Insert" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) return true;
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return false;
     var key = typeof e.key === "string" ? e.key : "";
     if (key.toLowerCase() === "v") return true;
     return e.code === "KeyV" && /^\p{L}$/u.test(key) && !/^\p{Script=Latin}$/u.test(key);
@@ -317,7 +322,8 @@
     codec:   ["auto", "h265", "h264", "av1", "vp9", "logiciel"],
     bar:     ["ouverte", "repliee"],
     remember:[true, false],
-    lang:    ["fr", "en"]
+    lang:    ["fr", "en"],
+    clip:    ["auto", "manuel"]
   };
   function prefsFiltrees(src){
     var r = {};
@@ -352,7 +358,8 @@
           if (Object.prototype.hasOwnProperty.call(f, k)) cur[k] = f[k];
         });
         var texte = JSON.stringify({ v: 1, quality: cur.quality, fps: cur.fps, codec: cur.codec,
-                                     bar: cur.bar, hint: cur.hint, remember: cur.remember, lang: cur.lang });
+                                     bar: cur.bar, hint: cur.hint, remember: cur.remember, lang: cur.lang,
+                                     clip: cur.clip });
         var ok = ecrire(storage, key, texte);
         mem = ok ? null : cur;
         return ok;
@@ -502,6 +509,129 @@
       if (lot) return { nom: n, lot: lot };
     }
     return null;
+  }
+
+  // Une empreinte courte d'un texte (FNV-1a 32 bits, plus la longueur). Sert a
+  // reconnaitre un contenu DEJA transmis, pas a le proteger.
+  function signature(t){
+    t = typeof t === "string" ? t : "";
+    var h = 0x811c9dc5;
+    for (var i = 0; i < t.length; i++){ h ^= t.charCodeAt(i); h = (h * 0x01000193) >>> 0; }
+    return t.length + ":" + h.toString(16);
+  }
+
+  // ---------------------------------------------------------------- clavier
+  // Un clavier PC devant un Mac (ou l'inverse) : les memes gestes ne portent
+  // pas les memes touches. RustDesk transmet les modificateurs un pour un, donc
+  // Ctrl+C arrive en Control+C sur le Mac, ou copier est Cmd+C. Permuter Ctrl
+  // et Cmd regle les lettres et casse le reste : Ctrl+← (mot precedent sur PC)
+  // devenait Cmd+← (debut de ligne), Ctrl+Tab ouvrait le selecteur
+  // d'applications, Debut et Fin ne bougeaient pas le curseur.
+  //
+  // traduire() rend la combinaison qui a le MEME EFFET de l'autre cote. Les noms
+  // de touches sont ceux du pont (« LeftArrow », « Backspace »…) ou un caractere.
+  function famille(p){
+    p = String(p == null ? "" : p).toLowerCase();
+    if (!p) return "";
+    return /mac|darwin|iphone|ipad|ios/.test(p) ? "mac" : "pc";
+  }
+  // "pc-mac" | "mac-pc" | "direct" (meme famille des deux cotes, ou inconnue).
+  function modeClavier(local, distant){
+    var l = famille(local), d = famille(distant);
+    if (l === "pc" && d === "mac") return "pc-mac";
+    if (l === "mac" && d === "pc") return "mac-pc";
+    return "direct";
+  }
+  var FLECHES = { LeftArrow: 1, RightArrow: 1, UpArrow: 1, DownArrow: 1 };
+  function combi(nom, ctrl, alt, shift, meta){
+    return { nom: nom, ctrl: !!ctrl, alt: !!alt, shift: !!shift, meta: !!meta };
+  }
+  function pcVersMac(t){
+    var n = t.nom, c = t.ctrl, a = t.alt, s = t.shift, m = t.meta;
+    // La touche Windows devient Control. Avec Ctrl EN PLUS, rien ne bouge :
+    // Ctrl+Win+X est deja Control+Cmd+X.
+    if (m) return combi(n, true, a, s, c);
+    if (a && !c){
+      if (n === "F4")  return combi("q", false, false, false, true);        // Alt+F4 : quitter
+      if (n === "Tab") return combi("Tab", false, false, s, true);          // Alt+Tab : applications
+      if (n === "LeftArrow")  return combi("[", false, false, false, true); // Alt+← : page precedente
+      if (n === "RightArrow") return combi("]", false, false, false, true);
+      return combi(n, c, a, s, m);
+    }
+    if (!c){
+      if (n === "Home") return combi("LeftArrow", false, false, s, true);   // debut / fin de LIGNE
+      if (n === "End")  return combi("RightArrow", false, false, s, true);
+      if (n === "Delete" && s && !a) return combi("x", false, false, false, true);  // Maj+Suppr : couper
+      return combi(n, c, a, s, m);
+    }
+    // --- Ctrl enfonce, sans touche Windows
+    if (n === "Home") return combi("UpArrow", false, a, s, true);           // debut / fin du DOCUMENT
+    if (n === "End")  return combi("DownArrow", false, a, s, true);
+    if (FLECHES[n] || n === "Backspace" || n === "Delete")
+      return combi(n, false, true, s, false);                               // par mot : Option
+    if (n === "Tab" || n === "Space" || n === " ") return combi(n, true, a, s, false);  // onglets, completion
+    if (n === "Insert") return combi("c", false, false, false, true);       // Ctrl+Inser : copier
+    if (n === "F4") return combi("w", false, false, false, true);           // Ctrl+F4 : fermer l'onglet
+    if (n === "Escape" && s) return combi("Escape", false, true, false, true); // gestionnaire des taches -> forcer a quitter
+    if (n === "y" && !s && !a) return combi("z", false, false, true, true); // retablir
+    return combi(n, false, a, s, true);                                     // le cas general : Ctrl -> Cmd
+  }
+  function macVersPc(t){
+    var n = t.nom, c = t.ctrl, a = t.alt, s = t.shift, m = t.meta;
+    if (m && !c){
+      if (n === "q") return combi("F4", false, true, false, false);
+      if (n === "Tab") return combi("Tab", false, true, s, false);
+      if (n === "LeftArrow")  return combi("Home", false, false, s, false);
+      if (n === "RightArrow") return combi("End", false, false, s, false);
+      if (n === "UpArrow")    return combi("Home", true, false, s, false);
+      if (n === "DownArrow")  return combi("End", true, false, s, false);
+      if (n === "[") return combi("LeftArrow", false, true, false, false);
+      if (n === "]") return combi("RightArrow", false, true, false, false);
+      if (n === "z" && s && !a) return combi("y", true, false, false, false);
+      if (n === "Backspace") return combi("Delete", false, false, false, false);   // Cmd+⌫ : supprimer le fichier
+      return combi(n, true, a, s, false);                                  // Cmd -> Ctrl
+    }
+    if (a && !c && !m && (FLECHES[n] || n === "Backspace" || n === "Delete"))
+      return combi(n, true, false, s, false);                              // par mot : Ctrl
+    if (c && !m && !(n === "Tab" || n === "Space" || n === " "))
+      return combi(n, false, a, s, true);                                  // Control -> touche Windows
+    return combi(n, c, a, s, m);
+  }
+  // t : { nom, ctrl, alt, shift, meta }. Sans mode de traduction, t tel quel.
+  function traduire(mode, t){
+    if (!t) return t;
+    var b = combi(t.nom, t.ctrl, t.alt, t.shift, t.meta);
+    return mode === "pc-mac" ? pcVersMac(b) : mode === "mac-pc" ? macVersPc(b) : b;
+  }
+  // La souris : Ctrl+clic (selection multiple sur PC) est un clic droit sur
+  // Mac, ou la selection multiple est Cmd+clic. Et l'inverse.
+  function traduireSouris(mode, t){
+    var b = combi("", t && t.ctrl, t && t.alt, t && t.shift, t && t.meta);
+    if (mode !== "pc-mac" && mode !== "mac-pc") return b;
+    if (b.ctrl !== b.meta){ var x = b.ctrl; b.ctrl = b.meta; b.meta = x; }
+    return b;
+  }
+  // Cette frappe produit-elle du TEXTE, ou est-ce un raccourci ? Le caractere
+  // (e.key) est deja celui de la disposition locale. Le piege est AltGr : sur
+  // Windows il se presente comme Ctrl+Alt, et « @ », « # », « € », « { » d'un
+  // clavier francais ou suisse partaient comme des raccourcis Ctrl+Alt — donc
+  // jamais comme le caractere. De meme Option sur un Mac local.
+  //   f : { key, ctrl, alt, meta, altGraph } ; localMac : le clavier est-il un Mac
+  function estTexte(f, localMac){
+    if (!f || typeof f.key !== "string" || f.key.length !== 1) return false;
+    if (f.meta) return false;
+    if (!f.ctrl && !f.alt) return true;
+    if (f.altGraph) return true;
+    var simple = /^[a-z0-9 ]$/i.test(f.key);
+    if (f.ctrl && f.alt) return !simple;          // AltGr vu comme Ctrl+Alt : un caractere compose
+    if (f.alt && !f.ctrl && localMac) return !simple;   // Option+touche sur un Mac
+    return false;
+  }
+  // Le modificateur du « coller » a rejouer sur le poste distant.
+  //   traduit : la traduction est active ; sinon on rejoue la touche du clavier local.
+  function collerAvec(traduit, localMac, distant){
+    var cmd = traduit ? famille(distant) === "mac" : !!localMac;
+    return { ctrl: !cmd, meta: cmd };
   }
 
   // ---------------------------------------------------------------- molette
@@ -674,7 +804,6 @@
     "Image réduite de {0}×{1} à {2}×{3} pour tenir dans la limite d'envoi.": "Image reduced from {0}×{1} to {2}×{3} to fit the sending limit.",
     "Plafond de cadence. Le serveur décide la cadence réelle selon la latence ; ce réglage ne fait que la borner. Le baisser a un effet immédiat, le monter n'en a que si la liaison suit.": "Frame-rate cap. The server decides the actual rate from the measured latency; this setting only bounds it. Lowering it takes effect at once, raising it only helps if the link keeps up.",
     "{0} i/s max": "{0} fps max",
-    "Ctrl brut": "Raw Ctrl",
     "Écran {0}": "Display {0}",
     "Couper le son distant": "Mute remote audio",
     "Suspendre le presse-papier": "Suspend clipboard",
@@ -742,8 +871,6 @@
     "Codec vidéo": "Video codec",
     "Codec auto": "Auto codec",
     "Logiciel": "Software",
-    "Ctrl est converti en Cmd (copier/coller macOS). Cliquer pour le mode terminal.": "Ctrl is converted to Cmd (macOS copy/paste). Click for terminal mode.",
-    "Ctrl est transmis tel quel (Ctrl+C = SIGINT). Cliquer pour le mode macOS.": "Ctrl is sent as is (Ctrl+C = SIGINT). Click for macOS mode.",
     "Écran du poste distant à afficher": "Remote display to show",
     "Actions sur le poste distant": "Actions on the remote machine",
     "Actions": "Actions",
@@ -840,7 +967,15 @@
     "Serveur": "Server",
     "Langue de l'interface": "Interface language",
     "Mot de passe du poste distant": "Remote machine password",
-    "Mot de passe": "Password"
+    "Mot de passe": "Password",
+    "Clavier brut": "Raw keyboard",
+    "Les touches sont transmises telles quelles (Ctrl+C = SIGINT dans un terminal). Cliquer pour traduire les raccourcis.": "Keys are sent as they are (Ctrl+C = SIGINT in a terminal). Click to translate shortcuts.",
+    "Raccourcis Mac traduits pour le poste distant : Cmd+C devient Ctrl+C, Cmd+← Début, Option+← mot précédent, Cmd+Q ferme. Cliquer pour tout transmettre tel quel.": "Mac shortcuts translated for the remote machine: Cmd+C becomes Ctrl+C, Cmd+← Home, Option+← previous word, Cmd+Q closes. Click to send everything as is.",
+    "Raccourcis PC traduits pour macOS : Ctrl+C devient Cmd+C, Ctrl+← mot précédent, Début/Fin bord de ligne, Alt+F4 quitte, Ctrl+clic sélection multiple. Cliquer pour tout transmettre tel quel (terminal).": "PC shortcuts translated for macOS: Ctrl+C becomes Cmd+C, Ctrl+← previous word, Home/End line edges, Alt+F4 quits, Ctrl+click multi-select. Click to send everything as is (terminal).",
+    "Presse-papier automatique": "Automatic clipboard",
+    "Presse-papier automatique désactivé : Ctrl+V continue de coller.": "Automatic clipboard off: Ctrl+V still pastes.",
+    "Presse-papier automatique : ce que tu copies sur cet appareil est envoyé au poste distant dès que tu reviens sur cette page.": "Automatic clipboard: what you copy on this device is sent to the remote machine as soon as you come back to this page.",
+    "Le navigateur a refusé la lecture du presse-papier : la synchronisation automatique reste désactivée.": "The browser refused to read the clipboard: automatic synchronisation stays off."
   };
   function creerI18n(langue){
     var en = langue === "en";
@@ -884,6 +1019,8 @@
              meilleur: codecMeilleur, capacites: codecCapacites, flux: codecFlux },
     pair:  { retour: retourPair, demande2fa: demande2fa, code2fa: code2fa },
     molette: { creer: creerMolette },
+    clavier: { famille: famille, mode: modeClavier, traduire: traduire, souris: traduireSouris,
+               estTexte: estTexte, collerAvec: collerAvec },
     tactile: { creer: creerTactile },
     isPeerId: isPeerId, normId: normId, fmtId: fmtId, nomPoste: nomPoste,
     messages: messages,
@@ -893,7 +1030,8 @@
       sortieVideSuspecte: sortieVideSuspecte, estPng: estPng, reduirePixels: reduirePixels,
       rgbaPixels: rgbaPixels, describe: describe, slots: slots,
       precheck: precheck, nextScale: nextScale, pasteDelayMs: pasteDelayMs,
-      peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord, pasteAccepte: pasteAccepte
+      peerSupportsMulti: peerSupportsMulti, isPasteChord: isPasteChord, pasteAccepte: pasteAccepte,
+      signature: signature
     },
     prefs:  { create: creerPrefs, OK: PREFS_OK },
     recent: { create: creerRecent }

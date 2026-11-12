@@ -32,9 +32,9 @@ qui manquait** : le client d'origine ne câble que l'affichage.
 | Molette, trackpad | les pixels sont cumulés en crans : un trackpad ne défile plus dix fois trop vite |
 | Tactile | un doigt pilote la souris (toucher, glisser, appui long = clic droit), deux doigts font défiler ; un bouton sort le clavier de l'appareil |
 | Plein écran | avec capture du clavier sur Chromium : Échap, Alt+Tab, Cmd+W partent au poste distant |
-| Clavier | texte, accents, dispositions non-US, touches mortes, touches de contrôle |
-| `Ctrl` → `Cmd` | commutable, pour macOS ou pour un terminal distant |
-| Presse-papier | texte dans les deux sens ; **images et texte enrichi** aussi, sur Chromium |
+| Clavier | texte, accents, dispositions non-US, touches mortes, caractères AltGr, touches de contrôle |
+| Raccourcis PC ↔ Mac | traduits vers la combinaison de même effet (copier, déplacements par mot et par ligne, Début/Fin, Alt+F4…), ou transmis bruts pour un terminal distant |
+| Presse-papier | texte, **images et texte enrichi** dans les deux sens ; une copie distante arrive seule dans le presse-papier local, et le local peut suivre automatiquement (sur accord, Chromium) |
 | Fichiers | panneau distant : naviguer, téléverser, télécharger, créer, renommer, supprimer |
 | Résolution | menu des modes réellement supportés, « ajuster à la fenêtre » |
 | Écrans | un sélecteur pour passer d'un moniteur du poste distant à l'autre, affiché s'il en a plusieurs |
@@ -215,21 +215,39 @@ partout. Conditions :
 La touche de collage se reconnaît à sa lettre, ou — sous une disposition non
 latine comme le cyrillique — à la touche physique.
 
-**Poste distant → navigateur.** Un bouton vert par type — « Image reçue ⇩ »,
-« Texte reçu ⇩ » — apparaît à côté de la poignée de la barre de réglages, sans la
-déplier. Il faut cliquer : écrire dans le presse-papier du système exige, selon les
-navigateurs, une activation récente de la page (Safari l'exige strictement), donc
-une pose automatique à la réception n'est pas fiable — Guacamole expose une zone
-dédiée pour la même raison. Le décodage et la conversion en PNG se font dans une
-tâche à part, jamais sur la boucle de messages (qui acquitte aussi chaque image
-vidéo), et le résultat est confié au presse-papier sous forme de promesse : le clic
-est honoré que la conversion soit terminée ou non. Un emplacement par type : un
-texte arrivant après une image ne l'efface plus. Ce sens n'est **testé que sur
-Chromium**. Firefox (à partir de la version 127) et Safari exposent la même API
-`ClipboardItem` et peuvent l'accepter — Safari exige l'activation de l'utilisateur,
-une raison de plus pour le clic — mais rien ne le vérifie ici, et le code se replie
-sur l'attente de l'image quand un navigateur refuse une promesse. KasmVNC, seul
-projet comparable à l'avoir fait, restreint son presse-papier riche à Chromium.
+**Poste distant → navigateur.** Copier sur le poste distant suffit : ce qui en
+arrive est écrit dans le presse-papier local **tout de suite, sans bouton ni
+message**. C'est possible parce qu'une copie distante est presque toujours
+déclenchée par un geste *dans cette page* — `Ctrl+C`, un clic sur un menu — qui
+ouvre pour quelques secondes le droit d'écrire du navigateur, et le contenu
+revient en bien moins d'une.
+
+Quand le navigateur refuse — la page n'a pas le focus, ou il est plus strict — le
+bouton vert d'avant (« Image reçue ⇩ », « Texte reçu ⇩ ») apparaît près de la
+poignée des réglages, et le dépôt est repris de lui-même à ton prochain clic ou
+appui de touche dans la page. Il n'est **pas** repris si la page a perdu le focus
+entre-temps : tu as pu copier autre chose ailleurs, et l'écraser avec un contenu
+plus ancien serait une faute. Le texte simple des anciens pairs prend le même
+chemin ; le bundle le posait par `execCommand("copy")` hors de tout geste, ce que
+les navigateurs refusent sans rien dire.
+
+Le décodage et la conversion en PNG se font dans une tâche à part, jamais sur la
+boucle de messages (qui acquitte aussi chaque trame vidéo). Un emplacement par
+type : un texte arrivé après une image ne l'efface pas. Le dépôt automatique est
+**testé sur Chromium** ; Firefox devrait l'accepter dans sa propre fenêtre
+d'activation, Safari est plus strict et montrera le plus souvent le bouton.
+
+**Presse-papier automatique (navigateur → poste distant, sur accord).** `Ctrl+V`
+a toujours marché : l'événement `paste` porte le contenu. Mais « Coller » dans un
+menu du poste distant, ou un clic du milieu, n'en produisent aucun : le
+presse-papier distant n'avait pas ce que tu venais de copier ici. **Actions →
+Presse-papier automatique** règle cela : une fois la permission du navigateur
+accordée, le presse-papier local est lu à chaque retour sur la page et envoyé
+s'il a changé — ce que fait le client natif. `Ctrl+V` colle alors immédiatement,
+le contenu étant déjà là-bas. C'est désactivé par défaut, parce que cela envoie
+ce que tu as copié, mots de passe compris, au poste distant dès que la page
+reprend le focus. Chromium seulement : Firefox et Safari redemandent à chaque
+lecture.
 
 Une image venue du poste distant par l'ancien message `clipboard` est
 interceptée avant le bundle, dont la branche décode le contenu en texte sans
@@ -388,6 +406,54 @@ web/src/40-fichiers.js     le panneau de fichiers
 n'est **pas versionné** : `setup.sh`, `verify.sh`, la CI et les deux bancs de test
 le reconstruisent avant de s'en servir. La page servie reste un seul fichier de
 blocs en ligne — seules les sources sont découpées.
+
+## Clavier : un PC devant un Mac
+
+RustDesk transmet les modificateurs un pour un : `Ctrl+C` arrive en `Control+C`
+sur le Mac, où copier est `Cmd+C`. Permuter Ctrl et Cmd règle les lettres et casse
+le reste : `Ctrl+←` (mot précédent sur PC) devenait `Cmd+←` (début de ligne),
+`Ctrl+Tab` ouvrait le sélecteur d'applications, Début et Fin ne bougeaient pas le
+curseur. Les raccourcis sont maintenant **traduits** vers la combinaison qui a le
+même effet de l'autre côté :
+
+| Sur le clavier PC | Envoyé au Mac | Effet |
+|---|---|---|
+| `Ctrl` + lettre | `Cmd` + lettre | copier, coller, enregistrer, chercher, tout sélectionner… |
+| `Ctrl+←/→/↑/↓`, `Ctrl+Retour arrière`, `Ctrl+Suppr` | `Option` + la même | se déplacer ou effacer mot par mot |
+| `Début` / `Fin` | `Cmd+←` / `Cmd+→` | début / fin de ligne |
+| `Ctrl+Début` / `Ctrl+Fin` | `Cmd+↑` / `Cmd+↓` | début / fin du document |
+| `Ctrl+Y` | `Cmd+Maj+Z` | rétablir |
+| `Ctrl+Tab`, `Ctrl+Espace` | inchangés | onglet suivant, complétion |
+| `Alt+F4` / `Ctrl+F4` | `Cmd+Q` / `Cmd+W` | quitter / fermer l'onglet |
+| `Alt+Tab` | `Cmd+Tab` | changer d'application |
+| `Alt+←` / `Alt+→` | `Cmd+[` / `Cmd+]` | page précédente / suivante |
+| `Ctrl+Inser`, `Maj+Suppr`, `Maj+Inser` | copier, couper, coller | les autres touches de presse-papier du PC |
+| `Ctrl+Maj+Échap` | `Cmd+Option+Échap` | forcer à quitter |
+| Touche Windows | `Control` | |
+| `Ctrl` + clic | `Cmd` + clic | sélection multiple (un `Ctrl` + clic est un clic droit sur Mac) |
+
+`Maj` est toujours conservé : toutes les variantes de sélection suivent. Le sens
+est choisi d'après les deux plateformes : un clavier Mac devant un poste Windows
+ou Linux reçoit la table inverse, et rien n'est traduit entre deux postes de la
+même famille — le bouton de la barre (**PC→Mac**, **Mac→PC**) n'apparaît que s'il
+y a quelque chose à traduire. Un clic le passe en mode **brut**, où chaque touche
+part telle quelle : c'est ce qu'il faut dans un terminal distant (`Ctrl+C` = SIGINT).
+
+Trois autres corrections sur le même chemin :
+
+- **AltGr.** Windows présente AltGr comme `Ctrl+Alt` : `@`, `#`, `€`, `{` d'un
+  clavier français ou suisse partaient comme des raccourcis et n'étaient jamais
+  tapés. Ce sont des caractères.
+- **Relâchement.** Lâcher `Ctrl` avant la lettre est courant ; le relâchement de
+  la lettre arrivait alors sans `Ctrl`, passait pour du texte, et rien ne partait
+  — le Mac gardait `Cmd+C` enfoncé. Le relâchement rejoue exactement ce qui a été
+  enfoncé.
+- `Alt+Tab`, `Alt+F4`, `Ctrl+W` et `Ctrl+T` n'atteignent la page qu'en **plein
+  écran** sur Chromium ; sinon le système local les garde.
+
+Ce qui reste différent : le sélecteur d'applications ne peut pas être tenu ouvert
+(chaque `Alt+Tab` est un `Cmd+Tab` complet), et `F2`, `Suppr` sur un fichier ou
+`Impr écran` n'ont pas d'équivalent Mac unique et partent tels quels.
 
 ## Entrées : tactile, molette, plein écran
 

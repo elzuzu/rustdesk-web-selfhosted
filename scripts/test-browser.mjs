@@ -119,7 +119,7 @@ async function sessionSimulee(p, { version = "1.4.2" } = {}) {
   await p.waitForFunction(() => window.RD && window.RDLib && document.getElementById("rdbar"), null, { timeout: 15000 });
   await p.evaluate((v) => {
     window.__envoyes = []; window.__touches = [];
-    window.curConn = { _id: "123456789", _peerInfo: { version: v },
+    window.curConn = { _id: "123456789", _peerInfo: { version: v, platform: "Mac OS" },
       _ws: { _websocket: { readyState: 1 }, sendMessage(m) { window.__envoyes.push(m); }, next: () => new Promise(() => {}) },
       getRemember: () => true, setRemember() {}, getOption: () => undefined };
     const sb = window.setByName; window.setByName = function (n, x) { window.__touches.push([n, x]); try { return sb.apply(this, arguments); } catch (e) { /* pas de vraie session */ } };
@@ -226,8 +226,14 @@ await test("capture a fonds unis (taux > 30x) : le PNG depose est l'image ENTIER
   await p.evaluate(`(() => { const rle = ${trameRLE};
     window.__rdPpFiltrer({ multi_clipboards: { clipboards: [
       { format: 21, compress: true, content: rle(1024*512*4, 0xff), width: 1024, height: 512 } ] } }); })()`);
-  await p.click('.rdppbtn[data-kind="image"]');               // visible et cliquable meme barre repliee
-  await p.waitForFunction(() => !document.querySelector('.rdppbtn[data-kind="image"]'), null, { timeout: 10000 });
+  // Aucun clic : l'image recue est deposee d'elle-meme dans le presse-papier local.
+  let pret = false;
+  for (let i = 0; i < 100 && !pret; i++) {
+    pret = await p.evaluate(async () => { try { return (await navigator.clipboard.read()).some((x) => x.types.includes("image/png")); } catch { return false; } });
+    if (!pret) await p.waitForTimeout(100);
+  }
+  assert.equal(pret, true, "l'image n'est jamais arrivee dans le presse-papier local");
+  assert.equal(await p.evaluate(() => !!document.querySelector(".rdppbtn")), false, "pas de bouton : rien a cliquer");
   const lu = await p.evaluate(async () => {
     const items = await navigator.clipboard.read();
     const it = items.find((i) => i.types.includes("image/png"));
@@ -246,11 +252,43 @@ await test("capture a fonds unis (taux > 30x) : le PNG depose est l'image ENTIER
   assert.deepEqual(lu.px, [255, 255, 255, 255], "les VRAIS pixels : une image transparente serait [0,0,0,0]");
   assert.deepEqual(lu.fin, [255, 255, 255, 255]);
   const toasts = await p.evaluate(() => [...document.querySelectorAll(".rdtoast")].map((t) => t.textContent));
-  assert.ok(toasts.some((t) => /déposée/.test(t)), JSON.stringify(toasts));
+  assert.deepEqual(toasts, [], "un presse-papier qui marche ne s'annonce pas");
+});
+
+// La page n'a pas le focus (ou le navigateur refuse) : le bouton reprend son role.
+const sansFocus = (p) => p.evaluate(() => { document.hasFocus = () => false; });
+
+await test("auto-deposit-text : un texte copie sur le poste distant est dans le presse-papier local, sans bouton ni retour", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(() => window.__rdPpFiltrer({ multi_clipboards: { clipboards: [
+    { format: 2, compress: false, content: new TextEncoder().encode("<b>gras</b>") },
+    { format: 0, compress: false, content: new TextEncoder().encode("gras") } ] } }));
+  await p.waitForFunction(async () => { try { return (await navigator.clipboard.readText()) === "gras"; } catch { return false; } }, null, { timeout: 5000 });
+  const r = await p.evaluate(async () => { const it = (await navigator.clipboard.read())[0];
+    return { html: it.types.includes("text/html") ? await (await it.getType("text/html")).text() : null,
+             bouton: !!document.querySelector(".rdppbtn"), toasts: document.querySelectorAll(".rdtoast").length,
+             focus: document.activeElement && document.activeElement.id }; });
+  assert.match(r.html, /<b>gras<\/b>/, "le texte enrichi suit");
+  assert.equal(r.bouton, false); assert.equal(r.toasts, 0);
+  // Le texte simple des anciens pairs prend le meme chemin.
+  await p.evaluate(() => window.__rdPpFiltrer({ clipboard: { format: 0, compress: false, content: new TextEncoder().encode("ancien pair") } }));
+  await p.waitForFunction(async () => { try { return (await navigator.clipboard.readText()) === "ancien pair"; } catch { return false; } }, null, { timeout: 5000 });
+});
+
+await test("auto-deposit-refused-then-gesture : refuse par le navigateur, le depot est repris au geste suivant", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(() => { const vrai = navigator.clipboard.writeText.bind(navigator.clipboard); window.__refus = 1;
+    navigator.clipboard.writeText = (t) => window.__refus-- > 0 ? Promise.reject(new DOMException("pas de geste", "NotAllowedError")) : vrai(t);
+    window.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: new TextEncoder().encode("au second essai") }] } }); });
+  await p.waitForSelector('.rdppbtn[data-kind="text"]');
+  assert.equal(await p.evaluate(() => document.querySelectorAll(".rdtoast.erreur").length), 0, "un refus n'est pas une erreur a montrer");
+  await p.mouse.click(600, 400);                                // un geste dans l'image
+  await p.waitForFunction(async () => { try { return (await navigator.clipboard.readText()) === "au second essai"; } catch { return false; } }, null, { timeout: 5000 });
+  await p.waitForFunction(() => !document.querySelector(".rdppbtn"));
 });
 
 await test("focus-restored-after-deposit : le bouton ne garde pas le clavier", async (p) => {
-  await sessionSimulee(p);
+  await sessionSimulee(p); await sansFocus(p);
   await p.evaluate(() => window.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: new TextEncoder().encode("bonjour") }] } }));
   await p.click('.rdppbtn[data-kind="text"]');
   await p.waitForFunction(() => !document.querySelector('.rdppbtn[data-kind="text"]'), null, { timeout: 5000 });
@@ -259,7 +297,7 @@ await test("focus-restored-after-deposit : le bouton ne garde pas le clavier", a
 });
 
 await test("attention-reveals-ppbtn-when-collapsed : visible et cliquable barre repliee", async (p) => {
-  await sessionSimulee(p);
+  await sessionSimulee(p); await sansFocus(p);
   await p.evaluate(() => window.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: new TextEncoder().encode("x") }] } }));
   const etat = await p.evaluate(() => {
     const bar = document.getElementById("rdbar"), b = bar.querySelector(".rdppbtn");
@@ -277,7 +315,7 @@ await test("un decodeur qui echoue : erreur visible (role=alert), pas une image 
   await sessionSimulee(p);
   await p.evaluate(() => window.__rdPpFiltrer({ multi_clipboards: { clipboards: [
     { format: 21, compress: true, content: Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7]), width: 64, height: 64 } ] } }));
-  await p.click('.rdppbtn[data-kind="image"]');
+  // Depot automatique : un contenu INUTILISABLE reste une erreur a montrer.
   await p.waitForSelector(".rdtoast.erreur", { timeout: 10000 });
   const t = await p.evaluate(() => { const e = document.querySelector(".rdtoast.erreur"); return { texte: e.textContent, role: e.getAttribute("role") }; });
   assert.equal(t.role, "alert");
@@ -366,7 +404,7 @@ await test("actions-menu-real-select : choisir une action l'execute et rend le s
     ecrans: getComputedStyle(document.querySelector("#rdbar select.rdecrans")).display }));
   assert.ok(r.t.includes("ctrl_alt_del") && r.t.includes("toggle_option:disable-audio"), JSON.stringify(r.t));
   assert.equal(r.v, "");
-  assert.equal(r.n, 9, "la liste est reconstruite, pas empilee");
+  assert.equal(r.n, 10, "la liste est reconstruite, pas empilee (neuf actions, plus le presse-papier automatique de Chromium)");
   assert.equal(r.ecrans, "none", "sans second ecran, pas de selecteur d'ecran");
 }, OUVERTE);
 
@@ -541,6 +579,80 @@ await test("english-ui : navigateur non francophone, interface en anglais ; le c
   assert.equal(await p.textContent("#connect button[onclick]"), "Connexion");
   assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-prefs")).lang), "fr");
 }, { ...OUVERTE, contexte: { locale: "en-US" } });
+
+enTete("Clavier PC devant un Mac — vraies touches, vrai canvas");
+
+const frappes = (p) => p.evaluate(() => window.__touches.filter((t) => t[0] === "input_key" || t[0] === "input_string")
+  .map((t) => { if (t[0] === "input_string") return "texte:" + t[1]; const a = JSON.parse(t[1]); if (a.down !== "true") return null;
+    return [a.ctrl === "true" && "Ctrl", a.alt === "true" && "Alt", a.shift === "true" && "Maj", a.command === "true" && "Cmd", a.name].filter(Boolean).join("+"); }).filter(Boolean));
+
+await test("pc-shortcuts-translated : les raccourcis d'un clavier PC produisent le MEME EFFET sur le Mac", async (p) => {
+  await sessionSimulee(p);
+  // peer_info : c'est lui qui apprend a la page la plateforme du pair, donc le sens de la traduction.
+  await p.evaluate(() => { window.onGlobalEvent(JSON.stringify({ name: "peer_info" })); window.__rdActive().focus(); window.__touches.length = 0; });
+  for (const k of ["Control+c", "Control+ArrowLeft", "Control+Shift+ArrowRight", "Control+Backspace", "Home", "Shift+End", "Control+Home", "Control+y", "Control+Tab", "Alt+F4", "Control+Insert", "a"])
+    await p.keyboard.press(k);
+  assert.deepEqual(await frappes(p), ["Cmd+c", "Alt+LeftArrow", "Alt+Maj+RightArrow", "Alt+Backspace", "Cmd+LeftArrow", "Maj+Cmd+RightArrow",
+    "Cmd+UpArrow", "Maj+Cmd+z", "Ctrl+Tab", "Cmd+q", "Cmd+c", "texte:a"]);
+  assert.equal(await p.textContent("#rdbar .rdclavmode"), "PC→Mac");
+  // Ctrl+clic : selection multiple, donc Cmd+clic — un Ctrl+clic serait un clic droit sur le Mac.
+  await p.evaluate(() => { const c = window.__rdActive(); c.width = 1200; c.height = 800; window.__rdFit(); window.__touches.length = 0; });
+  await p.keyboard.down("Control"); await p.mouse.click(600, 400); await p.keyboard.up("Control");
+  const clic = await p.evaluate(() => window.__touches.filter((t) => t[0] === "send_mouse").map((t) => JSON.parse(t[1])).find((a) => a.type === "down"));
+  assert.deepEqual([clic.ctrl, clic.command], ["false", "true"]);
+  // Mode brut (terminal) : plus rien n'est traduit.
+  await p.click("#rdbar .rdclavmode");
+  await p.evaluate(() => { window.__rdActive().focus(); window.__touches.length = 0; });
+  await p.keyboard.press("Control+c"); await p.keyboard.press("Home");
+  assert.deepEqual(await frappes(p), ["Ctrl+c", "Home"]);
+}, OUVERTE);
+
+await test("pc-to-pc-untouched : devant un poste Windows, rien n'est traduit et le bouton disparait", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(() => { window.curConn._peerInfo.platform = "Windows"; window.onGlobalEvent(JSON.stringify({ name: "peer_info" })); window.__rdActive().focus(); window.__touches.length = 0; });
+  await p.keyboard.press("Control+c"); await p.keyboard.press("Control+ArrowLeft"); await p.keyboard.press("Home");
+  assert.deepEqual(await frappes(p), ["Ctrl+c", "Ctrl+LeftArrow", "Home"]);
+  assert.equal(await p.evaluate(() => getComputedStyle(document.querySelector("#rdbar .rdclavmode")).display), "none");
+}, OUVERTE);
+
+enTete("Presse-papier automatique — vraie lecture, vraie permission");
+
+const AUTO = { init: { "rd-prefs": JSON.stringify({ v: 1, bar: "ouverte", hint: true, clip: "auto" }) } };
+await test("clipboard-sync-on-focus : ce qui est copie ici part au poste distant au retour sur la page, et Ctrl+V colle sans renvoyer", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(async () => { await navigator.clipboard.writeText("copié sur le PC"); window.__envoyes.length = 0; window.dispatchEvent(new Event("focus")); });
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.clipboard), null, { timeout: 5000 });
+  assert.equal(await p.evaluate(() => new TextDecoder().decode(window.__envoyes.find((m) => m.clipboard).clipboard.content)), "copié sur le PC");
+  // Un second retour sans rien de neuf n'envoie rien.
+  await p.evaluate(() => { window.__envoyes.length = 0; window.__touches.length = 0; window.dispatchEvent(new Event("focus")); });
+  await p.waitForTimeout(300);
+  assert.equal(await p.evaluate(() => window.__envoyes.length), 0);
+  assert.equal(await p.evaluate(() => window.__touches.filter((t) => t[0] === "input_key").length), 0, "la synchronisation ne colle rien d'elle-meme");
+  // Coller : le contenu est deja la-bas, seule la frappe Cmd+V part, tout de suite.
+  await p.evaluate(() => { window.__rdActive().focus(); const dt = new DataTransfer(); dt.setData("text/plain", "copié sur le PC");
+    document.activeElement.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); });
+  await p.waitForFunction(() => window.__touches.some((t) => t[0] === "input_key"), null, { timeout: 2000 });
+  const r = await p.evaluate(() => ({ envois: window.__envoyes.length, v: JSON.parse(window.__touches.find((t) => t[0] === "input_key")[1]) }));
+  assert.equal(r.envois, 0, "pas de second envoi");
+  assert.deepEqual([r.v.name, r.v.command, r.v.ctrl], ["v", "true", "false"]);
+  // Ce qui vient du poste distant n'y est pas renvoye au retour suivant.
+  await p.evaluate(() => { window.__envoyes.length = 0; window.__rdPpFiltrer({ multi_clipboards: { clipboards: [{ format: 0, compress: false, content: new TextEncoder().encode("vient du Mac") }] } }); });
+  await p.waitForFunction(async () => { try { return (await navigator.clipboard.readText()) === "vient du Mac"; } catch { return false; } }, null, { timeout: 5000 });
+  await p.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await p.waitForTimeout(300);
+  assert.equal(await p.evaluate(() => window.__envoyes.length), 0, "pas d'aller-retour");
+}, AUTO);
+
+await test("clipboard-sync-opt-in : sans accord, rien n'est lu ; le menu Actions l'active", async (p) => {
+  await sessionSimulee(p);
+  await p.evaluate(async () => { await navigator.clipboard.writeText("secret"); window.__envoyes.length = 0; window.dispatchEvent(new Event("focus")); });
+  await p.waitForTimeout(300);
+  assert.equal(await p.evaluate(() => window.__envoyes.length), 0, "le presse-papier local n'est jamais lu d'office");
+  await p.selectOption("#rdbar select.rdactions", "sync");
+  await p.waitForFunction(() => window.__envoyes.some((m) => m.clipboard), null, { timeout: 5000 });
+  assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem("rd-prefs")).clip), "auto");
+  assert.match(await p.evaluate(() => [...document.querySelector("#rdbar select.rdactions").options].find((o) => o.value === "sync").textContent), /^✓ /);
+}, OUVERTE);
 
 const PEERS = JSON.stringify({ "111111111": { tm: 100, password: "secret1" }, "222222222": { tm: 300 }, "333333333": { tm: 200 } });
 
