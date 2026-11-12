@@ -39,10 +39,13 @@ la console présente** — une seule implémentation par fonction, et la console
   avant de construire, et une page qui ne répond pas 200 **avec** les identifiants fait désormais échouer l'installation.
 - **Plusieurs noms pour le même site** : `RD_DOMAIN_ALIASES` (question « autres noms » de `setup.sh`). Relancer `setup.sh`
   réécrivait le Caddyfile avec un seul nom ; un second nom ajouté à la main cessait de répondre en HTTPS.
+- **Mot de passe non mémorisé** : un `.env` où `RD_WEB_PASSWORD` a été vidé (le serveur ne garde que le hachage, dans
+  `.htpasswd`) faisait refuser toute mise à jour. `setup.sh` garde alors le `.htpasswd` existant tel quel et fait ses
+  contrôles « connecté » avec le cookie de session.
 - `verify.sh` rejoue la séquence de `setup.sh` sous `umask 077` et charge la page **avec** le cookie de session.
 
 ### Bancs de test
-- Gabarit 205 tests, navigateur 112 ; planchers de `verify.sh` relevés. Rejoué sans WebCodecs (`RD_SANS_VIDEODECODER=1`) : 108, et
+- Gabarit 206 tests, navigateur 112 ; planchers de `verify.sh` relevés. Rejoué sans WebCodecs (`RD_SANS_VIDEODECODER=1`) : 108, et
   4 tests propres à WebCodecs ignorés et annoncés.
 - Le banc navigateur ne dépend plus de la machine : clavier PC forcé dans les deux tests de raccourcis (ils échouaient sur un Mac),
   et Chrome est lancé sans couper `RenderDocument` (Playwright 1.56.1 la coupe ; sous Chrome 157 sans tête, tout plein écran

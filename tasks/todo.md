@@ -86,7 +86,7 @@ Lancer le banc navigateur : `NODE_PATH=<dir>/node_modules RD_PW_CHANNEL=chrome .
       pilotent les contrôles de la page ; état confirmé par le poste), raccourcis traduits (interrupteur du tiroir),
       calage d'image (zone libre de la console + calage au pixel de la page)
 - [x] nginx : les 5 en-têtes de sécurité répétés dans `location ~ ^/rd-console` et `location /api/` (ils n'héritaient de rien)
-- [x] Bancs : gabarit 205, navigateur 112 (108 + 4 ignorés et annoncés sans WebCodecs) ; option `sansConsole` pour les tests de la barre d'origine ; clavier PC forcé ;
+- [x] Bancs : gabarit 206, navigateur 112 (108 + 4 ignorés et annoncés sans WebCodecs) ; option `sansConsole` pour les tests de la barre d'origine ; clavier PC forcé ;
       `RenderDocument` non coupé (Chrome 157 sans tête refusait tout plein écran sous Playwright 1.56.1)
 - Retiré : le choix de langue du tiroir (et la clé `langue` du magasin `rd-console`) ; l'écoute d'Entrée et les `aria-label`
   de `05-login.js` (la page le fait, avec un vrai `<label>`) ; les titres de carte écrits en CSS (sauf l'écran d'attente)

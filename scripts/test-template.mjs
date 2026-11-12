@@ -3545,7 +3545,7 @@ test("setup droits : apres « umask 077 », l'arborescence servie est rendue lis
 });
 
 test("setup page : une page qui ne repond pas 200 a l'utilisateur connecte fait ECHOUER l'installation", () => {
-  assert.match(SETUP, /ECHEC_PAGE=0[\s\S]*?-u "\$RD_WEB_USER:\$RD_WEB_PASSWORD" http:\/\/127\.0\.0\.1:8081\/[\s\S]*?ECHEC_PAGE=1/);
+  assert.match(SETUP, /ECHEC_PAGE=0[\s\S]*?"\$\{AUTH\[@\]\}" http:\/\/127\.0\.0\.1:8081\/[\s\S]*?ECHEC_PAGE=1/);
   assert.match(SETUP, /if \[ "\$ECHEC_PAGE" = 1 \]; then[\s\S]*?exit 1/);
 });
 
@@ -3567,4 +3567,24 @@ test("setup noms : plusieurs noms pour le meme site, valides, sans doublon — e
   assert.ok(SETUP.includes('echo "RD_DOMAIN_ALIASES=$(sq "$RD_DOMAIN_ALIASES")"'), "et la memorise dans .env : relancer setup.sh ne perd plus un nom");
   assert.ok(VERIFY.includes("__RD_SITES__"), "verify.sh rend la liste");
   assert.ok(lire(path.join(RACINE, ".github", "workflows", "ci.yml")).includes("__RD_SITES__"), "la CI aussi");
+});
+
+test("setup mot de passe : non memorise dans .env, le .htpasswd existant est garde — sinon le mot de passe reste obligatoire", () => {
+  const f = /^htpasswd_connait\(\) \{[\s\S]*?^\}/m.exec(SETUP)[0];
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rd-htpasswd-"));
+  try {
+    const fichier = path.join(tmp, ".htpasswd");
+    fs.writeFileSync(fichier, "alex:$apr1$abcdefgh$0123456789abcdefghijkl\nvide:\n");
+    const connait = (u, chemin = fichier) => { try { execFileSync("bash", ["-c", f + '\nhtpasswd_connait "$1" "$2"', "bash", u, chemin], { stdio: "ignore" }); return true; } catch { return false; } };
+    assert.equal(connait("alex"), true);
+    assert.equal(connait("ale"), false, "un prefixe n'est pas l'identifiant");
+    assert.equal(connait("alex:$apr1"), false);
+    assert.equal(connait("vide"), false, "une ligne sans hachage ne compte pas");
+    assert.equal(connait("autre"), false);
+    assert.equal(connait("alex", path.join(tmp, "absent")), false, "pas de fichier : mot de passe obligatoire");
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  // Le .htpasswd garde n'est jamais reecrit, et les controles « connecte » passent alors par le cookie de session.
+  assert.match(SETUP, /if \[ "\$GARDER_HTPASSWD" = 1 \]; then\n  chmod 644 \.htpasswd\n  echo "  ✓ \.htpasswd \(conservé\)"\nelse\n  printf '%s:%s\\n' "\$RD_WEB_USER"/);
+  assert.match(SETUP, /if \[ "\$GARDER_HTPASSWD" = 1 \]; then AUTH=\(-H "Cookie: rdsession=\$RD_SESSION_TOKEN"\)\nelse AUTH=\(-u "\$RD_WEB_USER:\$RD_WEB_PASSWORD"\); fi/);
+  assert.ok(!/curl[^\n]*-u "\$RD_WEB_USER:\$RD_WEB_PASSWORD"/.test(SETUP), "plus aucun curl ne suppose le mot de passe en clair");
 });

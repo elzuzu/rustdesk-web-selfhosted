@@ -49,6 +49,11 @@ demander() {                       # demander VAR "question" "défaut" [secret]
   eval "$var=\$rep"
 }
 
+# htpasswd_connait IDENTIFIANT FICHIER : vrai si le fichier porte deja un hachage pour cet identifiant.
+htpasswd_connait() {
+  [ -f "$2" ] && awk -F: -v u="$1" '$1 == u && length($2) > 0 { ok = 1 } END { exit ok ? 0 : 1 }' "$2"
+}
+
 # sites_de DOMAINE "alias1, alias2" -> « domaine, alias1, alias2 » : la liste d'adresses de site de Caddy.
 # Virgules ou espaces ; un nom mal forme est refuse (il irait tel quel dans le Caddyfile), le domaine n'est pas repete.
 sites_de() {
@@ -69,8 +74,18 @@ demander RD_DOMAIN "Nom de domaine du client web (ex. rustdesk.exemple.org)"
 [ -n "${RD_DOMAIN:-}" ] || { c_err "Le domaine est obligatoire."; exit 1; }
 demander RD_WEB_USER "Identifiant d'accès à la page" "admin"
 demander RD_WEB_PASSWORD "Mot de passe d'accès à la page" "" secret
-[ -n "${RD_WEB_PASSWORD:-}" ] || { c_err "Le mot de passe est obligatoire."; exit 1; }
-if [ ${#RD_WEB_PASSWORD} -lt 12 ]; then
+# Le mot de passe en clair n'a pas a rester sur le serveur : nginx ne lit que son hachage, dans .htpasswd. Un .env ou
+# il a ete vide (RD_WEB_PASSWORD='') doit donc rester utilisable — sans cela, mettre a jour un tel deploiement etait
+# impossible sans retaper le mot de passe. Tant que .htpasswd connait l'identifiant, on le garde tel quel.
+GARDER_HTPASSWD=0
+if [ -z "${RD_WEB_PASSWORD:-}" ]; then
+  if htpasswd_connait "$RD_WEB_USER" .htpasswd; then
+    GARDER_HTPASSWD=1
+    c_ok "  ✓ mot de passe non mémorisé dans .env : le .htpasswd existant est conservé"
+  else
+    c_err "Le mot de passe est obligatoire : aucun .htpasswd existant ne connaît « $RD_WEB_USER »."; exit 1
+  fi
+elif [ ${#RD_WEB_PASSWORD} -lt 12 ]; then
   c_warn "  ⚠ mot de passe court : cette page est exposée à Internet, vise 16+ caractères."
 fi
 
@@ -219,9 +234,14 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 echo "  ✓ .env"
 
 # SHA-512 plutôt qu'apr1/MD5. 644 est requis : les workers nginx doivent lire.
-printf '%s:%s\n' "$RD_WEB_USER" "$(openssl passwd -6 "$RD_WEB_PASSWORD")" > .htpasswd
-chmod 644 .htpasswd
-echo "  ✓ .htpasswd"
+if [ "$GARDER_HTPASSWD" = 1 ]; then
+  chmod 644 .htpasswd
+  echo "  ✓ .htpasswd (conservé)"
+else
+  printf '%s:%s\n' "$RD_WEB_USER" "$(openssl passwd -6 "$RD_WEB_PASSWORD")" > .htpasswd
+  chmod 644 .htpasswd
+  echo "  ✓ .htpasswd"
+fi
 
 # Les placeholders d'identifiants n'existent dans aucun gabarit : ne jamais les
 # passer à sed, cela exposerait le mot de passe dans « ps » et casserait sur « | ».
@@ -293,16 +313,19 @@ else c_warn "  ⚠ sans identifiants, réponse inattendue : $code"; fi
 
 # Une ERREUR, pas un avertissement : 401 sans identifiants ne prouve pas que la page se charge (un 403 sur
 # chaque fichier donne exactement le meme 401 a qui n'est pas connecte).
+# « Connecte » : avec les identifiants quand on les a ; sinon avec le cookie de session, qui ouvre le meme acces.
+if [ "$GARDER_HTPASSWD" = 1 ]; then AUTH=(-H "Cookie: rdsession=$RD_SESSION_TOKEN")
+else AUTH=(-u "$RD_WEB_USER:$RD_WEB_PASSWORD"); fi
 ECHEC_PAGE=0
-code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RD_WEB_USER:$RD_WEB_PASSWORD" http://127.0.0.1:8081/ || true)
-if [ "$code" = "200" ]; then c_ok "  ✓ la page répond avec les identifiants (200)"
-else c_err "  ✗ avec identifiants, la page répond $code au lieu de 200 — docker logs rustdesk-web"; ECHEC_PAGE=1; fi
+code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" http://127.0.0.1:8081/ || true)
+if [ "$code" = "200" ]; then c_ok "  ✓ la page répond à l'utilisateur connecté (200)"
+else c_err "  ✗ connecté, la page répond $code au lieu de 200 — docker logs rustdesk-web"; ECHEC_PAGE=1; fi
 
 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/healthz || true)
 if [ "$code" = "204" ]; then c_ok "  ✓ sonde de santé (204)"
 else c_warn "  ⚠ sonde de santé : $code"; fi
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RD_WEB_USER:$RD_WEB_PASSWORD" \
+code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" \
        http://127.0.0.1:8081/js/dist/index.js.orig || true)
 if [ "$code" = "404" ]; then c_ok "  ✓ les sources non corrigées ne sont pas servies (404)"
 else c_warn "  ⚠ /js/dist/index.js.orig renvoie $code — le bloc de refus ne s'applique pas"; fi
@@ -318,7 +341,7 @@ if [ "$RD_FLEET" = "1" ]; then
   code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/api/health || true)
   if [ "$code" = "401" ]; then c_ok "  ✓ l'API de la liste des postes exige l'authentification (401)"
   else c_warn "  ⚠ /api/health sans identifiants : $code"; fi
-  code=$(curl -s -o /dev/null -w '%{http_code}' -u "$RD_WEB_USER:$RD_WEB_PASSWORD" http://127.0.0.1:8081/api/health || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" http://127.0.0.1:8081/api/health || true)
   if [ "$code" = "200" ]; then c_ok "  ✓ le service de la liste des postes répond (200)"
   else c_warn "  ⚠ /api/health avec identifiants : $code — docker logs rustdesk-fleet"; fi
   # 21115 n'est JAMAIS un critère de choix de l'hôte : un pare-feu peut le filtrer alors que 21118/21119 passent. On le teste
